@@ -74,6 +74,8 @@ InferSession::~InferSession()
     // 释放 GPU 资源
     if (m_device_input)  cudaFree(m_device_input);
     if (m_device_output) cudaFree(m_device_output);
+    if (m_pinned_input) cudaFreeHost(m_pinned_input);
+    if (m_pinned_output) cudaFreeHost(m_pinned_output);
     if (m_stream)       cudaStreamDestroy(m_stream);
     // mContext / mEngine / mRuntime 由 unique_ptr 自动析构
 }
@@ -86,6 +88,10 @@ void InferSession::allocBuffers() {
 
     cudaMalloc(&m_device_input, input_bytes);
     cudaMalloc(&m_device_output, output_bytes);
+
+    // 新增：分配 Pinned Memory 作为输出缓冲区
+    cudaMallocHost(&m_pinned_input, input_bytes);
+    cudaMallocHost(&m_pinned_output, output_bytes);
 
     std::cout << "[Infer] GPU buffers allocated:"
               << " input="  << input_bytes  / 1024 << " KB"
@@ -111,8 +117,13 @@ std::vector<float> InferSession::infer(const std::vector<float>& inputHost,
     // 3. H2D 异步拷贝（Host to Device）
     //    将 CPU 数据异步传输到 GPU，不阻塞 CPU。
     //    数据在 stream 中排队，保证在推理之前完成。
+    //    原来直接从 inputHost（Pageable）做 H2D
+    //    改为：先 memcpy 到 Pinned，再从 Pinned 做 H2D
+    memcpy(m_pinned_input, inputHost.data(), input_bytes);  // CPU→CPU，极快
     nvtxRangePushA("H2D");      // NVTX 标注
-    cudaMemcpyAsync(m_device_input, inputHost.data(), input_bytes, cudaMemcpyHostToDevice, m_stream);
+    // cudaMemcpyAsync(m_device_input, inputHost.data(), input_bytes, cudaMemcpyHostToDevice, m_stream);
+    cudaMemcpyAsync(m_device_input, m_pinned_input, input_bytes,
+                cudaMemcpyHostToDevice, m_stream);
     nvtxRangePop();             // NVTX 标注
 
     // 4. 异步推理
@@ -128,14 +139,19 @@ std::vector<float> InferSession::infer(const std::vector<float>& inputHost,
     //    将 GPU 输出结果异步拷贝回 CPU。
     //    因为在同一 stream 中，保证在推理完成后才执行。
     nvtxRangePushA("D2H");      // NVTX 标注
-    std::vector<float> outputHost(batchSize * k_CLS);
-    cudaMemcpyAsync(outputHost.data(), m_device_output, output_bytes, cudaMemcpyDeviceToHost, m_stream);
+    // std::vector<float> outputHost(batchSize * k_CLS);
+    // cudaMemcpyAsync(outputHost.data(), m_device_output, output_bytes, cudaMemcpyDeviceToHost, m_stream);
+    // D2H：改为拷贝到 Pinned Memory
+    cudaMemcpyAsync(m_pinned_output, m_device_output, output_bytes,
+                    cudaMemcpyDeviceToHost, m_stream);  // ← dst 改为 m_pinned_output
     nvtxRangePop();             // NVTX 标注
 
     // 6. 同步：等待 stream 中所有任务完成
     cudaStreamSynchronize(m_stream);
 
-    return outputHost;
+    // 从 Pinned Memory 构造返回值
+    return std::vector<float>(m_pinned_output,
+                              m_pinned_output + batchSize * k_CLS);
 }
 
 // ── Benchmark ─────────────────────────────────────────────────────────────────

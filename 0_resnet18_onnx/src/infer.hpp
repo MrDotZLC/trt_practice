@@ -95,4 +95,8 @@ private:
     
     // CUDA Stream
     cudaStream_t m_stream = nullptr;
+
+    float* m_pinned_input = nullptr;   // Pinned Memory 输出缓冲区
+    // 替换原来的临时 std::vector<float> outputHost
+    float* m_pinned_output = nullptr;  // Pinned Memory 输出缓冲区
 };

@@ -1,0 +1,25 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "nsys profile",
+            "type": "shell",
+            "command": "cmake --build ${workspaceFolder}/build --target profile",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "nsys stats",
+            "type": "shell",
+            "command": "cmake --build ${workspaceFolder}/build --target stats",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        }
+    ]
+}

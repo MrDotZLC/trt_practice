@@ -40,3 +40,26 @@ target_compile_definitions(trt_resnet18 PRIVATE
 )
 
 target_compile_options(trt_resnet18 PRIVATE -Wno-deprecated-declarations)
+
+# nsys profile target
+# 用法：cmake --build . --target profile
+add_custom_target(profile
+    COMMAND nsys profile
+        --output ${CMAKE_CURRENT_BINARY_DIR}/nsys_report
+        --trace cuda,nvtx,osrt,cudnn,cublas
+        --sample=none
+        --force-overwrite=true
+        $<TARGET_FILE:trt_resnet18>
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    DEPENDS trt_resnet18
+    COMMENT "Running nsys profile..."
+)
+
+# nsys stats target
+# 用法：cmake --build . --target stats
+add_custom_target(stats
+    COMMAND sqlite3 ${CMAKE_CURRENT_BINARY_DIR}/nsys_report.sqlite
+        < ${CMAKE_CURRENT_SOURCE_DIR}/stats.sql
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    COMMENT "Querying NVTX stats from nsys_report.sqlite..."
+)
