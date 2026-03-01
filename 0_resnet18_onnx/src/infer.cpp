@@ -4,6 +4,7 @@
 #include <numeric>
 #include <algorithm>
 #include <stdexcept>
+#include <nvtx3/nvToolsExt.h>   // ← 加这行：NVTX 标注
 
 // ── 辅助：读取二进制文件到 buffer ────────────────────────────────────────────
 static std::vector<char> readFile(const std::string& path)
@@ -110,20 +111,26 @@ std::vector<float> InferSession::infer(const std::vector<float>& inputHost,
     // 3. H2D 异步拷贝（Host to Device）
     //    将 CPU 数据异步传输到 GPU，不阻塞 CPU。
     //    数据在 stream 中排队，保证在推理之前完成。
+    nvtxRangePushA("H2D");      // NVTX 标注
     cudaMemcpyAsync(m_device_input, inputHost.data(), input_bytes, cudaMemcpyHostToDevice, m_stream);
+    nvtxRangePop();             // NVTX 标注
 
     // 4. 异步推理
     //    enqueueV3 将推理任务提交到 stream，立即返回，不等待 GPU 完成。
     //    GPU 在后台执行，CPU 可继续做其他工作（本实现直接等待）。
+    nvtxRangePushA("Infer");    // NVTX 标注
     if (!m_context->enqueueV3(m_stream)) {
         throw std::runtime_error("[Infer] enqueueV3 failed");
     }
+    nvtxRangePop();             // NVTX 标注
 
     // 5. D2H 异步拷贝（Device to Host）
     //    将 GPU 输出结果异步拷贝回 CPU。
     //    因为在同一 stream 中，保证在推理完成后才执行。
+    nvtxRangePushA("D2H");      // NVTX 标注
     std::vector<float> outputHost(batchSize * k_CLS);
     cudaMemcpyAsync(outputHost.data(), m_device_output, output_bytes, cudaMemcpyDeviceToHost, m_stream);
+    nvtxRangePop();             // NVTX 标注
 
     // 6. 同步：等待 stream 中所有任务完成
     cudaStreamSynchronize(m_stream);
@@ -163,6 +170,8 @@ void InferSession::benchmark(int batchSize, int nWarmup, int nRun) {
 
     std::vector<float> latencies(nRun);
     for (int i = 0; i < nRun; ++i) {
+        nvtxRangePushA("benchmark_iter");           // NVTX 标注
+
         // EventRecord：在 stream 当前位置插入时间戳
         cudaEventRecord(ev_start, m_stream);
         m_context->enqueueV3(m_stream);
@@ -173,6 +182,8 @@ void InferSession::benchmark(int batchSize, int nWarmup, int nRun) {
 
         // ElapsedTime：计算两个 event 之间的 GPU 时间，单位 ms
         cudaEventElapsedTime(&latencies[i], ev_start, ev_stop);
+
+        nvtxRangePop();                             // NVTX 标注
     }
 
     cudaEventDestroy(ev_start);
