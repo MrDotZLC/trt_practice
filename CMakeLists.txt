@@ -4,4 +4,4 @@ project(trt_practice LANGUAGES CXX)
 # 公共头文件路径
 include_directories(${CMAKE_SOURCE_DIR}/common)
 
-add_subdirectory(resnet18)
+add_subdirectory(0_resnet18_onnx)
