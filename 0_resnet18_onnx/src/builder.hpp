@@ -44,13 +44,13 @@ inline const char *precisionStr(Precision p) {
  *   - engine 与 GPU 架构绑定（SM 7.5 编译的不能在 SM 8.0 运行）
  *   - 构建耗时较长（数秒到数分钟），推理时直接加载 .engine 文件
  *
- * @param onnxPath    输入 ONNX 模型路径
- * @param enginePath  输出 engine 文件路径
- * @param precision   推理精度
- * @param logger      TRT Logger 实例（Builder 和 Runtime 共用）
+ * @param onnxPath              输入 ONNX 模型路径
+ * @param enginePath            输出 engine 文件路径
+ * @param precision             推理精度
+ * @param logger                TRT Logger 实例（Builder 和 Runtime 共用）
+ * @param workspaceBytes        workspace 大小默认值 1GB
  */
 
-void buildEngine(const std::string& onnxPath,
-                 const std::string& enginePath,
-                 Precision precision,
-                 Logger& logger);
+void buildEngine(const std::string &onnxPath, const std::string &enginePath,
+                 Precision precision, Logger &logger,
+                 size_t workspaceBytes = 1UL << 30);

@@ -65,7 +65,8 @@ InferSession::InferSession(const std::string &enginePath, Logger &logger,
     // 6. 分配 GPU 缓冲区
     allocBuffers();
 
-    std::cout << "[Infer] Session ready: " << enginePath << "\n";
+    m_logger.log(nvinfer1::ILogger::Severity::kVERBOSE,
+             ("[Infer] Session ready: " + enginePath).c_str());
 }
 
 // ── 析构函数
@@ -94,9 +95,11 @@ void InferSession::allocBuffers() {
     cudaMallocHost(&m_pinned_input, input_bytes);
     cudaMallocHost(&m_pinned_output, output_bytes);
 
-    std::cout << "[Infer] GPU buffers allocated:" << " input="
-              << input_bytes / 1024 << " KB"
-              << " output=" << output_bytes / 1024 << " KB\n";
+    m_logger.log(nvinfer1::ILogger::Severity::kVERBOSE,
+                 ("[Infer] GPU buffers allocated: input=" +
+                  std::to_string(input_bytes / 1024) +
+                  " KB, output=" + std::to_string(output_bytes / 1024) + " KB")
+                     .c_str());
 }
 
 // ── 单次推理
@@ -161,8 +164,7 @@ std::vector<float> InferSession::infer(const std::vector<float> &inputHost,
 
 // ── Benchmark
 // ─────────────────────────────────────────────────────────────────
-void InferSession::benchmark(int batchSize, int nWarmup, int nRun,
-                             const std::string &label) {
+BenchResult InferSession::benchmark(int batchSize, int nWarmup, int nRun) {
     // 构造固定输入数据
     std::vector<float> input(batchSize * k_C * k_H * k_W, 0.5f);
 
@@ -227,12 +229,15 @@ void InferSession::benchmark(int batchSize, int nWarmup, int nRun,
     // 吞吐量：每秒处理的图片数
     float throughput = batchSize / (mean / 1000.f);  // 张/ms -> 张/s
 
-    std::cout << std::left
-          << std::setw(10) << label
-          << std::setw(8)  << batchSize
-          << std::setw(12) << mean
-          << std::setw(12) << p50
-          << std::setw(12) << p99
-          << std::setw(16) << throughput
-          << "\n";
+    // std::cout << std::left
+    //       << std::setw(10) << label
+    //       << std::setw(8)  << batchSize
+    //       << std::setw(12) << mean
+    //       << std::setw(12) << p50
+    //       << std::setw(12) << p99
+    //       << std::setw(16) << throughput
+    //       << "\n";
+    // 删除原来的 std::cout 打印
+    // 改为返回结构体
+    return BenchResult{mean, p50, p99, throughput};
 }

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <numeric>
 #include <iomanip>
+#include <chrono>
 
 // ── 精度对比工具函数
 // ──────────────────────────────────────────────────────────
@@ -25,7 +26,7 @@ static float cosineSim(const std::vector<float> &a,
                        const std::vector<float> &b) {
     double dot = 0, norm_A = 0, norm_B = 0;
     for (size_t i = 0; i < a.size(); ++i) {
-        dot += static_cast<double>(a[i]) * b[i];
+        dot    += static_cast<double>(a[i]) * b[i];
         norm_A += static_cast<double>(a[i]) * a[i];
         norm_B += static_cast<double>(b[i]) * b[i];
     }
@@ -145,19 +146,20 @@ int main() {
             float diff = maxAbsDiff(fp32_out, out);
             float err = mse(fp32_out, out);
 
-            std::cout << "[Accuracy vs FP32]" << "  cosine_sim=" << cs
-                      << "  max_abs_diff=" << diff << "  mse=" << err << "\n";
+            std::cout << "[Accuracy vs FP32]"
+                      << "  cosine_sim="   << cs
+                      << "  max_abs_diff=" << diff
+                      << "  mse="          << err << "\n";
 
             bool allMatch = true;
             for (int b = 0; b < BATCH; ++b) {
                 int fp32_argmax = argmax(fp32_out, b * NUM_CLS, NUM_CLS);
-                int cur_argmax = argmax(out, b * NUM_CLS, NUM_CLS);
+                int cur_argmax  = argmax(out,      b * NUM_CLS, NUM_CLS);
                 if (fp32_argmax != cur_argmax) {
                     allMatch = false;
-                    std::cout << "  [!] batch[" << b
-                              << "] argmax mismatch:" << " FP32=" << fp32_argmax
-                              << " " << precisionStr(t.prec) << "="
-                              << cur_argmax << "\n";
+                    std::cout << "  [!] batch[" << b << "] argmax mismatch:"
+                              << " FP32=" << fp32_argmax
+                              << " " << precisionStr(t.prec) << "=" << cur_argmax << "\n";
                 }
             }
             if (allMatch) {
@@ -168,16 +170,76 @@ int main() {
 
         // ── Multi-Batch Benchmark
         // ─────────────────────────────────────────────
+        // Multi-Batch Benchmark
         std::cout << "\n"
-                  << std::left << std::setw(10) << "Precision" << std::setw(8)
-                  << "Batch" << std::setw(12) << "mean(ms)" << std::setw(12)
-                  << "p50(ms)" << std::setw(12) << "p99(ms)" << std::setw(16)
-                  << "throughput" << "\n"
+                  << std::left
+                  << std::setw(10) << "Precision"
+                  << std::setw(8)  << "Batch"
+                  << std::setw(12) << "mean(ms)"
+                  << std::setw(12) << "p50(ms)"
+                  << std::setw(12) << "p99(ms)"
+                  << std::setw(16) << "throughput"
+                  << "\n"
                   << std::string(70, '-') << "\n";
 
         for (int bs : batch_sizes) {
-            sess.benchmark(bs, 50, 200, precisionStr(t.prec));
+            auto r = sess.benchmark(bs, 50, 200);
+            std::cout << std::left
+                      << std::setw(10) << precisionStr(t.prec)
+                      << std::setw(8)  << bs
+                      << std::setw(12) << r.mean_ms
+                      << std::setw(12) << r.p50_ms
+                      << std::setw(12) << r.p99_ms
+                      << std::setw(16) << r.throughput
+                      << "\n";
         }
+    }
+
+    // ── Step 4: Workspace 调优实验（INT8）────────────────────────────────────
+    struct WsTask {
+        std::string engine;
+        size_t      workspace;
+    };
+
+    std::vector<WsTask> ws_tasks = {
+        {"resnet18_int8_ws32m.engine",   32UL  << 20},
+        {"resnet18_int8_ws128m.engine",  128UL << 20},
+        {"resnet18_int8_ws256m.engine",  256UL << 20},
+        {"resnet18_int8_ws512m.engine",  512UL << 20},
+        {"resnet18_int8_ws1024m.engine", 1UL   << 30},
+    };
+
+    // 先全部构建
+    std::vector<std::pair<WsTask, double>> ws_results; // {task, build_time}
+
+    for (auto& wt : ws_tasks) {
+        auto t0 = std::chrono::steady_clock::now();
+        buildEngine(onnxPath, wt.engine, Precision::INT8, logger, wt.workspace);
+        auto t1 = std::chrono::steady_clock::now();
+        double build_sec = std::chrono::duration<double>(t1 - t0).count();
+        ws_results.push_back({wt, build_sec});
+    }
+
+    std::cout << "\n========== Workspace Tuning (INT8, batch=8) ==========\n"
+              << std::left
+              << std::setw(32) << "Engine"
+              << std::setw(14) << "Workspace(MB)"
+              << std::setw(14) << "BuildTime(s)"
+              << std::setw(12) << "mean(ms)"
+              << std::setw(16) << "throughput"
+              << "\n"
+              << std::string(88, '-') << "\n";
+
+    for (auto& [wt, build_sec] : ws_results) {
+        InferSession sess(wt.engine, logger);
+        auto r = sess.benchmark(8, 50, 200);
+        std::cout << std::left
+                << std::setw(32) << wt.engine
+                << std::setw(14) << (wt.workspace >> 20)
+                << std::setw(14) << std::fixed << std::setprecision(2) << build_sec
+                << std::setw(12) << std::fixed << std::setprecision(3) << r.mean_ms
+                << std::setw(16) << std::fixed << std::setprecision(1) << r.throughput
+                << "\n";
     }
 
     std::cout << "\n========== Done ==========\n";

@@ -7,7 +7,7 @@
 #include <stdexcept>
 
 void buildEngine(const std::string &onnxPath, const std::string &enginePath,
-                 Precision precision, Logger &logger) {
+                 Precision precision, Logger &logger, size_t workspaceBytes) {
     std::cout << "\n[Builder] onnx=" << onnxPath
               << "  precision=" << precisionStr(precision) << "\n";
     // ── 1. 创建 Builder

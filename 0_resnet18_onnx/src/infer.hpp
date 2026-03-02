@@ -6,6 +6,14 @@
 #include <memory>
 #include "logger.hpp"
 
+// Bench 指标结果
+struct BenchResult {
+        float mean_ms;
+        float p50_ms;
+        float p99_ms;
+        float throughput;
+    };
+
 /**
  * TensorRT 推理会话（Inference Session）
  *
@@ -72,8 +80,7 @@ public:
      * @param nWarmup    预热次数（排除 GPU 首次启动 JIT 开销）
      * @param nRun       正式计时次数
      */
-    void benchmark(int batchSize, int nWarmup = 50, int nRun = 200,
-                   const std::string &label = "");
+    BenchResult benchmark(int batchSize, int nWarmup = 50, int nRun = 200);
 
 private:
     // 根据 maxBatch 分配 GPU 输入/输出缓冲区
