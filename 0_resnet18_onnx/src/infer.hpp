@@ -40,12 +40,13 @@ public:
      * @param logger      TRT Logger，需与构建时同一实例或同类型实例
      * @param maxBatch    最大 batch 大小，须 ≤ 构建时的 kMAX
      */
-    explicit InferSession(const std::string &enginePath, Logger &logger, int maxBatch = 16);
+    explicit InferSession(const std::string &enginePath, Logger &logger,
+                          int maxBatch = 16);
     ~InferSession();
 
     // 禁止拷贝（持有 GPU 资源，拷贝语义不安全）
-    InferSession(const InferSession&)               = delete;
-    InferSession& operator=(const InferSession&)     = delete;
+    InferSession(const InferSession &) = delete;
+    InferSession &operator=(const InferSession &) = delete;
 
     /**
      * 执行一次推理
@@ -54,12 +55,13 @@ public:
      *                   大小必须 = batchSize * 3 * 224 * 224
      * @param batchSize  本次实际 batch 大小，须在 [kMIN, kMAX] 范围内
      * @return           CPU 端输出 logits，大小 = batchSize * 1000，1000 维向量
-     *                      （ResNet 系列最初是为 ImageNet (ILSVRC) 大规模视觉识别挑战赛设计的，
-     *                      ImageNet 数据集共有 1000 个类别，故这里默认设为 1000 维）
+     *                      （ResNet 系列最初是为 ImageNet (ILSVRC)
+     * 大规模视觉识别挑战赛设计的， ImageNet 数据集共有 1000
+     * 个类别，故这里默认设为 1000 维）
      */
-    std::vector<float> infer(const std::vector<float>& inputHost,
+    std::vector<float> infer(const std::vector<float> &inputHost,
                              int batchSize);
-    
+
     /**
      * 性能基准测试（Benchmark）
      *
@@ -70,33 +72,36 @@ public:
      * @param nWarmup    预热次数（排除 GPU 首次启动 JIT 开销）
      * @param nRun       正式计时次数
      */
-    void benchmark(int batchSize, int nWarmup = 50, int nRun = 200);
+    void benchmark(int batchSize, int nWarmup = 50, int nRun = 200,
+                   const std::string &label = "");
 
 private:
     // 根据 maxBatch 分配 GPU 输入/输出缓冲区
     void allocBuffers();
 
-    Logger& m_logger;
+    Logger &m_logger;
     int m_max_batch;
 
-    std::unique_ptr<nvinfer1::IRuntime>             m_runtime; // 负责反序列化 engine
-    std::unique_ptr<nvinfer1::ICudaEngine>          m_engine;  // 包含编译好的 CUDA kernel，线程安全，可多线程共享 
-    std::unique_ptr<nvinfer1::IExecutionContext>    m_context; // 执行上下文，持有推理状态，单线程复用
+    std::unique_ptr<nvinfer1::IRuntime> m_runtime;  // 负责反序列化 engine
+    std::unique_ptr<nvinfer1::ICudaEngine>
+        m_engine;  // 包含编译好的 CUDA kernel，线程安全，可多线程共享
+    std::unique_ptr<nvinfer1::IExecutionContext>
+        m_context;  // 执行上下文，持有推理状态，单线程复用
 
     // GPU 缓冲区
-    void* m_device_input =      nullptr;
-    void* m_device_output =     nullptr;
+    void *m_device_input = nullptr;
+    void *m_device_output = nullptr;
 
     // 模型固定参数（ResNet18 ImageNet）
-    static constexpr int k_C     = 3;
-    static constexpr int k_H     = 224;
-    static constexpr int k_W     = 224;
-    static constexpr int k_CLS   = 1000;  // 输出类别
-    
+    static constexpr int k_C = 3;
+    static constexpr int k_H = 224;
+    static constexpr int k_W = 224;
+    static constexpr int k_CLS = 1000;  // 输出类别
+
     // CUDA Stream
     cudaStream_t m_stream = nullptr;
 
-    float* m_pinned_input = nullptr;   // Pinned Memory 输出缓冲区
+    float *m_pinned_input = nullptr;  // Pinned Memory 输出缓冲区
     // 替换原来的临时 std::vector<float> outputHost
-    float* m_pinned_output = nullptr;  // Pinned Memory 输出缓冲区
+    float *m_pinned_output = nullptr;  // Pinned Memory 输出缓冲区
 };

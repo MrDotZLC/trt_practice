@@ -5,8 +5,10 @@
 #include <vector>
 #include <cmath>
 #include <numeric>
+#include <iomanip>
 
-// ── 精度对比工具函数 ──────────────────────────────────────────────────────────
+// ── 精度对比工具函数
+// ──────────────────────────────────────────────────────────
 
 /**
  * 余弦相似度（Cosine Similarity）
@@ -19,15 +21,16 @@
  *   用于精度对比比 MSE 更能反映分类结果的一致性：
  *   即使绝对值有偏差，只要各类别的相对大小顺序一致，cos 仍接近 1。
  */
-static float cosineSim(const std::vector<float>& a,
-                       const std::vector<float>& b) {
+static float cosineSim(const std::vector<float> &a,
+                       const std::vector<float> &b) {
     double dot = 0, norm_A = 0, norm_B = 0;
     for (size_t i = 0; i < a.size(); ++i) {
-        dot    += static_cast<double>(a[i]) * b[i];
+        dot += static_cast<double>(a[i]) * b[i];
         norm_A += static_cast<double>(a[i]) * a[i];
         norm_B += static_cast<double>(b[i]) * b[i];
     }
-    return static_cast<float>(dot / (std::sqrt(norm_A) * std::sqrt(norm_B) + 1e-12));
+    return static_cast<float>(dot /
+                              (std::sqrt(norm_A) * std::sqrt(norm_B) + 1e-12));
 }
 
 /**
@@ -39,8 +42,8 @@ static float cosineSim(const std::vector<float>& a,
  *   找出所有输出元素中偏差最大的一个。
  *   反映量化引入的最坏情况误差。
  */
-static float maxAbsDiff(const std::vector<float>& a,
-                        const std::vector<float>& b) {
+static float maxAbsDiff(const std::vector<float> &a,
+                        const std::vector<float> &b) {
     float max_d = 0.f;
     for (size_t i = 0; i < a.size(); ++i) {
         max_d = std::max(max_d, std::abs(a[i] - b[i]));
@@ -56,8 +59,7 @@ static float maxAbsDiff(const std::vector<float>& a,
  * 含义：
  *   衡量整体误差的平均水平，对大误差敏感（平方放大）。
  */
-static float mse(const std::vector<float>& a,
-                 const std::vector<float>& b) {
+static float mse(const std::vector<float> &a, const std::vector<float> &b) {
     double sum = 0;
     for (size_t i = 0; i < a.size(); ++i) {
         double d = a[i] - b[i];
@@ -66,8 +68,9 @@ static float mse(const std::vector<float>& a,
     return static_cast<float>(sum / a.size());
 }
 
-// ── 最大值索引 ────────────────────────────────────────────────────────────────
-static int argmax(const std::vector<float>& logits, int offset, int numCls) {
+// ── 最大值索引
+// ────────────────────────────────────────────────────────────────
+static int argmax(const std::vector<float> &logits, int offset, int numCls) {
     // 找 [offset, offset+numCls) 范围内最大值的下标
     int mx_idx = 0;
     float mx = logits[offset];
@@ -80,23 +83,24 @@ static int argmax(const std::vector<float>& logits, int offset, int numCls) {
     return mx_idx;
 }
 
-// ── main ──────────────────────────────────────────────────────────────────────
+// ── main
+// ──────────────────────────────────────────────────────────────────────
 int main() {
     Logger logger;
 
     // 初始化 TRT 内置插件库，必须在任何 Runtime 创建前调用
     initLibNvInferPlugins(&logger, "");
 
-    const std::string onnxPath = std::string(PROJECT_SOURCE_DIR) + "/resnet18.onnx";
+    const std::string onnxPath =
+        std::string(PROJECT_SOURCE_DIR) + "/resnet18.onnx";
     const int BATCH = 8;
     const int C = 3, H = 224, W = 224;
     const int NUM_CLS = 1000;
 
     // ── Step 1: 构建三种精度 Engine ──────────────────────────────────────────
-    struct Task
-    {
+    struct Task {
         std::string engine;
-        Precision   prec;
+        Precision prec;
     };
 
     std::vector<Task> tasks = {
@@ -105,8 +109,7 @@ int main() {
         {"resnet18_int8.engine", Precision::INT8},
     };
 
-    for (auto& t : tasks)
-    {
+    for (auto &t : tasks) {
         std::cout << "\n========== Build: " << t.engine << " ==========\n";
         buildEngine(onnxPath, t.engine, t.prec, logger);
     }
@@ -117,15 +120,16 @@ int main() {
     for (size_t i = 0; i < input.size(); ++i) {
         input[i] = static_cast<float>(i % 255) / 255.f;
     }
-    
-    // ── Step 3: 推理 + 精度对比 + Benchmark ─────────────────────────────────
+
+    // ── Step 3: 推理 + 精度对比 + Multi-Batch Benchmark ──────────────────────
     std::vector<float> fp32_out;
+    std::vector<int> batch_sizes = {1, 2, 4, 8, 16};
 
     for (auto &t : tasks) {
         std::cout << "\n========== Infer: " << t.engine << " ==========\n";
         InferSession sess(t.engine, logger);
 
-        // 精度验证推理
+        // 精度验证推理（固定 batch=8）
         auto out = sess.infer(input, BATCH);
 
         if (t.prec == Precision::FP32) {
@@ -133,41 +137,47 @@ int main() {
             std::cout << "[Accuracy] FP32 baseline, argmax class (batch[0]): "
                       << argmax(fp32_out, 0, NUM_CLS) << "\n";
         } else {
-            // 如果 fp32Out 为空，说明 FP32 推理结果没有正确保存
-            if (fp32_out.empty())
-            {
+            if (fp32_out.empty()) {
                 std::cerr << "[ERROR] fp32Out is empty, FP32 must run first.\n";
                 continue;
             }
-            // 与 FP32 基准对比
-            float cs   = cosineSim(fp32_out, out);
+            float cs = cosineSim(fp32_out, out);
             float diff = maxAbsDiff(fp32_out, out);
-            float err  = mse(fp32_out, out);
+            float err = mse(fp32_out, out);
 
-            std::cout << "[Accuracy vs FP32]"
-                      << "  cosine_sim="   << cs
-                      << "  max_abs_diff=" << diff
-                      << "  mse="          << err << "\n";
+            std::cout << "[Accuracy vs FP32]" << "  cosine_sim=" << cs
+                      << "  max_abs_diff=" << diff << "  mse=" << err << "\n";
 
-            // 最大值索引 是否一致（对分类任务最直接的精度指标）
             bool allMatch = true;
             for (int b = 0; b < BATCH; ++b) {
                 int fp32_argmax = argmax(fp32_out, b * NUM_CLS, NUM_CLS);
-                int cur_argmax  = argmax(out,     b * NUM_CLS, NUM_CLS);
+                int cur_argmax = argmax(out, b * NUM_CLS, NUM_CLS);
                 if (fp32_argmax != cur_argmax) {
                     allMatch = false;
-                    std::cout << "  [!] batch[" << b << "] argmax mismatch:"
-                              << " FP32=" << fp32_argmax
-                              << " " << precisionStr(t.prec) << "=" << cur_argmax << "\n";
+                    std::cout << "  [!] batch[" << b
+                              << "] argmax mismatch:" << " FP32=" << fp32_argmax
+                              << " " << precisionStr(t.prec) << "="
+                              << cur_argmax << "\n";
                 }
             }
             if (allMatch) {
-                std::cout << "  Top-1 all match FP32 across "
-                          << BATCH << " samples.\n";
+                std::cout << "  Top-1 all match FP32 across " << BATCH
+                          << " samples.\n";
             }
         }
-        // 性能 Benchmark
-        sess.benchmark(BATCH, 50, 200);
+
+        // ── Multi-Batch Benchmark
+        // ─────────────────────────────────────────────
+        std::cout << "\n"
+                  << std::left << std::setw(10) << "Precision" << std::setw(8)
+                  << "Batch" << std::setw(12) << "mean(ms)" << std::setw(12)
+                  << "p50(ms)" << std::setw(12) << "p99(ms)" << std::setw(16)
+                  << "throughput" << "\n"
+                  << std::string(70, '-') << "\n";
+
+        for (int bs : batch_sizes) {
+            sess.benchmark(bs, 50, 200, precisionStr(t.prec));
+        }
     }
 
     std::cout << "\n========== Done ==========\n";
