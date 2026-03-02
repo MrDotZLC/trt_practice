@@ -1,3 +1,4 @@
 build/
 **/*.onnx
+**/calib_data/
 .VSCodeCounter/

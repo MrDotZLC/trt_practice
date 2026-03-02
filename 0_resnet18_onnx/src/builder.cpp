@@ -106,8 +106,9 @@ void buildEngine(const std::string &onnxPath, const std::string &enginePath,
         case Precision::INT8:
             config->setFlag(nvinfer1::BuilderFlag::kINT8);
             config->setFlag(nvinfer1::BuilderFlag::kFP16);  // fallback
-            calibrator = std::make_unique<Int8Calibrator>(8, 3, 224, 224,
-                                                          "calib_cache.bin");
+            calibrator = std::make_unique<Int8Calibrator>(
+                8, 3, 224, 224, "calib_cache.bin",
+                std::string(PROJECT_SOURCE_DIR) + "/calib_data");
             config->setInt8Calibrator(calibrator.get());
             break;
 

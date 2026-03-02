@@ -46,7 +46,8 @@ public:
      * @param cache_file  校准缓存文件路径，存在则跳过校准直接读取
      */
     Int8Calibrator(int batch_size, int channels, int height, int width,
-                   const std::string &cache_file);
+                   const std::string &cache_file,
+                   const std::string& calib_data_dir);
     ~Int8Calibrator();
     
     // -- TRT 回调接口--
@@ -73,6 +74,10 @@ private:
     int m_input_size;               // 每批输入的元素数量（batch_size * channels * height * width）
     int m_current_batch = 0;        // 当前校准批次索引
     int m_total_batchs = 10;        // 校准轮数，生产环境：ceil(500 / batchSize)
+
+    std::string m_calib_data_dir;           // calib_data 目录路径
+    std::vector<std::string> m_file_list;   // 所有 .bin 文件路径列表
+    int m_file_index = 0;                   // 当前读取的文件索引
 
     void*               m_device_input = nullptr; 	// GPU 端输入缓冲区
     std::vector<float>  m_host_input;               // CPU 端数据
