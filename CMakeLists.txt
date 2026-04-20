@@ -5,3 +5,5 @@ project(trt_practice LANGUAGES CXX)
 include_directories(${CMAKE_SOURCE_DIR}/common)
 
 add_subdirectory(0_resnet18_onnx)
+add_subdirectory(1_gpt2_onnx)
+

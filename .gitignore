@@ -1,4 +1,6 @@
 build/
 **/*.onnx
+**/*.bin
+**/*.engine
 **/calib_data/
 .VSCodeCounter/
