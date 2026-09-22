@@ -1,0 +1,9 @@
+[submodule "sentencepiece"]
+	path = sentencepiece
+	url = https://github.com/google/sentencepiece.git
+[submodule "safetensors-cpp"]
+	path = safetensors-cpp
+	url = https://github.com/syoyo/safetensors-cpp.git
+[submodule "mini_trt_llm/third_party/sentencepiece"]
+	path = mini_trt_llm/third_party/sentencepiece
+	url = https://github.com/google/sentencepiece.git
