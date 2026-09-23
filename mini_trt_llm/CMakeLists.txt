@@ -84,6 +84,7 @@ include_directories(
 # ---------------------------------------------------------------------------
 file(GLOB_RECURSE MINI_TRT_LLM_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu
 )
 
 # ---------------------------------------------------------------------------

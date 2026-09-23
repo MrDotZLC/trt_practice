@@ -1,7 +1,7 @@
 # mini_trt_llm 项目进度交接文档
 
 > 最后更新：2026-09-24  
-> 当前阶段：Phase 1 进行中（IPluginV3 基类已完成，15 项待确认决策已全部关闭，编码条件齐备）
+> 当前阶段：Phase 1 进行中（IPluginV3 基类 + RMSNormPlugin 已完成并接入注册表，下一步 RoPEPlugin）
 
 ---
 
@@ -132,6 +132,7 @@
 - `docs/phase0_code_review_plan.md`：Phase 0 代码 review 方案（review 由用户本人执行，尚未完成）。
 - `docs/phase0_model_loading_test_plan.md`：Phase 0 模型加载测试方案（T1–T3 尚未实施）。
 - `docs/phase1_development_plan.md`：Phase 1 开发方案 + 关键决策确认清单（含合并后的 15 项决策）。
+- `docs/TROUBLESHOOTING.md`：问题排查记录（现象 / 定位路径 / 根因 / 修复 / 回归防护）。
 - `docs/future_iterations.md`：后续迭代计划。
 - `mini_trt_llm/third_party/sentencepiece/README.md`：记录禁用功能。
 - `docs/PROGRESS.md`：本交接文档（已按 `progress-summary` skill 更新）。
@@ -151,6 +152,27 @@
   - 纯英文注释改为中文（`builder.hpp`、`memory_pool.cpp`）。
   - 魔数与边界逻辑补充"Why"注释（`builder.hpp` 默认值、`engine.cpp` 统计、`safetensors_loader.cpp` BF16 位运算）。
 
+### 3.9 Phase 1 插件进展
+
+| 文件 | 说明 |
+|---|---|
+| `include/mini_trt_llm/plugins/rmsnorm_kernel.hpp` | `LaunchRmsNorm` kernel 启动接口（单独暴露以便 L1 层直测 kernel，绕过 engine 构建） |
+| `include/mini_trt_llm/plugins/rmsnorm_plugin.hpp` | `RmsNormPlugin` + `RmsNormPluginCreator` |
+| `src/plugins/rmsnorm_plugin.cu` | CUDA kernel + Plugin 实现 + Creator + `REGISTER_TENSORRT_PLUGIN` 静态注册 |
+| `tests/test_rmsnorm_plugin.cpp` | 14 个用例：10 个 host 侧、4 个 GPU 门控（无 GPU 时 `GTEST_SKIP`） |
+| `tests/test_rmsnorm_integration.cpp` | L2 集成用例：真实 TRT network → engine 序列化/反序列化 → 推理对比 CPU 参考；外加注册表登记用例 |
+| `tests/test_gpu_guard.hpp` | 共享的 `HasCudaDevice()` 门控，供所有 GPU 用例复用 |
+| `tests/test_reference.hpp` | 共享的 CPU 参考实现与精度判定（相对误差 + 小值绝对误差 Guardrail） |
+
+- 实现要点：一行一个 block，warp shuffle 归约；FP32 走 `float4`、FP16 走 8×half（16B）向量化，`hidden_size` 不能整除时回退标量 kernel。
+- 已确认决策的落地：不带 bias；weight 作为第二输入；`eps` / `hidden_size` 按 float / int32 序列化；serialize↔deserialize 往返已单测覆盖。
+- `getWorkspaceSize()` 返回 0，`enqueue` 内无任何分配；失败以错误码返回而非抛异常（`enqueue` 为 `noexcept`）。
+- 注册表接入：`PluginRegistry::RegisterAllPlugins()` 由 stub 改为登记 `GetRmsNormPluginCreator()`，
+  与 `REGISTER_TENSORRT_PLUGIN` 的 TRT 全局注册并存（前者给本框架按名查找，后者给 engine 反序列化）。
+- 构建改动：`mini_trt_llm/CMakeLists.txt` 的源文件 glob 增加 `src/*.cu`，否则 nvcc 产物不会进静态库。
+- 验证状态：沙箱内 `ctest` 32 个用例 **0 失败**（11 个 GPU 用例自动跳过）；用户在 WSL2 真机上跑
+  `--gtest_filter='RmsNorm*'` **全部通过**，即 kernel 数值与 engine 集成均已验证。
+
 ---
 
 ## 4. 进行中 / 未完成的部分
@@ -159,11 +181,12 @@
 
 - 决策状态：15 项待确认问题已全部关闭，无遗留阻塞项（详见 `docs/phase1_development_plan.md` §10）。
 - ✅ 完善 `IPluginV3` 基类，补齐 TRT 10.x 接口。
-- ⬜ 实现 `RMSNormPlugin`。
+- ✅ 实现 `RMSNormPlugin` + 单元测试（host 侧用例已通过；GPU 用例待真机验证）。
+- ✅ `RMSNormPlugin` 接入 `PluginRegistry`，并补 L2 集成测试（真实 TRT network → engine 序列化/反序列化 → 推理）。
 - ⬜ 实现 `RoPEPlugin`。
 - ⬜ 实现 `PagedAttentionPlugin`（Decoding 阶段 GQA/MHA）。
 - ⬜ 实现 Sampler CUDA Kernels（Greedy / Top-K / Top-P）。
-- ⬜ 为每个 Plugin / Kernel 写单元测试。
+- ⬜ 为其余 Plugin / Kernel 写单元测试。
 
 ### 4.2 Phase 2：GPT-2 原生构建（未开始）
 
@@ -230,13 +253,28 @@
 - **状态**：已清理，当前仅保留 `mini_trt_llm/third_party/sentencepiece` 与 `mini_trt_llm/third_party/safetensors-cpp`。
 - **注意**：新增第三方依赖时避免在根目录再建 submodule。
 
+### 5.7 Phase 0 utils 测试缺少 GPU 门控（已修复）
+
+- **问题**：`CudaCheckTest`、`DeviceBufferTest`、`PinnedBufferTest`、`CudaTimerTest` 共 6 个用例直接调用 CUDA API 且未做环境判断，在无 GPU 环境下抛 `cudaErrorInsufficientDriver` 而失败，而不是跳过。
+- **影响**：无 GPU 的 CI / 沙箱里 `ctest` 永远不绿，真实回归信号被固定噪声淹没（用户真机上这 6 个用例是过的）。
+- **Workaround**：已抽出共享的 `tests/test_gpu_guard.hpp`（`test_support::HasCudaDevice()`）给这批用例加门控；
+  例外的 `CudaCheckTest.InvalidDeviceThrows` 刻意不门控，因为它验证的是 `CUDA_CHECK` 的失败路径。
+- **排查过程**：见 `docs/TROUBLESHOOTING.md` #1。
+
+### 5.8 `supportsFormatCombination` 越界读取导致 engine 构建失败（已修复）
+
+- **问题**：`supportsFormatCombination` 扫描了 `inOut[pos+1..]`——TensorRT 未初始化的位置，导致所有格式组合都被判为不支持，`buildSerializedNetwork` 报 `could not find any supported formats consistent with input/output data types`。
+- **影响**：Plugin 无法构建成 engine；host 侧单测完全无感，只有真机能复现。
+- **Workaround**：已改为只与 `inOut[0]` 比对；新增回归用例 `RmsNormPluginTest.IgnoresInvalidDescriptorsAfterPos`。
+- **排查过程**：见 `docs/TROUBLESHOOTING.md` #2。
+
 ---
 
 ## 6. 下一步计划
 
-**Phase 1 第二步：实现 RMSNormPlugin + 单元测试**
+**Phase 1 第三步：实现 RoPEPlugin + 单元测试**
 
-理由：RMSNorm 逻辑独立、计算简单，适合先把 `IPluginV3` 模板、序列化、注册、测试流程跑通。
+理由：RMSNorm 已把 `IPluginV3` 模板、序列化、注册、测试流程跑通，RoPE 与之相互独立、可复用同一套脚手架，适合作为下一个算子。RoPE 需要处理 `position_ids` 与部分旋转（`rotary_dim < head_size`），复杂度高于 RMSNorm。
 
 Phase 1 关键技术决策（已确认，完整清单 D1–D5 + Q1–Q15 见 `docs/phase1_development_plan.md` §10），要点：
 

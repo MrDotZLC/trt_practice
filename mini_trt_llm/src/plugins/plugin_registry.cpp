@@ -1,4 +1,5 @@
 #include "mini_trt_llm/plugins/plugin_registry.hpp"
+#include "mini_trt_llm/plugins/rmsnorm_plugin.hpp"
 #include "mini_trt_llm/utils/logger.hpp"
 #include <NvInferPlugin.h>
 
@@ -34,8 +35,9 @@ std::vector<std::string> PluginRegistry::ListCreators() const {
 }
 
 void PluginRegistry::RegisterAllPlugins() {
-    // Phase 1 注册 RoPE / RMSNorm / PagedAttention / Sampler 等 creator
-    MINI_TRT_LOG_INFO("PluginRegistry::RegisterAllPlugins stub in Phase 0");
+    // 只登记指针，creator 的生命周期由各自的静态实例持有，注册表不负责释放。
+    // 后续 Phase 1 的 RoPE / PagedAttention / Sampler creator 按同样方式追加。
+    RegisterCreator(&GetRmsNormPluginCreator());
 }
 
 }  // namespace mini_trt_llm
