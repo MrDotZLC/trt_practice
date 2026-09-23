@@ -8,7 +8,7 @@
 > - 模型来源：同时支持 **原生权重加载（方案 A）** 与 **ONNX + 自定义 Plugin（方案 B）**，方案 B 需规避插件与原生命名冲突；
 > - Tokenizer：引入 **SentencePiece 源码嵌入（v0.2.0）**，并预留多模态 tokenizer 定制化接口；
 > - 权重格式：**Safetensors**，使用 `syoyo/safetensors-cpp` 解析；
-> - 转换工具：`tools/convert/` 下提供 Python 脚本，HF checkpoint → `config.json + model.safetensors`；
+> - 转换工具：`mini_trt_llm/tools/convert/hf_to_mini_trt_llm.py`，HF checkpoint → `config.json + model.safetensors`；
 > - 迁移策略：保守并行，先共存后移除；
 > - 精度基准：LLM 仅与 `ref_output.bin`（PyTorch FP32）对比；
 > - INT8 校准：ResNet18 / LLM 的 INT8 支持延后到后续迭代，Phase 4 先完成 FP32/FP16；
@@ -16,11 +16,13 @@
 > - 注意力：MHA / GQA / MQA / Sliding Window 全支持；
 > - 配置格式：**JSON**；
 > - 动态 shape：LLM 区分 **Prefill / Decode** 两个 OptimizationProfile；CV Phase 0 只支持动态 batch；
-> - TensorRT 版本：**10.1.0（v101501）**，Plugin API 使用 **`IPluginV3`**；
+> - TensorRT 版本：**10.15.1（版本宏 v101501）**，Plugin API 使用 **`IPluginV3`**；
 > - CMake 选项：`BUILD_TESTS=OFF`，`BUILD_EXAMPLES=OFF`，CI 显式 `-DBUILD_TESTS=ON`；
 > - 错误处理：构造/初始化抛异常，运行时推理接口返回 bool；
 > - 日志：新增 `MINI_TRT_LOG_INFO/WARN/ERROR` 独立业务日志宏；
 > - 内存池：Phase 0 简单 `cudaMalloc/cudaFree` 封装，池化后续迭代。
+
+> 实现偏差说明：本文档 API 草图以 `nlohmann::json` 表述配置结构。Phase 0 因网络受限无法引入外部依赖，实际实现使用自研 `utils/json.hpp`（`JsonValue`）；后续迭代替换为 `nlohmann/json` 单头文件。
 
 ---
 
@@ -50,7 +52,7 @@
 | F10 | Benchmark | mean / p50 / p99 延迟与 throughput，CUDA Event 计时 | P0 |
 | F11 | 配置驱动模型构建 | JSON 配置描述模型结构，减少硬编码 | P0 |
 | F12 | Dummy model | 超小模型用于快速回归测试 | P1 |
-| F13 | Python 转换工具 | `tools/convert/`：HF checkpoint → config.json + model.safetensors | P1 |
+| F13 | Python 转换工具 | `mini_trt_llm/tools/convert/hf_to_mini_trt_llm.py`：HF checkpoint → config.json + model.safetensors | P1 |
 | F14 | INT8 校准（后续迭代） | ResNet18 / LLM 的 INT8 支持，含 Calibration | P2 |
 | F15 | CV 动态分辨率（后续迭代） | 输入分辨率动态变化 | P2 |
 
@@ -116,7 +118,7 @@ mini_trt_llm/
 │   ├── sampler/
 │   ├── tokenizer/
 │   └── utils/
-├── tests/
+├── tests/              # test_*.cpp 汇总为单一目标 mini_trt_llm_tests
 ├── third_party/
 │   ├── sentencepiece/        # 源码嵌入
 │   └── safetensors-cpp/      # 源码嵌入或 add_subdirectory
@@ -124,6 +126,8 @@ mini_trt_llm/
     └── convert/
         └── hf_to_mini_trt_llm.py
 ```
+
+> 测试约定：`mini_trt_llm/tests/` 下所有 `test_*.cpp` 汇总编译为单一目标 `mini_trt_llm_tests`，不按模块拆分为独立二进制。全量执行用 `ctest --test-dir build --output-on-failure`，选择性执行用 `--gtest_filter=`。
 
 ### 2.2 模块依赖关系
 
@@ -433,7 +437,7 @@ builder.BuildFromOnnx(onnx_path, engine_path);
 4. 实现并测试 `PagedAttentionPlugin`（支持 MHA/GQA/MQA）。
 5. 实现 `Sampler` CUDA kernels（Greedy + Top-K + Top-P）。
 
-**产出**：`tests/test_rope_plugin`、`test_rmsnorm_plugin`、`test_paged_attention`、`test_sampler` 通过。
+**产出**：`test_rmsnorm_plugin.cpp`、`test_rope_plugin.cpp`、`test_paged_attention_plugin.cpp`、`test_sampler.cpp` 用例通过。
 
 ### Phase 2：GPT-2 原生构建（方案 A）（2 周）
 
@@ -444,7 +448,7 @@ builder.BuildFromOnnx(onnx_path, engine_path);
 5. 集成 SentencePiece tokenizer（多模态接口预留）。
 6. 与 `ref_output.bin` 对比精度并调优。
 
-**产出**：`tests/test_gpt2_native` 输出与 PyTorch FP32 对齐。
+**产出**：`test_gpt2_native.cpp` 用例输出与 PyTorch FP32 对齐。
 
 ### Phase 3：GPT-2 ONNX + Plugin 构建（方案 B）（1.5 周）
 
@@ -452,7 +456,7 @@ builder.BuildFromOnnx(onnx_path, engine_path);
 2. 对现有 `1_gpt2_onnx/gpt2.onnx` 进行 RoPE/RMSNorm/Attention 子图替换。
 3. 验证替换后 engine 与原生构建输出一致。
 
-**产出**：`tests/test_gpt2_onnx_plugin` 通过，与方案 A 输出对齐。
+**产出**：`test_gpt2_onnx_plugin.cpp` 用例通过，与方案 A 输出对齐。
 
 ### Phase 4：ResNet18 替换（1 周）
 
@@ -462,7 +466,7 @@ builder.BuildFromOnnx(onnx_path, engine_path);
 4. 实现 `CVRunner`。
 5. 与 `0_resnet18_onnx` 输出对比。
 
-**产出**：`tests/test_resnet18` 通过。
+**产出**：`test_resnet18.cpp` 用例通过。
 
 ### Phase 5：清理旧模块（0.5 周）
 
@@ -478,7 +482,7 @@ builder.BuildFromOnnx(onnx_path, engine_path);
 
 | 风险 | 影响 | 应对 |
 |---|---|---|
-| 自定义 Plugin 在 TRT 10.x `IPluginV3` 下兼容性 | 高 | 严格按 TRT 10.1.0 `IPluginV3` 接口实现，并做版本宏隔离 |
+| 自定义 Plugin 在 TRT 10.x `IPluginV3` 下兼容性 | 高 | 严格按 TRT 10.15.1 `IPluginV3` 接口实现，并做版本宏隔离 |
 | 原生构建 GPT-2 与 PyTorch 输出不一致 | 高 | 分算子逐层对比，定位差异（RMSNorm epsilon、RoPE base、attention scale 等） |
 | SentencePiece 与 GPT-2 Python tokenizer 不对齐 | 中 | GPT-2 实际用 BPE，SentencePiece 行为可能不同，需用 Python tokenizer 生成用例 diff，必要时实现 BPE tokenizer |
 | BF16 权重转换开销 | 低 | 构建时一次性转换，运行时无额外开销 |
@@ -493,10 +497,10 @@ builder.BuildFromOnnx(onnx_path, engine_path);
 - [x] 注意力支持 MHA / GQA / MQA / Sliding Window。
 - [x] 配置文件格式 JSON。
 - [x] LLM 区分 Prefill / Decode OptimizationProfile；CV Phase 0 只动态 batch。
-- [x] TensorRT 10.1.0，Plugin API 用 `IPluginV3`。
+- [x] TensorRT 10.15.1，Plugin API 用 `IPluginV3`。
 - [x] SentencePiece v0.2.0 源码嵌入，禁用非必要功能并写 README.md。
 - [x] Safetensors 解析用 `syoyo/safetensors-cpp`。
-- [x] 转换工具 `tools/convert/hf_to_mini_trt_llm.py`。
+- [x] 转换工具 `mini_trt_llm/tools/convert/hf_to_mini_trt_llm.py`。
 - [x] 权重接受 F32 / F16 / BF16。
 - [x] 权重映射优先 JSON 配置，C++ 硬编码兜底。
 - [x] 需要 Dummy model 用于回归测试。

@@ -3,6 +3,8 @@
 > 周期：2 周  
 > 目标：搭建 `mini_trt_llm` 可编译基础框架，完成通用化骨架（ModelConfig / ModelRegistry / IModelBuilder / WeightLoader / Engine / Builder），接入 SentencePiece 与 Safetensors 解析，实现基础单元测试。
 
+> 注：本文档的 API 草图中出现 `nlohmann::json`，为设计意图表述。Phase 0 实际实现采用自研极简解析器 `utils/json.hpp`（`JsonValue`），原因是该阶段网络受限、无法引入外部依赖；后续迭代替换为 `nlohmann/json` 单头文件。
+
 ---
 
 ## 1. 任务总览
@@ -188,7 +190,7 @@ class PinnedBuffer { ... };
 #### 3.5 `utils/io.hpp`
 
 **新增文件**：
-- `mini_trt_trt_llm/include/mini_trt_llm/utils/io.hpp`
+- `mini_trt_llm/include/mini_trt_llm/utils/io.hpp`
 - `mini_trt_llm/src/utils/io.cpp`
 
 **功能**：
@@ -450,13 +452,15 @@ mini_trt_llm/
 
 ## 4. 验收标准（Phase 0 整体）
 
-- [ ] `cmake -B build -DCMAKE_BUILD_TYPE=Release` 根目录配置成功。
-- [ ] `cmake --build build --target mini_trt_llm` 编译成功。
-- [ ] `cmake -B build -DBUILD_TESTS=ON && cmake --build build && ctest` 全部通过。
-- [ ] 旧模块 `trt_resnet18`、`trt_gpt2` 仍可正常构建。
-- [ ] SentencePiece 只编译核心 static lib，README.md 记录禁用功能。
-- [ ] Safetensors 能读取 header 与张量元数据。
-- [ ] `EngineBuilder` 通用化骨架可扩展（注册新的 IModelBuilder 不修改 Builder 类）。
+> 以下验收项已由用户在本地 WSL2 真机环境确认通过（Agent 沙箱无 GPU，无法复现 CUDA 相关验证）。
+
+- [x] `cmake -B build -DCMAKE_BUILD_TYPE=Release` 根目录配置成功。
+- [x] `cmake --build build --target mini_trt_llm` 编译成功。
+- [x] `cmake -B build -DBUILD_TESTS=ON && cmake --build build && ctest` 全部通过。
+- [x] 旧模块 `trt_resnet18`、`trt_gpt2` 仍可正常构建。
+- [x] SentencePiece 只编译核心 static lib，README.md 记录禁用功能。
+- [x] Safetensors 能读取 header 与张量元数据。
+- [x] `EngineBuilder` 通用化骨架可扩展（注册新的 IModelBuilder 不修改 Builder 类）。
 
 ---
 

@@ -5,7 +5,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-set(CMAKE_CUDA_ARCHITECTURES 75)
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES 75) # 本地开发是 SM75
+endif()
 
 # ---------------------------------------------------------------------------
 # Build options
@@ -16,12 +18,12 @@ option(BUILD_EXAMPLES "Build example applications" OFF)
 # ---------------------------------------------------------------------------
 # Dependencies discovery
 # ---------------------------------------------------------------------------
-find_path(TRT_INCLUDE_DIR NvInfer.h
+find_path(TRT_INCLUDE_DIR NvInfer.h # TensorRT 的核心头文件
     PATHS /usr/include/x86_64-linux-gnu /usr/local/include
     REQUIRED
 )
 
-find_path(CUDA_INCLUDE_DIR cuda_runtime.h
+find_path(CUDA_INCLUDE_DIR cuda_runtime.h # CUDA 的核心头文件
     PATHS /usr/local/cuda/include
     REQUIRED
 )

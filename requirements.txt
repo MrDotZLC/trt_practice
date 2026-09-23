@@ -1,5 +1,5 @@
-# Python dependencies for tools/convert/hf_to_mini_trt_llm.py
-# Phase 0: placeholder script, full implementation in future iterations.
+# Python dependencies for mini_trt_llm/tools/convert/hf_to_mini_trt_llm.py
+# 用于把 HuggingFace / PyTorch checkpoint 转换为 mini_trt_llm 的 config.json + model.safetensors。
 
 transformers>=4.40
 safetensors>=0.4

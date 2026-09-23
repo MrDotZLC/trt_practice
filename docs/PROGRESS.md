@@ -1,7 +1,7 @@
 # mini_trt_llm 项目进度交接文档
 
-> 最后更新：2026-09-23  
-> 当前阶段：Phase 0 完成 + 注释规范修复完成，准备进入 Phase 1
+> 最后更新：2026-09-24  
+> 当前阶段：Phase 1 进行中（IPluginV3 基类已完成，15 项待确认决策已全部关闭，编码条件齐备）
 
 ---
 
@@ -49,7 +49,7 @@
 ### 2.6 Plugin API：IPluginV3（TRT 10.x）
 
 - **为什么选 IPluginV3 不选 IPluginV2DynamicExt**：
-  - 当前环境 TensorRT 为 **10.1.0**，V3 是推荐接口。
+  - 当前环境 TensorRT 为 **10.15.1**，V3 是推荐接口。
   - V2 虽兼容性好，但在 TRT 10.x 下属于 legacy，长期维护成本高。
 
 ### 2.7 日志：独立业务日志宏
@@ -83,7 +83,7 @@
 
 ### 3.1 目录与构建
 
-- `mini_trt_llm/CMakeLists.txt`：C++17 + CUDA17、`sm_75`、static library、第三方依赖接入。
+- `mini_trt_llm/CMakeLists.txt`：C++17 + CUDA C++17、`sm_75`、static library、第三方依赖接入。
 - `mini_trt_llm/tests/CMakeLists.txt`：GoogleTest 集成。
 - 根 `CMakeLists.txt`：加入 `mini_trt_llm`，旧模块已注释掉。
 
@@ -121,16 +121,22 @@
 
 - `mini_trt_llm/tests/test_*.cpp`：覆盖 cuda_check、logger、timer、memory_pool、io、model_config、model_registry、safetensors_loader、engine。
 - 当前状态：用户本地 **100% tests passed**。
+- 覆盖度局限：`test_safetensors_loader.cpp` 目前只有「文件不存在返回 false」一个负向用例，真实文件解析、ONNX→Engine、DummyBuilder 端到端尚未实现（见 `docs/phase0_model_loading_test_plan.md`）。
 
 ### 3.6 工具与文档
 
-- `mini_trt_llm/tools/convert/hf_to_mini_trt_llm.py`：占位脚本。
+- `mini_trt_llm/tools/convert/hf_to_mini_trt_llm.py`：HF checkpoint → `config.json + model.safetensors` 转换脚本（真实实现的唯一落点）。
 - `requirements.txt`：转换工具依赖（已移到项目根目录）。
 - `docs/mini_trt_llm_design.md`：v1.0 设计文档。
 - `docs/phase0_development_plan.md`：Phase 0 开发计划。
+- `docs/phase0_code_review_plan.md`：Phase 0 代码 review 方案（review 由用户本人执行，尚未完成）。
+- `docs/phase0_model_loading_test_plan.md`：Phase 0 模型加载测试方案（T1–T3 尚未实施）。
+- `docs/phase1_development_plan.md`：Phase 1 开发方案 + 关键决策确认清单（含合并后的 15 项决策）。
 - `docs/future_iterations.md`：后续迭代计划。
 - `mini_trt_llm/third_party/sentencepiece/README.md`：记录禁用功能。
 - `docs/PROGRESS.md`：本交接文档（已按 `progress-summary` skill 更新）。
+
+> 历史文档：`docs/phase1_pending_confirmations.md` 的内容已全部合并进 `docs/phase1_development_plan.md` §10，原文件已删除。
 
 ### 3.7 第三方依赖
 
@@ -149,14 +155,15 @@
 
 ## 4. 进行中 / 未完成的部分
 
-### 4.1 Phase 1：Plugin 基础（未开始）
+### 4.1 Phase 1：Plugin 基础（进行中）
 
-- 完善 `IPluginV3` 基类，补齐 TRT 10.x 接口。
-- 实现 `RMSNormPlugin`。
-- 实现 `RoPEPlugin`。
-- 实现 `PagedAttentionPlugin`（基础版，先 Greedy）。
-- 实现 Sampler CUDA Kernels（Greedy / Top-K / Top-P）。
-- 为每个 Plugin 写单元测试。
+- 决策状态：15 项待确认问题已全部关闭，无遗留阻塞项（详见 `docs/phase1_development_plan.md` §10）。
+- ✅ 完善 `IPluginV3` 基类，补齐 TRT 10.x 接口。
+- ⬜ 实现 `RMSNormPlugin`。
+- ⬜ 实现 `RoPEPlugin`。
+- ⬜ 实现 `PagedAttentionPlugin`（Decoding 阶段 GQA/MHA）。
+- ⬜ 实现 Sampler CUDA Kernels（Greedy / Top-K / Top-P）。
+- ⬜ 为每个 Plugin / Kernel 写单元测试。
 
 ### 4.2 Phase 2：GPT-2 原生构建（未开始）
 
@@ -227,14 +234,22 @@
 
 ## 6. 下一步计划
 
-**Phase 1 第一步：实现 RMSNormPlugin + RoPEPlugin + 单元测试**
+**Phase 1 第二步：实现 RMSNormPlugin + 单元测试**
 
-理由：这两个插件逻辑相对独立、计算简单，适合先把 `IPluginV3` 模板、序列化、注册、测试流程跑通。之后再做更复杂的 `PagedAttentionPlugin` 和 Sampler。
+理由：RMSNorm 逻辑独立、计算简单，适合先把 `IPluginV3` 模板、序列化、注册、测试流程跑通。
 
-需要人工确认：
-- 是否从 RMSNorm + RoPE 开始？
-- 每个插件是否都需要与 PyTorch 参考输出逐 bit 对比？
-- PagedAttention 是否先只支持 MHA，GQA/MQA 后续再加？
+Phase 1 关键技术决策（已确认，完整清单 D1–D5 + Q1–Q15 见 `docs/phase1_development_plan.md` §10），要点：
+
+- PagedAttention 先做 Decoding 阶段 GQA/MHA，Prefill 后续迭代。
+- Sampler 先用 **CUB**（非 Thrust）保证正确性，手写高性能 kernel 后续迭代。
+- Plugin/算子层与 PyTorch/HF 参考输出逐元素对比；Generation 层对比分布/Logits 统计量。
+- FP16 相对误差 < 1e-3，配合绝对误差 Guardrail（不要求逐 bit 一致）。
+- RMSNorm 不支持 bias；weight 作为 Plugin 输入，依赖 TRT 常量折叠。
+- PagedAttention `block_size` 强制显式配置，无默认值；`scale` 作为属性。
+- Sampler k/p 使用 per-batch tensor，支持连续批处理；随机数用 host seed + device Philox。
+- Plugin 标量属性统一用 float 存储；Top-K/Top-P 按 `vocab_size <= 128K` 设计。
+- 参考输出全部使用固定 seed；Phase 1 需完整实现并测试 serialize/deserialize。
+- 所有 GPU 验证/测试任务需经人工确认后执行。
 
 ---
 
@@ -245,11 +260,11 @@
 | 操作系统 | Ubuntu on WSL2 |
 | GPU | NVIDIA GeForce GTX 1660 Ti Mobile（Turing） |
 | Compute Capability | `sm_75` |
-| TensorRT | 10.1.0（v101501） |
+| TensorRT | 10.15.1（版本宏 v101501，`libnvinfer.so.10.15.1`） |
 | CUDA Toolkit | 12.6.85 |
 | GCC | 13.3.0 |
 | C++ 标准 | C++17 |
-| CMake | >= 3.18 |
+| CMake | 3.28.3（要求 >= 3.18） |
 | SentencePiece | v0.2.0 |
 | safetensors-cpp | main（commit af90b6c） |
 | GoogleTest | release（源码嵌入） |
