@@ -17,12 +17,24 @@ namespace mini_trt_llm {
 //   value_cache  同 key_cache
 //   block_tables [batch, max_blocks_per_seq]，物理块号
 //   context_lens [batch]，每个序列当前的有效长度
+//   key_new      [batch, num_kv_heads, 1, head_size]（可选，见下）
+//   value_new    同 key_new
+//
+// 关于 key_new / value_new：decode 第 t 步的注意力必须包含**当前 token 自己**的 K/V
+// （数学上是 K_{0..t}），而这份 K/V 由本次前向才算出来，不可能预先写进 cache。
+// 因此把它们作为并行输入传入：注意力在扫完 cache 里的 context_len 个历史位置后，
+// 再单独把这一份当成第 context_len 个位置参与 online softmax。
+// 若不传（has_current_token = false），行为与之前完全一致——
+// 这也是"给定 cache 算注意力"这一原有契约的保留形式。
 struct PagedAttentionKernelArgs {
     const void* query = nullptr;
     const void* key_cache = nullptr;
     const void* value_cache = nullptr;
     const int32_t* block_tables = nullptr;
     const int32_t* context_lens = nullptr;
+    // 当前 token 的 K/V。仅当 has_current_token 为 true 时读取。
+    const void* key_new = nullptr;
+    const void* value_new = nullptr;
     void* output = nullptr;
     int32_t batch_size = 0;
     int32_t num_heads = 0;
@@ -32,6 +44,7 @@ struct PagedAttentionKernelArgs {
     int32_t max_blocks_per_seq = 0;
     float scale = 0.0f;  // 通常为 1/sqrt(head_size)
     bool is_half = false;
+    bool has_current_token = false;
 };
 
 // 启动 Decoding 阶段的 PagedAttention kernel。

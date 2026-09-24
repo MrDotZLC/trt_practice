@@ -165,4 +165,71 @@ TEST(ReferenceHelpersTest, RopeAcceptsFp16TestConfiguration) {
     EXPECT_NE(query_out[0], query_out[static_cast<size_t>(kHeads) * kSeq * kHeadSize]);
 }
 
+// LayerNorm：与手算结果对齐，并且把"eps 加在方差上"这条钉死。
+TEST(ReferenceHelpersTest, LayerNormMatchesHandComputedValues) {
+    // 一行 [1, 2, 3, 4]：均值 2.5，方差 1.25
+    const std::vector<double> input{1.0, 2.0, 3.0, 4.0};
+    const std::vector<double> scale{1.0, 1.0, 1.0, 1.0};
+    const std::vector<double> bias{0.0, 0.0, 0.0, 0.0};
+    std::vector<double> output;
+    test_support::ReferenceLayerNorm(input, scale, bias, 1, 4, 0.0, &output);
+
+    const double inv_std = 1.0 / std::sqrt(1.25);
+    const double expected[] = {-1.5 * inv_std, -0.5 * inv_std, 0.5 * inv_std, 1.5 * inv_std};
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_NEAR(output[i], expected[i], 1e-12) << "index " << i;
+    }
+
+    // eps 若被错加到标准差上（sqrt(var)+eps），这两组输入会给出不同的比值
+    std::vector<double> with_eps;
+    test_support::ReferenceLayerNorm(input, scale, bias, 1, 4, 1e-3, &with_eps);
+    EXPECT_NE(output[0], with_eps[0]);
+    EXPECT_NEAR(with_eps[0], -1.5 / std::sqrt(1.25 + 1e-3), 1e-12);
+
+    // scale / bias 必须逐通道生效，而不是整体缩放
+    const std::vector<double> scale2{2.0, 1.0, 1.0, 1.0};
+    const std::vector<double> bias2{0.0, 5.0, 0.0, 0.0};
+    std::vector<double> output2;
+    test_support::ReferenceLayerNorm(input, scale2, bias2, 1, 4, 0.0, &output2);
+    EXPECT_NEAR(output2[0], -1.5 * inv_std * 2.0, 1e-12);
+    EXPECT_NEAR(output2[1], -0.5 * inv_std + 5.0, 1e-12);
+}
+
+TEST(ReferenceHelpersTest, LayerNormRejectsShapeMismatch) {
+    const std::vector<double> input(8, 1.0);
+    const std::vector<double> scale(4, 1.0);
+    const std::vector<double> bias(3, 0.0);
+    std::vector<double> output;
+    EXPECT_THROW(
+        test_support::ReferenceLayerNorm(input, scale, bias, 2, 4, 1e-5, &output),
+        std::invalid_argument);
+    EXPECT_THROW(
+        test_support::ReferenceLayerNorm(input, scale, scale, 3, 4, 1e-5, &output),
+        std::invalid_argument);
+}
+
+// gelu_new：与 kGELU_TANH 同公式，取几个可手算/可交叉验证的点。
+TEST(ReferenceHelpersTest, GeluNewMatchesKnownValues) {
+    const std::vector<double> input{-3.0, -1.0, 0.0, 1.0, 3.0};
+    std::vector<double> output;
+    test_support::ReferenceGeluNew(input, &output);
+
+    // x = 0 处严格为 0；正负对称位置必须单调且异号（tanh 近似的定性特征）
+    EXPECT_DOUBLE_EQ(output[2], 0.0);
+    EXPECT_LT(output[1], 0.0);
+    EXPECT_GT(output[3], 0.0);
+    EXPECT_LT(output[1], output[0]);  // 负区间：越深越小
+    EXPECT_LT(output[3], output[4]);  // 正区间：越深越大
+
+    // 与标准 gelu(erf) 在 |x|<=1 内的差异应小于 1e-3（tanh 近似本身的精度）
+    for (int i = 0; i < 5; ++i) {
+        const double x = input[i];
+        const double erf_gelu = 0.5 * x * (1.0 + std::erf(x / std::sqrt(2.0)));
+        EXPECT_NEAR(output[i], erf_gelu, 1e-3) << "x=" << x;
+    }
+
+    // 大正值处趋近恒等（x=3 时 gelu_new(3)=2.9964，偏差 3.6e-3 是该近似本身的固有误差）
+    EXPECT_NEAR(output[4], 3.0, 5e-3);
+}
+
 }  // namespace mini_trt_llm

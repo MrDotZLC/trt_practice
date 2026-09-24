@@ -114,6 +114,9 @@ cudaError_t LaunchRmsNorm(const RmsNormKernelArgs& args, cudaStream_t stream) {
     const dim3 grid(static_cast<unsigned int>(args.rows));
     const dim3 block(kThreadsPerBlock);
 
+    // CUDA 的 last-error 是粘性的：先清掉入口处可能残留的旧错误（例如别处故意触发的失败），
+    // 后面 cudaGetLastError() 的结果才只反映本次 launch。
+    (void)cudaGetLastError();
     if (args.is_half) {
         const auto* in = static_cast<const __half*>(args.input);
         const auto* w = static_cast<const __half*>(args.weight);

@@ -34,9 +34,10 @@ template <typename T>
 __global__ void PagedAttentionDecodeKernel(
     const T* __restrict__ query, const T* __restrict__ key_cache,
     const T* __restrict__ value_cache, const int32_t* __restrict__ block_tables,
-    const int32_t* __restrict__ context_lens, T* __restrict__ output, int32_t num_heads,
+    const int32_t* __restrict__ context_lens, const T* __restrict__ key_new,
+    const T* __restrict__ value_new, T* __restrict__ output, int32_t num_heads,
     int32_t num_kv_heads, int32_t head_size, int32_t block_size,
-    int32_t max_blocks_per_seq, float scale) {
+    int32_t max_blocks_per_seq, float scale, bool has_current_token) {
     __shared__ float reduce_scratch[kMaxWarps];
 
     const int32_t head = blockIdx.x;
@@ -61,17 +62,32 @@ __global__ void PagedAttentionDecodeKernel(
     float running_max = -CUDART_INF_F;
     float running_sum = 0.0f;
 
-    for (int32_t t = 0; t < context_len; ++t) {
-        const int32_t physical_block = block_table[t / block_size];
-        const int32_t slot = t % block_size;
-        const size_t kv_offset =
-            ((static_cast<size_t>(physical_block) * block_size + slot) * num_kv_heads +
-             kv_head) *
-            head_size;
+    // 有当前 token 时，参与 softmax 的位置数是 context_len + 1：
+    // 前 context_len 个来自分页 cache，最后一个来自 key_new / value_new。
+    const int32_t total_len = context_len + (has_current_token ? 1 : 0);
+    for (int32_t t = 0; t < total_len; ++t) {
+        const T* key_row;
+        const T* value_row;
+        if (t < context_len) {
+            const int32_t physical_block = block_table[t / block_size];
+            const int32_t slot = t % block_size;
+            const size_t kv_offset =
+                ((static_cast<size_t>(physical_block) * block_size + slot) * num_kv_heads +
+                 kv_head) *
+                head_size;
+            key_row = key_cache + kv_offset;
+            value_row = value_cache + kv_offset;
+        } else {
+            // 当前 token 只有一份，不经过 block table
+            const size_t kv_offset =
+                (static_cast<size_t>(batch) * num_kv_heads + kv_head) * head_size;
+            key_row = key_new + kv_offset;
+            value_row = value_new + kv_offset;
+        }
 
         float partial = 0.0f;
         if (active) {
-            partial = query_value * ToFloat(key_cache[kv_offset + d]);
+            partial = query_value * ToFloat(key_row[d]);
         }
         const float score = BlockReduceSum(partial, reduce_scratch) * scale;
 
@@ -82,7 +98,7 @@ __global__ void PagedAttentionDecodeKernel(
         running_sum = running_sum * alpha + probability;
         if (active) {
             accumulator =
-                accumulator * alpha + probability * ToFloat(value_cache[kv_offset + d]);
+                accumulator * alpha + probability * ToFloat(value_row[d]);
         }
         running_max = new_max;
     }
@@ -110,6 +126,15 @@ cudaError_t LaunchPagedAttention(const PagedAttentionKernelArgs& args, cudaStrea
     if (args.num_heads % args.num_kv_heads != 0) {
         return cudaErrorInvalidValue;
     }
+    // 声明了当前 token 就必须真的给出 K/V：漏给会让注意力少一项，
+    // 结果是"能跑但数值错"，所以在这里直接拒绝。
+    if (args.has_current_token && (args.key_new == nullptr || args.value_new == nullptr)) {
+        return cudaErrorInvalidValue;
+    }
+
+    // CUDA 的 last-error 是粘性的：先清掉入口处可能残留的旧错误（例如别处故意触发的失败），
+    // 后面 cudaGetLastError() 的结果才只反映本次 launch。
+    (void)cudaGetLastError();
 
     // blockDim 必须是 32 的整数倍，BlockReduceSum 的 warp 内 shuffle 才安全
     const int32_t threads = ((args.head_size + 31) / 32) * 32;
@@ -122,17 +147,21 @@ cudaError_t LaunchPagedAttention(const PagedAttentionKernelArgs& args, cudaStrea
             static_cast<const __half*>(args.query),
             static_cast<const __half*>(args.key_cache),
             static_cast<const __half*>(args.value_cache), args.block_tables,
-            args.context_lens, static_cast<__half*>(args.output), args.num_heads,
-            args.num_kv_heads, args.head_size, args.block_size, args.max_blocks_per_seq,
-            args.scale);
+            args.context_lens, static_cast<const __half*>(args.key_new),
+            static_cast<const __half*>(args.value_new),
+            static_cast<__half*>(args.output), args.num_heads, args.num_kv_heads,
+            args.head_size, args.block_size, args.max_blocks_per_seq, args.scale,
+            args.has_current_token);
     } else {
         PagedAttentionDecodeKernel<float><<<grid, block, 0, stream>>>(
             static_cast<const float*>(args.query),
             static_cast<const float*>(args.key_cache),
             static_cast<const float*>(args.value_cache), args.block_tables,
-            args.context_lens, static_cast<float*>(args.output), args.num_heads,
-            args.num_kv_heads, args.head_size, args.block_size, args.max_blocks_per_seq,
-            args.scale);
+            args.context_lens, static_cast<const float*>(args.key_new),
+            static_cast<const float*>(args.value_new),
+            static_cast<float*>(args.output), args.num_heads, args.num_kv_heads,
+            args.head_size, args.block_size, args.max_blocks_per_seq, args.scale,
+            args.has_current_token);
     }
     return cudaGetLastError();
 }
@@ -260,6 +289,29 @@ int32_t PagedAttentionPlugin::configurePlugin(const nvinfer1::DynamicPluginTenso
         MINI_TRT_LOG_ERROR("PagedAttention: query/cache must be 4-D");
         return 1;
     }
+    // 第 6/7 个输入是当前 token 的 K/V（可选）。传了就必须成对、
+    // 且形状为 [batch, num_kv_heads, 1, head_size]——半连接状态只会静默丢掉自注意力项。
+    has_current_token_ = nbInputs >= 7;
+    if (nbInputs == 6) {
+        MINI_TRT_LOG_ERROR("PagedAttention: key_new and value_new must be connected together");
+        return 1;
+    }
+    if (has_current_token_) {
+        const nvinfer1::Dims& key_new_dims = in[5].desc.dims;
+        const nvinfer1::Dims& value_new_dims = in[6].desc.dims;
+        if (key_new_dims.nbDims != 4 || value_new_dims.nbDims != 4) {
+            MINI_TRT_LOG_ERROR("PagedAttention: key_new/value_new must be 4-D");
+            return 1;
+        }
+        if (key_new_dims.d[2] > 0 && key_new_dims.d[2] != 1) {
+            MINI_TRT_LOG_ERROR("PagedAttention: key_new seq dim must be 1");
+            return 1;
+        }
+        if (value_new_dims.d[2] > 0 && value_new_dims.d[2] != 1) {
+            MINI_TRT_LOG_ERROR("PagedAttention: value_new seq dim must be 1");
+            return 1;
+        }
+    }
 
     // Phase 1 只支持 Decoding：query 的 seq_len 必须为 1
     if (query_dims.d[2] > 0 && query_dims.d[2] != 1) {
@@ -344,6 +396,13 @@ int32_t PagedAttentionPlugin::enqueue(const nvinfer1::PluginTensorDesc* inputDes
     args.value_cache = inputs[2];
     args.block_tables = static_cast<const int32_t*>(inputs[3]);
     args.context_lens = static_cast<const int32_t*>(inputs[4]);
+    // has_current_token_ 由 configurePlugin / onShapeChange 依 nbInputs 刷新，
+    // 两者都先于 enqueue（反序列化路径同样会走 onShapeChange，见 TROUBLESHOOTING #8）。
+    args.has_current_token = has_current_token_;
+    if (has_current_token_) {
+        args.key_new = inputs[5];
+        args.value_new = inputs[6];
+    }
     args.output = outputs[0];
     args.batch_size = query_dims.d[0];
     args.num_heads = query_dims.d[1];
@@ -378,6 +437,13 @@ int32_t PagedAttentionPlugin::onShapeChange(const nvinfer1::PluginTensorDesc* in
     const nvinfer1::Dims& query_dims = in[0].dims;
     const nvinfer1::Dims& cache_dims = in[1].dims;
     if (query_dims.nbDims != 4 || cache_dims.nbDims != 4) {
+        return 1;
+    }
+    // arity 是网络连线的直接结果，序列化往返后由 TRT 原样恢复，因此每次形状变化
+    // 都按 nbInputs 刷新，不额外做序列化属性（同 §2.12 对 RoPE head 配置的处理）。
+    has_current_token_ = nbInputs >= 7;
+    if (nbInputs == 6) {
+        MINI_TRT_LOG_ERROR("PagedAttention: key_new and value_new must be connected together");
         return 1;
     }
     if (query_dims.d[2] != 1) {

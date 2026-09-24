@@ -25,7 +25,6 @@ Dependencies:
 
 import argparse
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -121,6 +120,110 @@ def _load_from_directory(model_dir: Path) -> tuple[dict, Path | None]:
     )
 
 
+# ---------------------------------------------------------------------------
+# 原生 config：把 HuggingFace 的字段翻译成 mini_trt_llm 的模型目录契约
+# ---------------------------------------------------------------------------
+
+# GPT-2 的 HuggingFace checkpoint 有两套 key 命名：一份带 `transformer.` 前缀，
+# 一份不带。C++ 侧只认不带前缀的规范名，差异全部由 weight_map 吸收——
+# 这样换权重来源时不需要动 GPT2ModelBuilder。
+_GPT2_PREFIX = "transformer."
+
+# Paged KV Cache 的块大小。16 是常见取值的居中档：太小会让 block table 变长，
+# 太大则短序列浪费显存；n_positions=1024 时对应 64 个 block。
+_GPT2_DEFAULT_BLOCK_SIZE = 16
+
+
+def _gpt2_canonical_name(key: str) -> str:
+    return key[len(_GPT2_PREFIX) :] if key.startswith(_GPT2_PREFIX) else key
+
+
+def _build_gpt2_native_config(hf_config: dict, tensor_keys) -> dict:
+    """构造 GPT-2 的原生 config。
+
+    weight_map 的方向与 WeightLoader 的约定一致：TRT 侧名字 -> safetensors 里的 key。
+    masked 的 `attn.bias` 属于训练期缓存而非可学习参数，单独进 skipped_tensors，
+    避免"少加载了 12 个张量却无人察觉"。
+    """
+    canonical = {}
+    for key in tensor_keys:
+        canonical[_gpt2_canonical_name(key)] = key
+
+    skipped = sorted(k for k in canonical if k.endswith(".attn.bias"))
+    weight_map = {
+        name: source for name, source in sorted(canonical.items())
+        if not name.endswith(".attn.bias")
+    }
+
+    # lm_head 与 wte 共享权重：文件里通常没有 lm_head.weight，
+    # 有的话说明是"解绑"导出，需要显式映射，否则构建器会去找一个不存在的张量。
+    lm_head = "tied_to_wte"
+    if "lm_head.weight" in canonical:
+        lm_head = "explicit"
+        weight_map["lm_head.weight"] = canonical["lm_head.weight"]
+
+    hyper_params = {
+        "n_layer": hf_config.get("n_layer", 12),
+        "n_head": hf_config.get("n_head", 12),
+        "n_embd": hf_config.get("n_embd", 768),
+        "n_positions": hf_config.get("n_positions", 1024),
+        "vocab_size": hf_config.get("vocab_size", 50257),
+        "layer_norm_epsilon": hf_config.get("layer_norm_epsilon", 1e-5),
+        "activation_function": hf_config.get("activation_function", "gelu_new"),
+        "tie_word_embeddings": lm_head == "tied_to_wte",
+        # Paged KV Cache 的块大小。强制显式配置（不设默认值），因为同一份权重配
+        # 不同 block_size 会改变 cache 布局，进而改变 decode 引擎的输入形状契约。
+        "block_size": _GPT2_DEFAULT_BLOCK_SIZE,
+    }
+
+    return {
+        "model_type": "gpt2",
+        "architecture": "decoder_only",
+        "hyper_params": hyper_params,
+        "weight_map": weight_map,
+        "skipped_tensors": skipped,
+        # 布局约定写成显式声明而不是藏在 C++ 代码里：
+        # 转换产物自带"这份权重该怎么读"，换来源时可核对。
+        "source": {
+            "key_prefix": _GPT2_PREFIX
+            if any(k.startswith(_GPT2_PREFIX) for k in tensor_keys)
+            else "",
+            "conv1d_layout": "in_out",
+            "lm_head": lm_head,
+        },
+    }
+
+
+def _write_native_config(hf_config: dict | None, tensor_names, dest_config: Path) -> None:
+    """写出 mini_trt_llm 原生 config；无法识别 model_type 时退化为基础骨架。"""
+    model_type = (hf_config or {}).get("model_type", "")
+
+    if model_type == "gpt2":
+        native = _build_gpt2_native_config(hf_config, tensor_names)
+    else:
+        native = {
+            "model_type": model_type,
+            "architecture": "",
+            "hyper_params": {},
+            "weight_map": {},
+        }
+
+    with open(dest_config, "w", encoding="utf-8") as f:
+        json.dump(native, f, indent=4, sort_keys=False)
+
+    if model_type == "gpt2":
+        print(
+            f"Wrote native config: {dest_config} "
+            f"({len(native['weight_map'])} weights, "
+            f"{len(native['skipped_tensors'])} skipped)"
+        )
+    else:
+        print(
+            f"Wrote config skeleton for unsupported model_type='{model_type}' "
+            f"(needs manual fill-in): {dest_config}"
+        )
+
+
 def load_state_dict(src: str) -> tuple[dict, Path | None]:
     """Resolve `src` (local dir / local file) to a state dict plus optional config."""
     src_path = Path(src)
@@ -169,22 +272,15 @@ def convert(src: str, output_dir: Path | None, output_file: Path | None) -> None
     save_file(tensor_dict, str(output_file))
 
     if output_dir is not None:
-        # mini_trt_llm 的 ModelConfig::Load 要求 config.json 存在；没有源配置时
-        # 写一个最小骨架，让后续人工补全模型结构字段。
-        dest_config = output_dir / "config.json"
+        # mini_trt_llm 的 ModelConfig::Load 直接吃这里的产物，因此不能原样拷贝
+        # HuggingFace config：它既没有 architecture，也没有 weight_map 与 skipped_tensors。
+        hf_config = None
         if config_path is not None:
-            shutil.copyfile(config_path, dest_config)
-            print(f"Copied config: {dest_config}")
-        else:
-            skeleton = {
-                "model_type": "",
-                "architecture": "",
-                "hyper_params": {},
-                "weight_map": {},
-            }
-            with open(dest_config, "w", encoding="utf-8") as f:
-                json.dump(skeleton, f, indent=4)
-            print(f"Wrote config skeleton (needs manual fill-in): {dest_config}")
+            with open(config_path, "r", encoding="utf-8") as f:
+                hf_config = json.load(f)
+        _write_native_config(
+            hf_config, tensor_dict.keys(), output_dir / "config.json"
+        )
 
     total_params = sum(v.numel() for v in tensor_dict.values())
     print(

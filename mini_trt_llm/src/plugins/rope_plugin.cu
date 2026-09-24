@@ -85,6 +85,11 @@ cudaError_t LaunchOne(const T* input, const int32_t* position_ids, T* output,
         return cudaErrorInvalidValue;
     }
 
+    // CUDA 的 last-error 是**粘性**的：任何一次失败的 runtime 调用都会把它设上，
+    // 直到有人读走。若不清掉入口处的残留，launch 之后的 cudaGetLastError() 读到的
+    // 可能是完全无关的旧错误（例如别处故意触发的失败），把一次成功的 launch 判成失败。
+    // 先清一次，后面的结果才只反映本次 launch。
+    (void)cudaGetLastError();
     RoPEApplyKernel<T><<<static_cast<unsigned int>(blocks), kThreadsPerBlock, 0, stream>>>(
         input, position_ids, output, num_heads, seq_len, head_size, rotary_dim, half_rotary,
         base, total_elements);

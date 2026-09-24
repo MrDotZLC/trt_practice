@@ -1,6 +1,7 @@
 #include "mini_trt_llm/core/builder.hpp"
 #include "mini_trt_llm/utils/logger.hpp"
 #include "mini_trt_llm/core/model_config.hpp"
+#include "mini_trt_llm/core/gpt2_model_builder.hpp"
 #include "mini_trt_llm/core/weight_loader.hpp"
 #include "mini_trt_llm/utils/cuda_check.hpp"
 #include "mini_trt_llm/utils/io.hpp"
@@ -9,6 +10,7 @@
 #include <fstream>
 #include <functional>
 #include <utility>
+#include <vector>
 #include <stdexcept>
 
 namespace mini_trt_llm {
@@ -77,7 +79,11 @@ bool HasDynamicInputDim(nvinfer1::INetworkDefinition* network) {
 }  // namespace
 
 EngineBuilder::EngineBuilder(Logger& logger, const Config& config)
-    : logger_(logger), config_(config), registry_(std::make_unique<ModelRegistry>()) {}
+    : logger_(logger), config_(config), registry_(std::make_unique<ModelRegistry>()) {
+    // 内置模型随 EngineBuilder 一起可用，调用方不必先知道有哪些模型；
+    // 外部/测试用模型仍可通过 RegisterModelBuilder 覆盖或追加。
+    registry_->Register("gpt2", std::make_shared<GPT2ModelBuilder>());
+}
 
 EngineBuilder::~EngineBuilder() = default;
 
@@ -152,7 +158,8 @@ bool EngineBuilder::AddCvOptimizationProfile(nvinfer1::IBuilder* builder,
 
 bool EngineBuilder::AddLlmOptimizationProfiles(nvinfer1::IBuilder* builder,
                                                nvinfer1::IBuilderConfig* config,
-                                               nvinfer1::INetworkDefinition* network) {
+                                               nvinfer1::INetworkDefinition* network,
+                                               BuildStage stage) {
     if (!HasDynamicInputDim(network)) {
         return true;
     }
@@ -177,8 +184,15 @@ bool EngineBuilder::AddLlmOptimizationProfiles(nvinfer1::IBuilder* builder,
                                 config_.max_decode_batch};
     const DimRange decode_seq{1, 1, 1};
 
-    const std::pair<DimRange, DimRange> profiles[] = {
-        {prefill_batch, prefill_seq}, {decode_batch, decode_seq}};
+    // 按 stage 过滤要挂哪些 profile：双引擎方案下每个 engine 只该有自己那一组，
+    // 多挂一组不会报错，但会让 TRT 为用不到的形状多编译一份 kernel（GPT-2 上是分钟级开销）。
+    std::vector<std::pair<DimRange, DimRange>> profiles;
+    if (stage == BuildStage::kSingle || stage == BuildStage::kPrefill) {
+        profiles.emplace_back(prefill_batch, prefill_seq);
+    }
+    if (stage == BuildStage::kSingle || stage == BuildStage::kDecode) {
+        profiles.emplace_back(decode_batch, decode_seq);
+    }
 
     for (const auto& [batch_range, seq_range] : profiles) {
         nvinfer1::IOptimizationProfile* profile = builder->createOptimizationProfile();
@@ -197,7 +211,8 @@ bool EngineBuilder::AddLlmOptimizationProfiles(nvinfer1::IBuilder* builder,
 }
 
 bool EngineBuilder::BuildFromConfig(const std::string& model_dir,
-                                    const std::string& engine_path) {
+                                    const std::string& engine_path,
+                                    BuildStage stage) {
     ModelConfig model_config;
     try {
         model_config = ModelConfig::Load(model_dir);
@@ -230,7 +245,11 @@ bool EngineBuilder::BuildFromConfig(const std::string& model_dir,
         return false;
     }
 
-    if (!builder_impl->Build(network.get(), weights, model_config)) {
+    BuildOptions build_options;
+    build_options.stage = stage;
+    build_options.weight_dtype = ToTrtDataType(config_.precision);
+
+    if (!builder_impl->Build(network.get(), weights, model_config, build_options)) {
         MINI_TRT_LOG_ERROR("Model builder failed: " << builder_impl->Name());
         return false;
     }
@@ -244,7 +263,8 @@ bool EngineBuilder::BuildFromConfig(const std::string& model_dir,
         }
     } else if (model_config.architecture == "decoder_only" ||
                model_config.architecture == "encoder_decoder") {
-        if (!AddLlmOptimizationProfiles(builder.get(), trt_config.get(), network.get())) {
+        if (!AddLlmOptimizationProfiles(builder.get(), trt_config.get(), network.get(),
+                                        stage)) {
             MINI_TRT_LOG_ERROR("Failed to set up LLM optimization profiles");
             return false;
         }

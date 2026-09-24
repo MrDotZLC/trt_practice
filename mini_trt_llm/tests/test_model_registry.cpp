@@ -8,7 +8,7 @@ class DummyBuilder : public IModelBuilder {
  public:
     std::string Name() const override { return "dummy"; }
     bool Build(nvinfer1::INetworkDefinition*, const WeightLoader&,
-               const ModelConfig&) override {
+               const ModelConfig&, const BuildOptions&) override {
         return true;
     }
 };

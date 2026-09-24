@@ -26,43 +26,70 @@ float DeterministicValue(int64_t index) {
 }
 
 // PagedAttention Decoding 的 CPU 参考实现。
+// 缓存里第 t 个逻辑位置（t < context_len）在 cache 张量里的偏移。
+size_t PagedOffset(const std::vector<int32_t>& block_tables, int32_t batch, int32_t t,
+                   int32_t block_size, int32_t max_blocks_per_seq, int32_t num_kv_heads,
+                   int32_t kv_head, int32_t head_size) {
+    const int32_t physical_block =
+        block_tables[static_cast<size_t>(batch) * max_blocks_per_seq + t / block_size];
+    const int32_t slot = t % block_size;
+    return ((static_cast<size_t>(physical_block) * block_size + slot) * num_kv_heads +
+            kv_head) *
+           head_size;
+}
+
+// 当前 token 的 K/V 是独立的一小份张量，不经过 block table。
+size_t CurrentTokenOffset(int32_t batch, int32_t num_kv_heads, int32_t kv_head,
+                          int32_t head_size) {
+    return (static_cast<size_t>(batch) * num_kv_heads + kv_head) * head_size;
+}
+
 // 逻辑上等价于：对每个 (batch, head)，用 query 与缓存里前 context_len 个 K/V 做
 // 标准 scaled dot-product attention，再用块表把逻辑位置映射到物理块。
+//
+// key_new / value_new 非空时表示"当前 token 的 K/V 也参与注意力"——它对应 kernel 的
+// 第 6/7 个输入，逻辑上排在缓存里的 context_len 个位置之后（第 context_len 个位置）。
 void CpuPagedAttention(const std::vector<float>& query, const std::vector<float>& key_cache,
                        const std::vector<float>& value_cache,
                        const std::vector<int32_t>& block_tables,
                        const std::vector<int32_t>& context_lens, int32_t batch_size,
                        int32_t num_heads, int32_t num_kv_heads, int32_t head_size,
                        int32_t block_size, int32_t max_blocks_per_seq, float scale,
-                       std::vector<float>* output) {
+                       std::vector<float>* output,
+                       const std::vector<float>* key_new = nullptr,
+                       const std::vector<float>* value_new = nullptr) {
     output->assign(static_cast<size_t>(batch_size) * num_heads * head_size, 0.0f);
 
     for (int32_t b = 0; b < batch_size; ++b) {
         for (int32_t h = 0; h < num_heads; ++h) {
             const int32_t kv_head = h / (num_heads / num_kv_heads);
             const int32_t context_len = context_lens[b];
+            const bool has_current = key_new != nullptr && value_new != nullptr;
+            const int32_t total_len = context_len + (has_current ? 1 : 0);
 
-            std::vector<float> scores(context_len, 0.0f);
+            std::vector<float> scores(total_len, 0.0f);
             float max_score = -1e30f;
-            for (int32_t t = 0; t < context_len; ++t) {
-                const int32_t physical_block = block_tables[b * max_blocks_per_seq + t / block_size];
-                const int32_t slot = t % block_size;
-                const size_t kv_offset =
-                    ((static_cast<size_t>(physical_block) * block_size + slot) * num_kv_heads +
-                     kv_head) *
-                    head_size;
+            for (int32_t t = 0; t < total_len; ++t) {
+                const size_t kv_offset = t < context_len
+                                             ? PagedOffset(block_tables, b, t, block_size,
+                                                           max_blocks_per_seq, num_kv_heads,
+                                                           kv_head, head_size)
+                                             : CurrentTokenOffset(b, num_kv_heads, kv_head,
+                                                                  head_size);
+                const std::vector<float>& keys =
+                    t < context_len ? key_cache : *key_new;
                 double dot = 0.0;
                 for (int32_t d = 0; d < head_size; ++d) {
                     dot += static_cast<double>(query[(static_cast<size_t>(b) * num_heads + h) *
                                                          head_size + d]) *
-                           key_cache[kv_offset + d];
+                           keys[kv_offset + d];
                 }
                 scores[t] = static_cast<float>(dot) * scale;
                 max_score = std::max(max_score, scores[t]);
             }
 
             double sum = 0.0;
-            for (int32_t t = 0; t < context_len; ++t) {
+            for (int32_t t = 0; t < total_len; ++t) {
                 scores[t] = std::exp(scores[t] - max_score);
                 sum += scores[t];
             }
@@ -72,16 +99,15 @@ void CpuPagedAttention(const std::vector<float>& query, const std::vector<float>
 
             for (int32_t d = 0; d < head_size; ++d) {
                 double acc = 0.0;
-                for (int32_t t = 0; t < context_len; ++t) {
-                    const int32_t physical_block =
-                        block_tables[b * max_blocks_per_seq + t / block_size];
-                    const int32_t slot = t % block_size;
+                for (int32_t t = 0; t < total_len; ++t) {
                     const size_t kv_offset =
-                        ((static_cast<size_t>(physical_block) * block_size + slot) *
-                             num_kv_heads +
-                         kv_head) *
-                        head_size;
-                    acc += scores[t] * value_cache[kv_offset + d];
+                        t < context_len
+                            ? PagedOffset(block_tables, b, t, block_size,
+                                          max_blocks_per_seq, num_kv_heads, kv_head, head_size)
+                            : CurrentTokenOffset(b, num_kv_heads, kv_head, head_size);
+                    const std::vector<float>& values =
+                        t < context_len ? value_cache : *value_new;
+                    acc += scores[t] * values[kv_offset + d];
                 }
                 (*output)[(static_cast<size_t>(b) * num_heads + h) * head_size + d] =
                     static_cast<float>(acc / sum);
@@ -97,6 +123,9 @@ struct AttentionFixture {
     std::vector<float> value_cache;
     std::vector<int32_t> block_tables;
     std::vector<int32_t> context_lens;
+    // 当前 token 的 K/V（插件的第 6/7 个输入）。空表示不连接这两个输入。
+    std::vector<float> key_new;
+    std::vector<float> value_new;
     int32_t batch_size = 0;
     int32_t num_heads = 0;
     int32_t num_kv_heads = 0;
@@ -172,6 +201,22 @@ void RunKernel(const AttentionFixture& fixture, std::vector<float>* output) {
     CUDA_CHECK(cudaMemcpy(d_context_lens.data(), fixture.context_lens.data(), lens_bytes,
                           cudaMemcpyHostToDevice));
 
+    // 当前 token 的 K/V 只有在 fixture 提供了才分配/传递：
+    // 未连接时保持"只按 cache 内容算注意力"的原有路径。
+    DeviceBuffer d_key_new;
+    DeviceBuffer d_value_new;
+    const bool has_current = !fixture.key_new.empty();
+    if (has_current) {
+        const size_t new_bytes = fixture.key_new.size() * sizeof(float);
+        if (!d_key_new.Allocate(new_bytes) || !d_value_new.Allocate(new_bytes)) {
+            throw std::runtime_error("PagedAttention test: failed to allocate current token");
+        }
+        CUDA_CHECK(cudaMemcpy(d_key_new.data(), fixture.key_new.data(), new_bytes,
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_value_new.data(), fixture.value_new.data(), new_bytes,
+                              cudaMemcpyHostToDevice));
+    }
+
     PagedAttentionKernelArgs args;
     args.query = d_query.data();
     args.key_cache = d_key_cache.data();
@@ -187,6 +232,11 @@ void RunKernel(const AttentionFixture& fixture, std::vector<float>* output) {
     args.max_blocks_per_seq = fixture.max_blocks_per_seq;
     args.scale = fixture.scale;
     args.is_half = false;
+    if (has_current) {
+        args.key_new = d_key_new.data();
+        args.value_new = d_value_new.data();
+        args.has_current_token = true;
+    }
     CUDA_CHECK(LaunchPagedAttention(args, nullptr));
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -197,11 +247,13 @@ void RunKernel(const AttentionFixture& fixture, std::vector<float>* output) {
 
 void ExpectMatchesReference(const AttentionFixture& fixture) {
     std::vector<float> expected;
+    const bool has_current = !fixture.key_new.empty();
     CpuPagedAttention(fixture.query, fixture.key_cache, fixture.value_cache,
                       fixture.block_tables, fixture.context_lens, fixture.batch_size,
                       fixture.num_heads, fixture.num_kv_heads, fixture.head_size,
                       fixture.block_size, fixture.max_blocks_per_seq, fixture.scale,
-                      &expected);
+                      &expected, has_current ? &fixture.key_new : nullptr,
+                      has_current ? &fixture.value_new : nullptr);
     std::vector<float> actual;
     RunKernel(fixture, &actual);
 
@@ -357,6 +409,111 @@ TEST(PagedAttentionKernelTest, ZeroContextLengthProducesZeros) {
 TEST(PagedAttentionKernelTest, RejectsInvalidArguments) {
     PagedAttentionKernelArgs args;
     EXPECT_NE(LaunchPagedAttention(args, nullptr), cudaSuccess);
+}
+
+// 当前 token 必须真的参与注意力。
+//
+// **最强的一条判据**：让 cache 为空（context_len = 0），只给 key_new / value_new。
+// 此时 softmax 只有一个元素、权重恒为 1，输出必须**逐元素等于 value_new**；
+// 漏掉当前 token 的实现会走 context_len=0 的兜底分支返回全 0，一眼可辨。
+TEST(PagedAttentionKernelTest, CurrentTokenIsAttendedEvenWithEmptyCache) {
+    if (!HasCudaDevice()) {
+        GTEST_SKIP() << "No CUDA device available";
+    }
+    const std::vector<int32_t> context_lens{0};
+    const std::vector<int32_t> block_tables{0};
+    AttentionFixture fixture = MakeFixture(/*batch=*/1, /*heads=*/2, /*kv_heads=*/2,
+                                           /*head_size=*/8, /*block_size=*/16, context_lens,
+                                           block_tables, /*max_blocks=*/1,
+                                           /*num_blocks=*/1);
+    // 换掉 cache 内容：即使实现误读 cache，也不会"碰巧"对上
+    std::fill(fixture.key_cache.begin(), fixture.key_cache.end(), 0.25f);
+    std::fill(fixture.value_cache.begin(), fixture.value_cache.end(), 0.5f);
+
+    fixture.key_new.resize(static_cast<size_t>(fixture.num_kv_heads) * fixture.head_size);
+    fixture.value_new.resize(fixture.key_new.size());
+    for (size_t i = 0; i < fixture.key_new.size(); ++i) {
+        fixture.key_new[i] = DeterministicValue(static_cast<int64_t>(i) + 7);
+        fixture.value_new[i] = DeterministicValue(static_cast<int64_t>(i) + 900);
+    }
+
+    std::vector<float> actual;
+    RunKernel(fixture, &actual);
+
+    ASSERT_EQ(actual.size(), static_cast<size_t>(fixture.batch_size) * fixture.num_heads *
+                                fixture.head_size);
+    for (int32_t h = 0; h < fixture.num_heads; ++h) {
+        const int32_t kv_head = h / (fixture.num_heads / fixture.num_kv_heads);
+        for (int32_t d = 0; d < fixture.head_size; ++d) {
+            const float expected =
+                fixture.value_new[static_cast<size_t>(kv_head) * fixture.head_size + d];
+            EXPECT_TRUE(WithinTolerance(
+                expected, actual[static_cast<size_t>(h) * fixture.head_size + d], 1e-5f,
+                1e-6f))
+                << "head " << h << " dim " << d;
+        }
+    }
+}
+
+// 缓存 + 当前 token 一起参与时的数值，与 CPU 参考对比（含 GQA 与 batch>1）
+TEST(PagedAttentionKernelTest, CurrentTokenMatchesCpuReferenceWithGqa) {
+    if (!HasCudaDevice()) {
+        GTEST_SKIP() << "No CUDA device available";
+    }
+    const std::vector<int32_t> context_lens{5, 3};
+    const std::vector<int32_t> block_tables{1, 0, 3, 2, 1, 0};
+    AttentionFixture fixture = MakeFixture(/*batch=*/2, /*heads=*/4, /*kv_heads=*/2,
+                                           /*head_size=*/8, /*block_size=*/4, context_lens,
+                                           block_tables, /*max_blocks=*/3,
+                                           /*num_blocks=*/4);
+    fixture.key_new.resize(static_cast<size_t>(fixture.batch_size) * fixture.num_kv_heads *
+                           fixture.head_size);
+    fixture.value_new.resize(fixture.key_new.size());
+    for (size_t i = 0; i < fixture.key_new.size(); ++i) {
+        fixture.key_new[i] = DeterministicValue(static_cast<int64_t>(i) + 31);
+        fixture.value_new[i] = DeterministicValue(static_cast<int64_t>(i) + 77);
+    }
+
+    ExpectMatchesReference(fixture);
+}
+
+// 只连 key_new 不连 value_new 属于接线错误，必须在 configurePlugin 就拒绝：
+// 半连接会让注意力静默少一项，与"忘了给当前 token"是同一类静默错误。
+TEST(PagedAttentionPluginTest, RejectsHalfConnectedCurrentToken) {
+    nvinfer1::DynamicPluginTensorDesc inputs[6];
+    inputs[0].desc.dims = nvinfer1::Dims{4, {1, 4, 1, 8}};
+    inputs[1].desc.dims = nvinfer1::Dims{4, {16, 16, 2, 8}};
+    inputs[2].desc.dims = nvinfer1::Dims{4, {16, 16, 2, 8}};
+    inputs[3].desc.dims = nvinfer1::Dims{2, {1, 4}};
+    inputs[4].desc.dims = nvinfer1::Dims{1, {1}};
+    inputs[5].desc.dims = nvinfer1::Dims{4, {1, 2, 1, 8}};
+
+    PagedAttentionPlugin plugin(4, 2, 8, 16, 0.0f);
+    EXPECT_NE(plugin.configurePlugin(inputs, 6, nullptr, 1), 0);
+}
+
+// 七个输入全部连上必须接受，并校验当前 token 的形状
+TEST(PagedAttentionPluginTest, AcceptsCurrentTokenInputsAndValidatesShape) {
+    const auto make_inputs = [](nvinfer1::DynamicPluginTensorDesc* inputs,
+                                int32_t key_new_seq) {
+        inputs[0].desc.dims = nvinfer1::Dims{4, {1, 4, 1, 8}};
+        inputs[1].desc.dims = nvinfer1::Dims{4, {16, 16, 2, 8}};
+        inputs[2].desc.dims = nvinfer1::Dims{4, {16, 16, 2, 8}};
+        inputs[3].desc.dims = nvinfer1::Dims{2, {1, 4}};
+        inputs[4].desc.dims = nvinfer1::Dims{1, {1}};
+        inputs[5].desc.dims = nvinfer1::Dims{4, {1, 2, key_new_seq, 8}};
+        inputs[6].desc.dims = nvinfer1::Dims{4, {1, 2, key_new_seq, 8}};
+    };
+
+    nvinfer1::DynamicPluginTensorDesc inputs[7];
+    make_inputs(inputs, /*key_new_seq=*/1);
+    PagedAttentionPlugin plugin(4, 2, 8, 16, 0.0f);
+    EXPECT_EQ(plugin.configurePlugin(inputs, 7, nullptr, 1), 0);
+
+    // seq 维不是 1 → 与 decoding 契约冲突，必须拒绝
+    make_inputs(inputs, /*key_new_seq=*/3);
+    PagedAttentionPlugin bad(4, 2, 8, 16, 0.0f);
+    EXPECT_NE(bad.configurePlugin(inputs, 7, nullptr, 1), 0);
 }
 
 // 回归：同 RoPE。PagedAttention 只序列化 block_size / scale，head 配置靠形状推导；

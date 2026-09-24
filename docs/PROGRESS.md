@@ -1,7 +1,8 @@
 # mini_trt_llm 项目进度交接文档
 
-> 最后更新：2026-09-24  
-> 当前阶段：**Phase 1.5 已完成**（全流程测试基建与收尾）；下一步 Phase 2（GPT-2 原生构建）
+> 最后更新：2026-09-25  
+> 当前阶段：**Phase 2 已完成**（GPT-2 原生构建，含 Prefill/Decode 双引擎与 `LLMRunner` 自回归生成）；
+> 下一步 Phase 3（GPT-2 ONNX + Plugin，方案 B）
 
 ---
 
@@ -117,9 +118,83 @@
 - **`pipeline` 组件要区分构建期与运行期**：凡是"从形状推导"的状态，运行期入口
   （`onShapeChange`）都必须能自行推导，不能依赖只在构建期发生的初始化（见 #8）。
 
+### 2.14 证据纪律与操作纪律（Phase 2 沉淀，后续沿用）
+
+本节记录两条**流程级**教训，源自 Phase 2 的两次实际事故：
+阈值放宽（技术事故，详见 `docs/TROUBLESHOOTING.md` #15）与擅自改写 Phase 0 文件
+（操作事故，记录即本节 B 条）。它们不是技术缺陷，但代价比技术缺陷更高：
+一次是让用户承担了本可以避免的决策负担，一次差点让一个真 bug 以"全绿"的形态留下来。
+
+#### A. 禁止用"放宽期望值"换取通过
+
+当实测与期望不一致时，**允许的动作只有三种**：
+
+1. 继续查，不给结论（状态写成"原因未知"）；
+2. 证明**期望值本身**错——必须给出独立依据（参考实现、实测敏感性数据、设计文档出处），
+   改的同时把推导过程留在代码注释与文档里；
+3. 把用例标成"已知失败 + 原因未知"，**保持红色**。
+
+**不允许**：调大阈值、删断言、把断言降级成打印、skip 掉用例。
+
+配套要求（可检查）：
+
+- **每个数值阈值旁边必须写清出处**：来自哪次实测、哪个标准、哪份设计文档。
+  阈值可以紧、可以松，但不能"来路不明"。
+- **阈值不跨精度复用**：D4 的 `rel < 1e-3` 是 FP16 标准，套到 FP32 上等于把尺子放宽 1000 倍。
+- **放宽阈值前必须先量"无关差异"**：把与正确性无关的差异（算法不同、累加顺序不同、
+  kernel 不同）量出来，阈值放在它的合理倍数上。观测值若比"无关差异"高出几个数量级，
+  说明有别的东西在起作用——**此时唯一的动作是查**。
+  Phase 2 的实测：一次性 softmax 与 online softmax 在 float32 下差 `6e-8`，
+  模型对扰动的放大倍数 ≈ 1；而当时观测到 `1.25e-3`，高 4 个数量级 → 确有真 bug。
+- **要求"它凭什么通过"**：只看"绿了没有"会漏掉整类问题；每个 Phase 验收时，
+  对关键判据要能回答"这个阈值凭什么这么定"。
+
+#### B. 批准目标 ≠ 批准手段
+
+- **涉及删除/覆盖现有文件、改配置文件、动 git 历史、联网**的操作，**每一个具体动作都要单独确认**，
+  即使计划文档里已经写过"要重写 X"。计划批准的是目标，不是这批破坏性动作。
+- **动手前列一份"破坏性动作清单"**一次性交用户确认**，不要每步问一次（那会拖慢节奏），
+  也不要因为"清单太琐碎"而省略（Phase 2 就是省掉了这一步）。
+- **不要自己当"这文件没人用"的裁判**。判断依据只从代码里找（引用、依赖）不够——
+  作者脑子里可能还有别的用法。这类判断属于用户。
+- 违反的代价不是"文件被删"，而是**把本可以一句提问解决的事，变成用户事后的回滚决策**。
+
+#### C. 诊断代码也必须自证
+
+- **诊断输出必须说明比较对象是什么**（比了哪两个东西、各自的布局/形状是什么）。
+  Phase 2 出现过诊断本身比错对象、输出 `13.8` / `175` 这种"看起来像真故障"的数字——
+  **比没有诊断更危险**，因为它会把人引向错误的方向。
+- 读回/对拍时先确认**读取范围落在同一段分配内**（那次 `cudaMemcpy` 越界报 invalid argument
+  就是这么来的）。
+- 关键诊断要同时给**绝对差与相对差**：相对差在小值上会放大，单看相对差会误判严重程度。
+
 ---
 
 ## 3. 已完成的部分
+
+### 3.0 Phase 2 交付（GPT-2 原生构建，2026-09-25）
+
+| 文件 / 模块 | 说明 |
+|---|---|
+| `core/gpt2_model_builder.{hpp,cpp}` | GPT-2 原生建图；`kSingle` / `kPrefill` / `kDecode` 三种切面共用同一份代码，只有注意力分支不同 |
+| `core/llm_runner.{hpp,cpp}` + `core/llm_runner_kernel.{hpp,cu}` | Prefill→Decode→Sampler 自回归循环；循环内零 H2D/D2H（`position_ids` 由设备端 `context_lens` 填） |
+| `kv_cache/paged_kv_cache.{hpp,cpp}` + `paged_kv_cache_kernels.{hpp,cu}` | 分页 cache：块池、序列预留、prefill 覆盖写、decode 追加（`AppendDecodeStep`） |
+| `plugins/paged_attention_plugin.*` | 扩展为 5 / 7 输入两形态（第 6/7 个输入是当前 token 的 K/V） |
+| `tools/convert/hf_to_mini_trt_llm.py` | 产出 mini_trt_llm 原生 `config.json`（`weight_map` / `skipped_tensors` / 布局声明 / `block_size`） |
+| `models/gpt2/` | 转换产物（`model.safetensors` 被 .gitignore 忽略，`config.json` 入库） |
+| 用例 | `test_gpt2_config` / `test_gpt2_network_build` / `test_gpt2_decode_consistency` / `test_gpt2_generate` / `test_gpt2_prefill_accuracy` / `test_paged_kv_cache` / `tests/gpt2_test_support.hpp` |
+
+**真机验证结果**（全量 `ctest` 通过；沙箱内 132 用例 0 失败、GPU 用例自动跳过）：
+
+- 真实 GPT-2 贪心 8 token 与 HF 基线**逐 token 一致**：
+  `[274, 389, 257, 1049, 835, 284, 651, 257]`（prompt = `"The quick brown fox"`）；
+- prefill logits 对拍 `ref_output.bin`：`max_abs = 9.92e-05`、`max_abs/max|ref| = 9.19e-07`、
+  `cosine = 1.0`、逐位置 argmax 一致；
+- 解码一致性（decode 一步 == prefill 对应位置）在严格阈值 `1e-5` 下通过。
+
+**过程中修掉的 4 个真缺陷**（详见 `docs/TROUBLESHOOTING.md`）：
+#13 粘性 CUDA 错误被误读、#14 KV Cache 写入路径两处、#15 decode 各层共用同一 cache 张量、
+#16 追加按层推进语境长度。
 
 ### 3.1 目录与构建
 
@@ -294,7 +369,7 @@ Phase 1 明确不在本次范围内、留待后续的项：
 
 真机复验：E1 / E2 / E3 与 E4 的 2 条用例**已通过**。
 
-### 4.3 Phase 2：GPT-2 原生构建（未开始）
+### 4.3 Phase 2：GPT-2 原生构建（已完成，见 §3.0）
 
 - 开工顺序与风险提示见 **§6.2**；关键事实（GPT-2 不用 RMSNorm / RoPE）见 **§6.1**。
 - 先做多权重加载 spike（约 150 个张量、BF16/FP16 源），再确认 LayerNorm / GELU(tanh)
@@ -324,6 +399,25 @@ Phase 1 明确不在本次范围内、留待后续的项：
 ---
 
 ## 5. 已知问题与坑
+
+### 5.-1 Phase 2 修掉的缺陷（结论索引）
+
+Phase 2 的 4 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用 cache / 按层推进长度）
+全部已修复并有回归用例，经过与推导见 `docs/TROUBLESHOOTING.md` #13 ~ #16。
+其中 **#16 的教训影响接口设计**：`PagedKVCache` 的追加接口已拆成
+`AppendDecodeKV`（只写）+ `AppendDecodeStep`（一次写全部层、只推进一次长度），
+后续会话不要按"每层调用一次并各自推进"的直觉改回去。
+
+### 5.0 `LLMRunner` 无法在解码循环内早停 EOS（有意为之的 workaround）
+
+- **问题**：AGENTS.md §3.A.3 要求解码循环内不得有 H2D/D2H 拷贝，而"一见 EOS 就停"
+  必须先知道刚采样出的 token 值（在设备上）。
+- **影响**：EOS 之前仍会按 `max_new_tokens` 跑满，多余的计算被丢弃；
+  返回结果在 host 侧截断到首个 EOS，因此**语义正确、只是多算**。
+- **Workaround**：`LLMRunner::Config::eos_token_id`（-1 表示不截断）；
+  截断发生在循环之后。
+- **后续可选方案**：设备端维护一个 "stop flag" 并让循环条件读它（需要条件图或
+  每步一次 4 字节 D2H+sync，后者违反上述约束）；或改成设备侧常驻的采样-停止判定。
 
 ### 5.1 自研 JSON 解析器能力有限
 
@@ -393,6 +487,12 @@ Phase 1 明确不在本次范围内、留待后续的项：
 
 ## 6. 下一步计划
 
+**Phase 3：GPT-2 ONNX + Plugin（方案 B）** —— 实现 `OnnxBuilder` + 子图替换，
+与 Phase 2 的原生构建结果对齐（两者用的是同一份权重，ONNX initializer 与 safetensors
+已核对逐比特一致，见 `docs/phase2_development_plan.md` §0.1）。
+
+<details><summary>Phase 2 原始开工顺序（已完成，保留备查）</summary>
+
 **Phase 2：GPT-2 原生构建（方案 A）**
 
 ### 6.1 关键事实：GPT-2 用不上 Phase 1 的 RMSNorm / RoPE
@@ -440,7 +540,9 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 > `batch > 1` 覆盖、验证分层、失败判别方法等）。
 
 > 本节只保留下一步入口。Phase 1 的 15 项已确认决策见 `docs/phase1_development_plan.md` §10，
-> 接口约定见本文档 §2.12，测试与验证约定见 §2.13，均已归档，不再在此重复。
+> 接口约定见本文档 §2.12，测试与验证约定见 §2.13，证据与操作纪律见 §2.14，均已归档。
+>
+> </details>
 
 ---
 

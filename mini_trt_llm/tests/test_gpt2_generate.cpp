@@ -1,0 +1,356 @@
+#include "gpt2_test_support.hpp"
+#include "logger.hpp"
+#include "mini_trt_llm/core/engine.hpp"
+#include "mini_trt_llm/core/llm_runner.hpp"
+#include "mini_trt_llm/sampler/sampler_common.hpp"
+#include "mini_trt_llm/utils/cuda_check.hpp"
+#include "mini_trt_llm/utils/memory_pool.hpp"
+#include "test_gpu_guard.hpp"
+
+#include <cuda_runtime.h>
+#include <gtest/gtest.h>
+
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <iostream>
+#include <string>
+#include <vector>
+
+namespace mini_trt_llm {
+namespace {
+
+using test_support::kBlockSize;
+using test_support::kBlocksPerSeq;
+using test_support::kHeadSize;
+using test_support::kHeads;
+using test_support::kHidden;
+using test_support::kLayers;
+using test_support::kPositions;
+using test_support::kVocab;
+using test_support::SmallGpt2BuilderConfig;
+using test_support::SmallGpt2ConfigJson;
+using test_support::SmallGpt2Weights;
+
+// 真机 GPT-2 的规模（与 models/gpt2/config.json 一致）
+constexpr int32_t kRealLayers = 12;
+constexpr int32_t kRealHeads = 12;
+constexpr int32_t kRealHeadSize = 64;
+constexpr int32_t kRealVocab = 50257;
+constexpr int32_t kRealBlockSize = 16;
+constexpr int32_t kRealPositions = 1024;
+constexpr int32_t kRealEos = 50256;
+
+// 已核对过的外部基线（§0.3）：HF 与"全序列重算"两条路径给出同一串 token。
+const std::vector<int64_t> kExpectedPrompt = {464, 2068, 7586, 21831};  // "The quick brown fox"
+const std::vector<int64_t> kExpectedTokens = {274, 389, 257, 1049, 835, 284, 651, 257};
+
+std::string SequenceToString(const std::vector<int64_t>& tokens) {
+    std::string out = "[";
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (i != 0) {
+            out += ", ";
+        }
+        out += std::to_string(tokens[i]);
+    }
+    return out + "]";
+}
+
+std::string FindRealModelDir() {
+    const char* candidates[] = {"models/gpt2", "../models/gpt2", "../../models/gpt2",
+                                "../../../models/gpt2"};
+    for (const char* candidate : candidates) {
+        if (std::filesystem::exists(std::string(candidate) + "/config.json")) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+// 不用 KV Cache 的参考生成：每一步都把"prompt + 已生成"整段重新喂给 prefill 引擎。
+//
+// **为什么它能当参考**：它与 runner 的差别只有"有没有缓存"这一件事——数学式完全相同，
+// 实现路径完全独立（每次都是全新的全序列前向，不涉及分页布局、context_lens、K/V 追加）。
+// 因此两者生成的 token 序列一致，是对循环本身最直接的验证，且**不需要外部基线**。
+// kv_scratch 非空时，额外绑定每层的 K/V 输出——kPrefill 引擎必须绑全所有输出才能 enqueue，
+///因此复用同一个引擎跑这条参考路径时要把它们指到临时缓冲上。
+std::vector<int64_t> GenerateWithoutCache(Engine* prefill, const std::vector<int64_t>& prompt,
+                                          int32_t max_new_tokens, int32_t vocab_size,
+                                          bool is_half,
+                                          std::vector<std::unique_ptr<DeviceBuffer>>*
+                                              kv_scratch = nullptr,
+                                          int32_t num_layers = 0) {
+    // vocab 与 dtype 必须由调用方给出：这里曾把 vocab 写死成小模型的 32，
+    // 用到真实模型（50257）时就**越界写了显存**（缓冲按 32 分配、引擎按 50257 输出），
+    // 比数值错更危险。测试辅助函数同样不能有隐藏假设。
+    std::vector<int64_t> produced;
+    std::vector<int64_t> sequence = prompt;
+    for (int32_t step = 0; step < max_new_tokens; ++step) {
+        const int32_t length = static_cast<int32_t>(sequence.size());
+        std::vector<int32_t> tokens(sequence.begin(), sequence.end());
+        std::vector<int32_t> positions(static_cast<size_t>(length));
+        for (int32_t i = 0; i < length; ++i) {
+            positions[static_cast<size_t>(i)] = i;
+        }
+
+        DeviceBuffer d_tokens(tokens.size() * sizeof(int32_t));
+        DeviceBuffer d_positions(positions.size() * sizeof(int32_t));
+        const size_t elem = is_half ? 2u : 4u;
+        DeviceBuffer d_logits(static_cast<size_t>(length) * vocab_size * elem);
+        DeviceBuffer d_next(sizeof(int32_t));
+        if (!d_tokens.Allocate(tokens.size() * sizeof(int32_t)) ||
+            !d_positions.Allocate(positions.size() * sizeof(int32_t)) ||
+            !d_logits.Allocate(static_cast<size_t>(length) * vocab_size * elem) ||
+            !d_next.Allocate(sizeof(int32_t))) {
+            return {};
+        }
+        CUDA_CHECK(cudaMemcpy(d_tokens.data(), tokens.data(), d_tokens.size(),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_positions.data(), positions.data(), d_positions.size(),
+                              cudaMemcpyHostToDevice));
+
+        if (!prefill->SetOptimizationProfile(0, nullptr) ||
+            !prefill->SetInputShape("input_ids", nvinfer1::Dims{2, {1, length}}) ||
+            !prefill->SetInputShape("position_ids", nvinfer1::Dims{2, {1, length}}) ||
+            !prefill->SetTensorAddress("input_ids", d_tokens.data()) ||
+            !prefill->SetTensorAddress("position_ids", d_positions.data()) ||
+            !prefill->SetTensorAddress("logits", d_logits.data())) {
+            return {};
+        }
+        if (kv_scratch != nullptr) {
+            const size_t kv_elems = static_cast<size_t>(kHeads) * length * kHeadSize;
+            kv_scratch->clear();
+            for (int32_t layer = 0; layer < num_layers; ++layer) {
+                for (const char* tag : {"k_layer", "v_layer"}) {
+                    auto buffer = std::make_unique<DeviceBuffer>();
+                    if (!buffer->Allocate(kv_elems * sizeof(float)) ||
+                        !prefill->SetTensorAddress(
+                            (std::string(tag) + std::to_string(layer)).c_str(),
+                            buffer->data())) {
+                        return {};
+                    }
+                    kv_scratch->push_back(std::move(buffer));
+                }
+            }
+        }
+        if (!prefill->Enqueue(nullptr)) {
+            return {};
+        }
+        prefill->Synchronize(nullptr);
+
+        SamplerArgs args;
+        args.logits = static_cast<const char*>(d_logits.data()) +
+                      static_cast<size_t>(length - 1) * vocab_size * elem;
+        args.token_ids = static_cast<int32_t*>(d_next.data());
+        args.batch_size = 1;
+        args.vocab_size = vocab_size;
+        args.is_half = is_half;
+        args.seed = 42;
+        args.offset = static_cast<uint64_t>(step);
+        CUDA_CHECK(LaunchGreedySampler(args, nullptr));
+
+        int32_t next = -1;
+        CUDA_CHECK(cudaMemcpy(&next, d_next.data(), sizeof(int32_t), cudaMemcpyDeviceToHost));
+        produced.push_back(next);
+        sequence.push_back(next);
+    }
+    return produced;
+}
+
+}  // namespace
+
+// 自洽判据：runner（带 KV Cache 的 Prefill→Decode 循环）与"每步全序列重算"必须同结果。
+//
+// 这条能抓住循环本身的所有错误：cache 写错位置、context_lens 差一、position_ids 递推错、
+// 当前 token 被重复或漏掉、K/V 追加错层……而且不依赖任何外部参考数据。
+TEST(Gpt2GenerateTest, RunnerMatchesFullRecomputeWithoutCache) {
+    if (!test_support::HasCudaDevice()) {
+        GTEST_SKIP() << "No CUDA device available";
+    }
+    Logger logger;
+    test_support::ModelDirectory directory =
+        test_support::ModelDirectory::Create("gpt2_generate_small");
+    ASSERT_TRUE(directory.valid());
+    ASSERT_TRUE(directory.WriteConfig(SmallGpt2ConfigJson()));
+    ASSERT_TRUE(directory.WriteWeights(SmallGpt2Weights()));
+
+    // 参考路径只需要 logits，所以用 kSingle（不导出 K/V，省一层绑定）
+    EngineBuilder::Config builder_config = SmallGpt2BuilderConfig();
+    EngineBuilder builder(logger, builder_config);
+    const std::string single_path = directory.EnginePath("single.engine");
+    const std::string prefill_path = directory.EnginePath("prefill.engine");
+    const std::string decode_path = directory.EnginePath("decode.engine");
+    ASSERT_TRUE(builder.BuildFromConfig(directory.path(), single_path, BuildStage::kSingle));
+    ASSERT_TRUE(builder.BuildFromConfig(directory.path(), prefill_path,
+                                        BuildStage::kPrefill));
+    ASSERT_TRUE(builder.BuildFromConfig(directory.path(), decode_path,
+                                        BuildStage::kDecode));
+    Engine single(single_path, logger);
+    auto prefill = std::make_shared<Engine>(prefill_path, logger);
+    auto decode = std::make_shared<Engine>(decode_path, logger);
+
+    LLMRunner::Config runner_config;
+    runner_config.num_layers = kLayers;
+    runner_config.num_kv_heads = kHeads;
+    runner_config.head_size = kHeadSize;
+    runner_config.block_size = kBlockSize;
+    runner_config.max_blocks_per_seq = kBlocksPerSeq;
+    runner_config.num_blocks = 8;  // 足够放下 prompt(4) + 生成(6)
+    runner_config.is_half = false;
+    runner_config.vocab_size = kVocab;
+    // token-id 级别的 runner 不需要 tokenizer（GPT-2 是 BPE，与 SentencePiece 不对齐）
+    LLMRunner runner(runner_config, prefill, decode, nullptr);
+    ASSERT_TRUE(runner.ok());
+
+    const std::vector<int64_t> prompt = {3, 4, 5, 6};
+    constexpr int32_t kNewTokens = 6;
+    LLMRunner::GenerateOptions options;
+    options.max_new_tokens = kNewTokens;
+    options.top_k = 1;  // greedy
+
+    const std::vector<int64_t> with_cache = runner.Generate(prompt, options);
+    ASSERT_EQ(with_cache.size(), static_cast<size_t>(kNewTokens));
+    const std::vector<int64_t> without_cache =
+        GenerateWithoutCache(&single, prompt, kNewTokens, kVocab, /*is_half=*/false);
+    ASSERT_EQ(without_cache.size(), static_cast<size_t>(kNewTokens));
+
+    // 打印两条序列 + 首个分叉点：小模型只花十秒，是迭代这个缺陷的主战场
+    int32_t first_diff = -1;
+    for (int32_t i = 0; i < kNewTokens; ++i) {
+        if (with_cache[static_cast<size_t>(i)] != without_cache[static_cast<size_t>(i)]) {
+            first_diff = first_diff < 0 ? i : first_diff;
+        }
+    }
+    std::cout << "[诊断] 小模型贪心 " << kNewTokens << " token\n"
+              << "        带 cache  : " << SequenceToString(with_cache) << "\n"
+              << "        无 cache  : " << SequenceToString(without_cache) << "\n"
+              << "        首个分叉  : " << (first_diff < 0 ? -1 : first_diff) << "\n";
+
+    for (int32_t i = 0; i < kNewTokens; ++i) {
+        EXPECT_EQ(with_cache[static_cast<size_t>(i)], without_cache[static_cast<size_t>(i)])
+            << "第 " << i << " 个生成 token 不一致：带 cache="
+            << with_cache[static_cast<size_t>(i)]
+            << " 不带 cache=" << without_cache[static_cast<size_t>(i)];
+    }
+}
+
+// 接口契约：temperature != 1.0 必须显式失败（D5），不能静默忽略。
+TEST(Gpt2GenerateTest, RejectsUnsupportedTemperature) {
+    if (!test_support::HasCudaDevice()) {
+        GTEST_SKIP() << "No CUDA device available";
+    }
+    Logger logger;
+    test_support::ModelDirectory directory =
+        test_support::ModelDirectory::Create("gpt2_generate_temp");
+    ASSERT_TRUE(directory.valid());
+    ASSERT_TRUE(directory.WriteConfig(SmallGpt2ConfigJson()));
+    ASSERT_TRUE(directory.WriteWeights(SmallGpt2Weights()));
+
+    EngineBuilder builder(logger, SmallGpt2BuilderConfig());
+    const std::string prefill_path = directory.EnginePath("prefill.engine");
+    const std::string decode_path = directory.EnginePath("decode.engine");
+    ASSERT_TRUE(builder.BuildFromConfig(directory.path(), prefill_path,
+                                        BuildStage::kPrefill));
+    ASSERT_TRUE(builder.BuildFromConfig(directory.path(), decode_path,
+                                        BuildStage::kDecode));
+
+    LLMRunner::Config runner_config;
+    runner_config.num_layers = kLayers;
+    runner_config.num_kv_heads = kHeads;
+    runner_config.head_size = kHeadSize;
+    runner_config.block_size = kBlockSize;
+    runner_config.max_blocks_per_seq = kBlocksPerSeq;
+    runner_config.num_blocks = 8;
+    runner_config.is_half = false;
+    runner_config.vocab_size = kVocab;
+    LLMRunner runner(runner_config, std::make_shared<Engine>(prefill_path, logger),
+                     std::make_shared<Engine>(decode_path, logger), nullptr);
+    ASSERT_TRUE(runner.ok());
+
+    LLMRunner::GenerateOptions options;
+    options.temperature = 0.7f;
+    // 返回空 vector 即失败（成功时至少返回 1 个 token）
+    EXPECT_TRUE(runner.Generate({3, 4, 5, 6}, options).empty());
+}
+
+// 外部判据：真实 GPT-2 上的贪心生成必须与已核对的基线逐 token 一致（P2-8）。
+//
+// 这条最贵（要建两个 12 层引擎），因此放在最后、且模型目录不存在时跳过。
+TEST(Gpt2GenerateTest, RealGpt2GreedyMatchesReferenceTokens) {
+    if (!test_support::HasCudaDevice()) {
+        GTEST_SKIP() << "No CUDA device available";
+    }
+    const std::string dir = FindRealModelDir();
+    if (dir.empty()) {
+        GTEST_SKIP() << "models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）";
+    }
+
+    Logger logger;
+    EngineBuilder::Config builder_config;
+    builder_config.precision = Precision::FP32;
+    builder_config.min_prefill_batch = 1;
+    builder_config.opt_prefill_batch = 1;
+    builder_config.max_prefill_batch = 1;
+    builder_config.min_prefill_seq_len = 1;
+    builder_config.opt_prefill_seq_len = static_cast<int32_t>(kExpectedPrompt.size());
+    // 上限必须覆盖"prompt + 生成长度"：下面的无 cache 参考路径每步都要把整段重新喂进去。
+    builder_config.max_prefill_seq_len =
+        static_cast<int32_t>(kExpectedPrompt.size() + kExpectedTokens.size());
+    builder_config.min_decode_batch = 1;
+    builder_config.opt_decode_batch = 1;
+    builder_config.max_decode_batch = 1;
+
+    EngineBuilder builder(logger, builder_config);
+    const std::string prefill_path = "/tmp/mini_trt_llm_gpt2_real_prefill.engine";
+    const std::string decode_path = "/tmp/mini_trt_llm_gpt2_real_decode.engine";
+    ASSERT_TRUE(builder.BuildFromConfig(dir, prefill_path, BuildStage::kPrefill))
+        << "真实 GPT-2 prefill 引擎构建失败";
+    ASSERT_TRUE(builder.BuildFromConfig(dir, decode_path, BuildStage::kDecode))
+        << "真实 GPT-2 decode 引擎构建失败";
+
+    LLMRunner::Config runner_config;
+    runner_config.num_layers = kRealLayers;
+    runner_config.num_kv_heads = kRealHeads;
+    runner_config.head_size = kRealHeadSize;
+    runner_config.block_size = kRealBlockSize;
+    runner_config.max_blocks_per_seq = kRealPositions / kRealBlockSize;  // = 64
+    runner_config.num_blocks = 64;
+    runner_config.is_half = false;
+    runner_config.vocab_size = kRealVocab;
+    runner_config.eos_token_id = kRealEos;
+
+    LLMRunner runner(runner_config, std::make_shared<Engine>(prefill_path, logger),
+                     std::make_shared<Engine>(decode_path, logger), nullptr);
+    ASSERT_TRUE(runner.ok());
+
+    LLMRunner::GenerateOptions options;
+    options.max_new_tokens = static_cast<int>(kExpectedTokens.size());
+    options.top_k = 1;
+    const std::vector<int64_t> generated = runner.Generate(kExpectedPrompt, options);
+    ASSERT_EQ(generated.size(), kExpectedTokens.size());
+
+    // 同一条基线上再跑一遍**不用 cache** 的参考生成（复用 prefill 引擎，只多绑 K/V 输出）。
+    // 目的是把"prefill 图谱本身与 HF 的偏差"和"decode 路径的偏差"分开：
+    //   * 无 cache 路径也不一致 → 偏差来自 prefill 图谱（与 KV Cache / 插件无关）；
+    //   * 无 cache 路径一致、只有 runner 不一致 → 偏差在 decode 路径（插件 / 追加 / 位置递推）。
+    std::vector<std::unique_ptr<DeviceBuffer>> kv_scratch;
+    auto prefill_engine = std::make_shared<Engine>(prefill_path, logger);
+    const std::vector<int64_t> without_cache = GenerateWithoutCache(
+        prefill_engine.get(), kExpectedPrompt, static_cast<int32_t>(kExpectedTokens.size()),
+        kRealVocab, /*is_half=*/false, &kv_scratch, kRealLayers);
+    ASSERT_EQ(without_cache.size(), kExpectedTokens.size());
+
+    std::cout << "[诊断] 真实 GPT-2 贪心前 8 token\n"
+              << "        HF 基线   : " << SequenceToString(kExpectedTokens) << "\n"
+              << "        runner    : " << SequenceToString(generated) << "\n"
+              << "        无 cache  : " << SequenceToString(without_cache) << "\n";
+
+    for (size_t i = 0; i < kExpectedTokens.size(); ++i) {
+        EXPECT_EQ(without_cache[i], kExpectedTokens[i])
+            << "无 cache 的 prefill 路径与 HF 基线不一致（第 " << i << " 个），"
+               "说明偏差在 prefill 图谱而不在 decode 路径";
+        EXPECT_EQ(generated[i], kExpectedTokens[i]) << "第 " << i << " 个 token 不符";
+    }
+}
+
+}  // namespace mini_trt_llm

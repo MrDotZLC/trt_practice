@@ -23,8 +23,17 @@ inline constexpr char kPagedAttentionPluginVersion[] = "1";
 //   value_cache  同 key_cache
 //   block_tables [batch, max_blocks_per_seq]，INT32
 //   context_lens [batch]，INT32
+//   key_new      [batch, num_kv_heads, 1, head_size]（可选，第 6 个输入）
+//   value_new    同 key_new（可选，第 7 个输入）
 // 输出：
 //   [batch, num_heads, 1, head_size]
+//
+// 为什么要 key_new / value_new：decode 第 t 步的注意力必须包含当前 token 自己的 K/V，
+// 而这份 K/V 由本次前向算出、不可能预先写进 cache。传了这两个输入，注意力就会在
+// 扫完 cache 后再把当前 token 当作第 context_lens[b] 个位置参与 softmax；
+// 不传则保持"只按 cache 内容算注意力"的原有行为。
+// **arity 由 nbInputs 决定，不做成序列化属性**：它是网络连线的直接结果，
+// 再存一份状态只会多出一处可能与连线失配的来源（同 §2.12 对 RoPE head 配置的处理）。
 //
 // Prefill 阶段（query 序列长度 > 1）留到后续迭代：它需要因果 mask 与按位置分块，
 // 与解码路径的 kernel 结构差异较大，混在一起会同时拖慢两条路径。
@@ -86,6 +95,9 @@ class PagedAttentionPlugin : public IPluginV3Base {
     int32_t head_size_ = 0;
     int32_t block_size_ = 0;  // Q5：强制显式配置，不提供默认值
     float scale_ = 0.0f;      // <=0 时按 1/sqrt(head_size) 推导
+    // 是否连接了当前 token 的 K/V（第 6/7 个输入）。由 configurePlugin / onShapeChange
+    // 依 nbInputs 刷新，因此反序列化后的实例同样能拿到正确值。
+    bool has_current_token_ = false;
 
     int32_t serialized_block_size_ = 0;
     float serialized_scale_ = 0.0f;

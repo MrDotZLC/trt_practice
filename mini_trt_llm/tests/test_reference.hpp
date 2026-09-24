@@ -178,5 +178,58 @@ inline void ReferencePagedAttentionDecode(
     }
 }
 
+// LayerNorm：对最后一维做归一化后缩放平移。
+// eps 加在**方差**上，不是标准差上——这是与 RMSNorm 最容易混淆的一处，
+// 也是 GPT-2（layer_norm_epsilon = 1e-5）对齐时必须写对的地方。
+inline void ReferenceLayerNorm(const std::vector<double>& input,
+                               const std::vector<double>& scale,
+                               const std::vector<double>& bias, int32_t rows,
+                               int32_t hidden, double eps,
+                               std::vector<double>* output) {
+    if (input.size() != static_cast<size_t>(rows) * hidden ||
+        scale.size() != static_cast<size_t>(hidden) ||
+        bias.size() != static_cast<size_t>(hidden)) {
+        throw std::invalid_argument("ReferenceLayerNorm: shape mismatch");
+    }
+    output->resize(input.size());
+    for (int32_t r = 0; r < rows; ++r) {
+        const size_t base = static_cast<size_t>(r) * hidden;
+        double mean = 0.0;
+        for (int32_t h = 0; h < hidden; ++h) {
+            mean += input[base + h];
+        }
+        mean /= hidden;
+        double variance = 0.0;
+        for (int32_t h = 0; h < hidden; ++h) {
+            const double d = input[base + h] - mean;
+            variance += d * d;
+        }
+        variance /= hidden;
+        const double inv_std = 1.0 / std::sqrt(variance + eps);
+        for (int32_t h = 0; h < hidden; ++h) {
+            (*output)[base + h] =
+                (input[base + h] - mean) * inv_std * scale[h] + bias[h];
+        }
+    }
+}
+
+// GPT-2 的激活函数（HuggingFace 里的 `gelu_new`，tanh 近似）。
+// 与 TensorRT 的 kGELU_TANH 是同一个公式：0.5x(1+tanh(sqrt(2/pi)(x+0.044715x^3)))。
+inline void ReferenceGeluNew(const std::vector<double>& input,
+                             std::vector<double>* output) {
+    if (input.empty()) {
+        throw std::invalid_argument("ReferenceGeluNew: empty input");
+    }
+    constexpr double kSqrtTwoOverPi = 0.7978845608028654;
+    constexpr double kCubicCoefficient = 0.044715;
+    output->resize(input.size());
+    for (size_t i = 0; i < input.size(); ++i) {
+        const double x = input[i];
+        (*output)[i] =
+            0.5 * x *
+            (1.0 + std::tanh(kSqrtTwoOverPi * (x + kCubicCoefficient * x * x * x)));
+    }
+}
+
 }  // namespace test_support
 }  // namespace mini_trt_llm

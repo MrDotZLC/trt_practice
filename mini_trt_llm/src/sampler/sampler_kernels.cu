@@ -328,6 +328,9 @@ cudaError_t SortThenSample(const SamplerArgs& args, cudaStream_t stream, void* w
     const int32_t total_items = args.batch_size * args.vocab_size;
     const int32_t blocks = (total_items + kThreadsPerBlock - 1) / kThreadsPerBlock;
 
+    // CUDA 的 last-error 是粘性的：先清掉入口处可能残留的旧错误，
+    // 后面 cudaGetLastError() 的结果才只反映本次调用里的 launch。
+    (void)cudaGetLastError();
     if (args.is_half) {
         PrepareSortInputKernel<__half><<<blocks, kThreadsPerBlock, 0, stream>>>(
             static_cast<const __half*>(args.logits), layout.keys_in, layout.indices_in,
@@ -365,6 +368,9 @@ cudaError_t LaunchGreedySampler(const SamplerArgs& args, cudaStream_t stream) {
 
     const dim3 grid(static_cast<unsigned int>(args.batch_size));
     const dim3 block(kThreadsPerBlock);
+    // CUDA 的 last-error 是粘性的：先清掉入口处可能残留的旧错误，
+    // 后面 cudaGetLastError() 的结果才只反映本次 launch。
+    (void)cudaGetLastError();
     if (args.is_half) {
         GreedyKernel<__half><<<grid, block, 0, stream>>>(
             static_cast<const __half*>(args.logits), args.token_ids, args.vocab_size);

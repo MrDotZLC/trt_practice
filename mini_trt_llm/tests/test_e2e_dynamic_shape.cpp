@@ -31,7 +31,7 @@ class DynamicRoPEE2eBuilder : public IModelBuilder {
     std::string Name() const override { return "e2e_dynamic_rope"; }
 
     bool Build(nvinfer1::INetworkDefinition* network, const WeightLoader&,
-               const ModelConfig&) override {
+               const ModelConfig&, const BuildOptions&) override {
         nvinfer1::ITensor* query = network->addInput(
             "query", nvinfer1::DataType::kFLOAT,
             nvinfer1::Dims{4, {-1, kHeads, -1, kHeadSize}});

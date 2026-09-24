@@ -76,7 +76,7 @@ class RmsNormE2eBuilder : public IModelBuilder {
     std::string Name() const override { return "e2e_rmsnorm"; }
 
     bool Build(nvinfer1::INetworkDefinition* network, const WeightLoader& weights,
-               const ModelConfig& config) override {
+               const ModelConfig& config, const BuildOptions&) override {
         const int32_t hidden = config.hyper_params["hidden_size"].AsInt();
         nvinfer1::ITensor* input = network->addInput(
             "input", nvinfer1::DataType::kFLOAT, nvinfer1::Dims{2, {1, hidden}});
@@ -105,7 +105,7 @@ class RoPEE2eBuilder : public IModelBuilder {
     std::string Name() const override { return "e2e_rope"; }
 
     bool Build(nvinfer1::INetworkDefinition* network, const WeightLoader&,
-               const ModelConfig&) override {
+               const ModelConfig&, const BuildOptions&) override {
         // RoPE 没有可学习权重，因此只验证"多输入多输出算子经真实 engine 调用"这一面。
         // rotary_dim = 4 < head_size = 8，覆盖部分旋转（TROUBLESHOOTING #4 的场景）。
         constexpr int32_t kHeads = 2;
@@ -145,7 +145,7 @@ class PagedAttentionE2eBuilder : public IModelBuilder {
     std::string Name() const override { return "e2e_paged_attn"; }
 
     bool Build(nvinfer1::INetworkDefinition* network, const WeightLoader&,
-               const ModelConfig&) override {
+               const ModelConfig&, const BuildOptions&) override {
         constexpr int32_t kHeads = 2;
         constexpr int32_t kHeadSize = 8;
         constexpr int32_t kBlockSize = 16;
@@ -190,7 +190,7 @@ class SamplerE2eBuilder : public IModelBuilder {
     std::string Name() const override { return "e2e_sampler"; }
 
     bool Build(nvinfer1::INetworkDefinition* network, const WeightLoader& weights,
-               const ModelConfig& config) override {
+               const ModelConfig& config, const BuildOptions&) override {
         const int32_t hidden = config.hyper_params["hidden_size"].AsInt();
         // 用 [hidden, hidden] 的方阵当 LM Head，输出 logits 维数等于 hidden，便于构造小样例
         nvinfer1::ITensor* input = network->addInput(

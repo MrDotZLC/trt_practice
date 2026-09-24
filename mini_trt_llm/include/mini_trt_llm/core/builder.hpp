@@ -57,8 +57,13 @@ class EngineBuilder {
                               std::shared_ptr<IModelBuilder> builder);
 
     // 方案 A：从配置构建
+    // stage 决定这次建的是哪一种网络切面（见 BuildStage）：
+    //   kSingle  —— 单引擎，挂 Prefill/Decode 两组 profile；
+    //   kPrefill —— 只挂 Prefill profile（整段序列前向 + 导出每层 K/V）；
+    //   kDecode  —— 只挂 Decode profile（单 token 增量前向）。
     bool BuildFromConfig(const std::string& model_dir,
-                         const std::string& engine_path);
+                         const std::string& engine_path,
+                         BuildStage stage = BuildStage::kSingle);
 
     // 方案 B：从 ONNX + Plugin 替换构建
     bool BuildFromOnnx(const std::string& onnx_path,
@@ -79,7 +84,8 @@ class EngineBuilder {
 
     bool AddLlmOptimizationProfiles(nvinfer1::IBuilder* builder,
                                     nvinfer1::IBuilderConfig* config,
-                                    nvinfer1::INetworkDefinition* network);
+                                    nvinfer1::INetworkDefinition* network,
+                                    BuildStage stage);
 
     bool SerializeAndSave(nvinfer1::IHostMemory* serialized,
                           const std::string& engine_path);

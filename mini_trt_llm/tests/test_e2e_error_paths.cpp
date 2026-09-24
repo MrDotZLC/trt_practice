@@ -40,7 +40,7 @@ class WeightCheckingBuilder : public IModelBuilder {
     std::string Name() const override { return name_; }
 
     bool Build(nvinfer1::INetworkDefinition*, const WeightLoader& weights,
-               const ModelConfig&) override {
+               const ModelConfig&, const BuildOptions&) override {
         size_t bytes = 0;
         return weights.GetWeight("norm_weight", nvinfer1::DataType::kFLOAT, &bytes) !=
                nullptr;
@@ -55,7 +55,7 @@ class FailingBuilder : public IModelBuilder {
  public:
     std::string Name() const override { return "e2e_failing"; }
     bool Build(nvinfer1::INetworkDefinition*, const WeightLoader&,
-               const ModelConfig&) override {
+               const ModelConfig&, const BuildOptions&) override {
         return false;
     }
 };

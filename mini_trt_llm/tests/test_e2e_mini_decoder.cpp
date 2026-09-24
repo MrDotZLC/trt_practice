@@ -51,7 +51,7 @@ class MiniDecoderBuilder : public IModelBuilder {
     std::string Name() const override { return "e2e_mini_decoder"; }
 
     bool Build(nvinfer1::INetworkDefinition* network, const WeightLoader& weights,
-               const ModelConfig&) override {
+               const ModelConfig&, const BuildOptions&) override {
         using nvinfer1::DataType;
         using nvinfer1::Dims;
 
