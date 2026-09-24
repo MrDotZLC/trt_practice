@@ -306,7 +306,7 @@ LM head 把 `[H,V]`（rank 2）reshape 成 `[1,H,V]` 时，输出第 2 维没有
 - 新增 3 条判据，其中 `CurrentTokenIsAttendedEvenWithEmptyCache`（`context_len=0` →
   输出必须等于 `value_new`）是"当前 token 有没有被注意"的强判据。
 
-**待续**：`GPT2ModelBuilder::kDecode` 仍未接线（当前仍显式失败），
+**待续（已由 §0.6.5 完成，此段保留为当时的记录）**：`GPT2ModelBuilder::kDecode` 仍未接线（当时仍显式失败），
 它需要先有 P2-4 的 KV Cache 写入路径（scatter + append），两者一起做。
 即 **P2-4 / P2-5 / P2-7 是下一步**，P2-3 / P2-6 依赖它们在真机上跑。
 

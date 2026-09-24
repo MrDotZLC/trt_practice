@@ -452,6 +452,11 @@ builder.BuildFromOnnx(onnx_path, engine_path);
 
 ### Phase 3：GPT-2 ONNX + Plugin 构建（方案 B）（1.5 周）
 
+> **实测修正（2026-09-25）**：`1_gpt2_onnx/gpt2.onnx` **不含 RMSNorm、也不含 RoPE**
+> （实测用 LayerNormalization + 学习式位置编码），因此本节"替换 RoPE / RMSNorm 子图"
+> **在这张图上没有替换对象**；Phase 3 实际交付的是"ONNX 路径可用 + 与方案 A 数值对齐 +
+> 子图识别断言"。推导与实测见 `docs/phase3_development_plan.md` §0.2 与 §P3 执行结果。
+
 1. 实现 `OnnxBuilder` 与 subgraph replacer。
 2. 对现有 `1_gpt2_onnx/gpt2.onnx` 进行 RoPE/RMSNorm/Attention 子图替换。
 3. 验证替换后 engine 与原生构建输出一致。

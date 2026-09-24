@@ -293,7 +293,8 @@
 
 **影响**：
 
-- `GPT2ModelBuilder` 的 `kDecode` 分支目前**显式失败并报错**（`src/core/gpt2_model_builder.cpp`），
+- （**当时**的状态，现已解决：`kDecode` 已实现并真机验证，见 `docs/phase2_development_plan.md` §0.6.5、本文档 #15 / #16）
+  `GPT2ModelBuilder` 的 `kDecode` 分支当时**显式失败并报错**（`src/core/gpt2_model_builder.cpp`），
   不建一个静默算错的网络；
 - Phase 2 的 P2-4 / P2-5 / P2-7（KV Cache 写入、decode 引擎、`LLMRunner` 循环）都阻塞在这个决策上；
 - Phase 1 / 1.5 已交付并真机验证的内容**不受影响**：那些用例只覆盖"给定 cache 算注意力"这一面，
@@ -608,3 +609,38 @@ runner  : [274, 389, 257, 1049, 835, 284, 651, 257]   ← 逐 token 一致
 
 **已顺手修掉的、与本缺陷无关的问题**：真实模型那条用例的 prefill profile 上限设成了
 4（要跑"无 cache 参考"需覆盖到 12），导致它上一轮根本没执行到判据。
+
+---
+
+## 17. ONNX 图与原生图的 I/O 契约不同（INT64 vs INT32、有无 position_ids）
+
+**现象**：`Gpt2OnnxTest.MatchesNativeBuildOnSamePrompt` 里 ONNX 引擎**构建成功**（623 MB），
+但推理时 `setInputShape failed for tensor: position_ids`（`Given invalid tensor name`），
+且 TRT 给出警告 `Make sure input input_ids has Int64 binding`。
+
+**定位路径**：
+1. 报错是"无效张量名"而不是"形状不合法" → 说明**该引擎里根本没有 `position_ids` 这个输入**；
+2. 反查 ONNX 图：它的位置编码是图内的常量（学习式 `Gather(wpe)`），
+   所以只有 `input_ids` 一个输入，与原生图（显式 `position_ids` 输入）不同；
+3. TRT 的警告指向第二个差异：`input_ids` 在 ONNX 图里是 **INT64**（PyTorch 导出索引张量的惯例），
+   原生图是 INT32。
+
+**根因（测试侧）**：`RunEngine` 辅助函数**硬编码了原生图的 I/O 契约**（两个 int32 输入）。
+这已经是同一个坑的第二次：`docs/PROGRESS.md` §2.14 C 条记的
+"测试辅助函数不能有隐藏假设"就是上一次（`GenerateWithoutCache` 把 vocab 写成 32、越界写显存）。
+
+**修复**：辅助函数改为**从引擎查询 I/O**——遍历 `getNbIOTensors()` / `getIOTensorName()` /
+`getTensorIOMode()` / `getTensorDataType()`，按声明的名字与 dtype 建缓冲并绑定；
+并把两条路的输入契约差异**打印出来**（`[诊断] ONNX 引擎输入: input_ids(INT64)` /
+`原生引擎输入: input_ids(INT32) position_ids(INT32)`），让差异不再隐形。
+
+**记事（未处理，属产品范围）**：两条路的 I/O 契约目前**不一致**。若要让 ONNX 路径成为
+可互换的一等公民，需要在 ONNX 路径统一输入（加 `Cast` 到 INT32，或把 `position_ids` 变成
+显式输入）——**那是图改造，超出 Phase 3 冻结的 A1–A5 范围**，需要另行确认后再做。
+在统一之前，"ONNX 与原生对齐"的判据仍然有意义（比的是同一输入的 logits），
+但调用方必须按各引擎声明的契约准备输入。
+
+**教训**：**同一类错误第二次出现，说明"写进文档"没有变成"写进代码"**。
+上一次的教训落在 §2.14 C 条（文档），这一次的正确处置是把它变成**结构**：
+辅助函数不再接受"我知道这张图的 I/O 长什么样"这种假设，而是**从被调对象查询**。
+

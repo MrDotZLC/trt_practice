@@ -1,8 +1,13 @@
 # mini_trt_llm 项目进度交接文档
 
 > 最后更新：2026-09-25  
-> 当前阶段：**Phase 2 已完成**（GPT-2 原生构建，含 Prefill/Decode 双引擎与 `LLMRunner` 自回归生成）；
-> 下一步 Phase 3（GPT-2 ONNX + Plugin，方案 B）
+> 当前阶段：**Phase 3 已完成**（GPT-2 ONNX 路径落地并与原生构建对齐：相对偏差 `5.66e-07`，
+> 阈值 `1e-5`；测试口径与残余缺口见 `docs/phase3_test_plan.md`）；
+> 下一步 Phase 4（ResNet18 替换）或先做 Phase 5（清理旧模块）
+>
+> Phase 3 仅剩两项**按触发条件处理**的测试缺口（不阻塞下一阶段，细节见
+> `docs/future_iterations.md` §11）：G5（子图拓扑级识别，等真要做替换时）、
+> G6（性能测量方法，等真要优化 ONNX 路径时）。G1a/G1b/G1c/G3/G4/G4b/G7 均已关闭。
 
 ---
 
@@ -118,6 +123,19 @@
 - **`pipeline` 组件要区分构建期与运行期**：凡是"从形状推导"的状态，运行期入口
   （`onShapeChange`）都必须能自行推导，不能依赖只在构建期发生的初始化（见 #8）。
 
+### 2.15 Phase 2 / 3 确立的接口约定（实现时确立，勿回改）
+
+与 §2.12 同性质：这些是实现时定下、且**与直觉写法相反**的约定。后续会话不要按"更自然"的写法改回去。
+
+| 约定 | 为什么（写错会怎样） |
+|---|---|
+| `IModelBuilder::Build` 带 `BuildOptions{stage, weight_dtype}` | builder 需要显式知道目标精度与"建哪个切面"；`BuildStage::kSingle` = 单引擎挂预填/解码两组 profile（Phase 1.5 的 E3 语义），`kPrefill` / `kDecode` 各只挂一组 |
+| decode 网络的 cache 输入是**每层一对**（`key_cache_<layer>` / `value_cache_<layer>`） | `PagedAttentionPlugin` 是"单层注意力"，只接收一个 4-D cache。共用一张张量 → **每层都去读第 0 段 cache**，层数越多错得越离谱（真机 2 层差 `1.2e-3`，12 层完全失真）。见 TROUBLESHOOTING #15 |
+| `PagedKVCache`：`AppendDecodeKV`（只写、**不推进长度**）+ `AppendDecodeStep`（一次写全部层、**只推进一次**长度） | 长度是"每 token 一个"的量，挂在"每层一次"的接口上会被推进 `n_layer` 倍 → 第 3 个新 token 起发散。见 TROUBLESHOOTING #16 |
+| `BuildFromOnnx(model_dir, onnx_path, engine_path, subgraph_names)` | profile 规则要按 `config.json` 的 `architecture` 选，与方案 A **同一套**（否则"两条路对齐"失去意义）；`subgraph_names` 是"要核对的子图名"，**写错即失败**；图必须有 `input_ids` 输入与 `logits` 输出 |
+| ONNX 图的 I/O 与原生**不同**（`input_ids` 是 INT64、且无 `position_ids`） | 调用方必须按**引擎声明的**契约准备输入；统一两者见 `docs/future_iterations.md` §10.1 |
+| `LLMRunner::Generate` 约定 | 返回**新生成**的 token（不含 prompt）；失败返回**空 vector**（成功至少 1 个 token）；`temperature != 1.0` 显式失败；循环内零 H2D/D2H（`position_ids` 由 kernel 从设备端 `context_lens` 填） |
+
 ### 2.14 证据纪律与操作纪律（Phase 2 沉淀，后续沿用）
 
 本节记录两条**流程级**教训，源自 Phase 2 的两次实际事故：
@@ -171,6 +189,24 @@
 ---
 
 ## 3. 已完成的部分
+
+### 3.0.5 Phase 3 交付（GPT-2 ONNX 路径，2026-09-25）
+
+| 文件 / 模块 | 说明 |
+|---|---|
+| `core/builder.{hpp,cpp}` | `BuildFromOnnx(model_dir, onnx_path, engine_path, subgraph_names)`：复用方案 A 的 profile/精度语义、I/O 契约校验、parse 错误逐条打印、只挂 prefill 一组 profile |
+| `tools/inspect_onnx.py` | 图结构探针：基线比对 + `absent_ops` 护栏 + 三类子图识别断言（**人工执行，未接入 ctest**） |
+| `tests/test_gpt2_onnx.cpp` | 三方对拍（ONNX/原生/HF）、FP16 对照、`seq ∈ {1,64,512}` 覆盖；`RunEngine` 按引擎**声明的** I/O 与精度读取（不假定） |
+| `tests/test_gpt2_onnx_error_paths.cpp` | 失败路径：4 条沙箱可跑（子图名/缺 config/缺 architecture/ONNX 不可读）+ 1 条真机（外来 I/O 名，复用 `resnet18.onnx` 当夹具） |
+| `requirements.txt` | 补 `onnx>=1.16` |
+
+**真机实测**：ONNX vs 原生相对偏差 `5.66e-07`（阈值 `1e-5`）；ONNX/原生各自对 HF 参考
+`7.6e-05 ~ 9.9e-05`（随构建的 tactic 变化，相对量级稳定在 1e-6）；FP16 与
+`seq ∈ {1,64,512}` 对照均通过（实测值未采集，阈值维持 D6/D2 冻结口径）。
+
+**口径与残余缺口**：见 `docs/phase3_test_plan.md`（G1c / G4b / G5 / G6）。
+**性能结论未定**：两次测量的方向相反（±25%，小于构建间噪声），不能据此判断 ONNX 路径
+是否更优，更不能据此决定是否做子图替换——见 `docs/future_iterations.md` §10.2。
 
 ### 3.0 Phase 2 交付（GPT-2 原生构建，2026-09-25）
 
@@ -236,7 +272,7 @@
 
 - `mini_trt_llm/tests/test_*.cpp`：Utils / Core 骨架（cuda_check、logger、timer、memory_pool、io、
   model_config、model_registry、safetensors_loader、engine）+ Phase 1 算子 + Phase 1.5 端到端。
-- 当前状态：沙箱内 `ctest` **104 个用例 0 失败**（40 个 GPU 用例自动跳过）。
+- 当前状态（2026-09-25 快照）：沙箱内 `ctest` **142 个用例 0 失败**（GPU 用例自动跳过，含已接入的 `onnx_graph_probe`）。
   分层与覆盖度详见 §3.9 / §3.10 与 `docs/phase1_test_plan.md`。
 - 待补（不阻塞 Phase 2）：`docs/phase0_model_loading_test_plan.md` 里 T2（ONNX→Engine）仍未实施；
   T1 / T3 的能力已由 Phase 1.5 的 E1/E2 以更强的形式覆盖。
@@ -378,7 +414,7 @@ Phase 1 明确不在本次范围内、留待后续的项：
   的 `Prefill → Decode` 自回归循环。
 - 精度对比基准：`1_gpt2_onnx/ref_output.bin`（PyTorch FP32）。
 
-### 4.4 Phase 3：GPT-2 ONNX + Plugin（未开始）
+### 4.4 Phase 3：GPT-2 ONNX + Plugin（已完成，见 §3.0.5）
 
 - 实现 `OnnxBuilder` + subgraph replacer。
 - 对 `1_gpt2_onnx/gpt2.onnx` 替换 RoPE / RMSNorm / Attention 子图。
@@ -561,7 +597,15 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 | SentencePiece | v0.2.0 |
 | safetensors-cpp | main（commit af90b6c） |
 | GoogleTest | release（源码嵌入） |
-| Python 依赖 | `torch 2.5.1+cu121`（已装，`scripts/` 下的参考脚本直接可跑）；`transformers>=4.40`, `safetensors>=0.4` |
+| Python 依赖 | `torch 2.5.1+cu121`（已装，`scripts/` 下的参考脚本直接可跑）；`transformers>=4.40`, `safetensors>=0.4`, `onnx>=1.16`（图结构探针用） |
+
+**跑真机用例的前提**（不在版本控制里，需先生成）：
+
+| 产物 | 生成方式 | 被谁需要 |
+|---|---|---|
+| `models/gpt2/config.json` + `model.safetensors`（548 MB） | `python3 mini_trt_llm/tools/convert/hf_to_mini_trt_llm.py --model_name_or_path <HF gpt2 目录> --output_dir models/gpt2` | 全部 GPT-2 真机用例（config.json 入库，safetensors 被 .gitignore 忽略） |
+| `1_gpt2_onnx/gpt2.onnx`（652 MB，仓库内已有） | 随仓库提供 | Phase 3 的对拍与探针 |
+| `/tmp/mini_trt_llm_gpt2_*.engine` | 首次跑用例时自动构建（分钟级），之后复用 | 真机用例；**删掉它会强制重建**（测构建耗时时需要） |
 
 ---
 

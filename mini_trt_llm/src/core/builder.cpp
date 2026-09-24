@@ -7,6 +7,7 @@
 #include "mini_trt_llm/utils/io.hpp"
 #include "mini_trt_llm/utils/logger.hpp"
 #include <NvOnnxParser.h>
+#include <algorithm>
 #include <fstream>
 #include <functional>
 #include <utility>
@@ -281,9 +282,47 @@ bool EngineBuilder::BuildFromConfig(const std::string& model_dir,
     return SerializeAndSave(serialized.get(), engine_path);
 }
 
-bool EngineBuilder::BuildFromOnnx(const std::string& onnx_path,
+bool EngineBuilder::BuildFromOnnx(const std::string& model_dir,
+                                  const std::string& onnx_path,
                                   const std::string& engine_path,
-                                  const std::vector<std::string>& plugin_ops) {
+                                  const std::vector<std::string>& subgraph_names) {
+    // 先做纯数据校验（与方案 A 同样的顺序理由：createInferBuilder 既慢又依赖驱动，
+    // 把它排在文件检查之后能显著降低失败路径的成本）。
+    ModelConfig model_config;
+    try {
+        model_config = ModelConfig::Load(model_dir);
+    } catch (const std::exception& e) {
+        MINI_TRT_LOG_ERROR("Failed to load model config: " << e.what());
+        return false;
+    }
+    {
+        // 只做存在性检查：读整个 652MB 图来验证"文件能打开"没有意义，
+        // 真正的解析交给下面的 nvonnxparser（它自己会报逐条错误）。
+        std::ifstream probe(onnx_path, std::ios::binary);
+        if (!probe.good()) {
+            MINI_TRT_LOG_ERROR("ONNX file not found or unreadable: " << onnx_path);
+            return false;
+        }
+    }
+
+    // 已支持核对的子图名。当前阶段（D1=C）不做替换，所以这里只声明"能核对哪些"，
+    // 真正的结构识别在 tools/inspect_onnx.py；写错名字即失败，
+    // 避免出现"声明了子图却没核对"的假安全感。
+    const std::vector<std::string> known_subgraphs = {"attention", "layernorm",
+                                                      "position_embedding"};
+    for (const std::string& name : subgraph_names) {
+        if (std::find(known_subgraphs.begin(), known_subgraphs.end(), name) ==
+            known_subgraphs.end()) {
+            MINI_TRT_LOG_ERROR("Unknown subgraph name: " << name
+                                << " (supported: attention / layernorm / position_embedding)");
+            return false;
+        }
+    }
+    if (!subgraph_names.empty()) {
+        MINI_TRT_LOG_INFO("ONNX 构建将核对子图: " << subgraph_names.size()
+                        << " 个（识别由 tools/inspect_onnx.py --check 落地）");
+    }
+
     std::unique_ptr<nvinfer1::IBuilder> builder;
     std::unique_ptr<nvinfer1::INetworkDefinition> network;
     std::unique_ptr<nvinfer1::IBuilderConfig> trt_config;
@@ -305,8 +344,42 @@ bool EngineBuilder::BuildFromOnnx(const std::string& onnx_path,
         return false;
     }
 
-    // TODO(Phase 3): 根据 plugin_ops 进行子图替换
-    (void)plugin_ops;
+    // ONNX 侧的输入输出契约：方案 B 的图必须与方案 A 同名同义，
+    // 否则"两条路对齐"无从谈起；名字对不上就直接失败，而不是等到绑定时才报错。
+    if (network->getNbInputs() < 1 || std::string(network->getInput(0)->getName()) != "input_ids") {
+        MINI_TRT_LOG_ERROR("ONNX graph: expected an input named 'input_ids', got '"
+                           << (network->getNbInputs() > 0 ? network->getInput(0)->getName()
+                                                          : "<none>")
+                           << "'");
+        return false;
+    }
+    bool has_logits = false;
+    for (int32_t i = 0; i < network->getNbOutputs(); ++i) {
+        if (std::string(network->getOutput(i)->getName()) == "logits") {
+            has_logits = true;
+        }
+    }
+    if (!has_logits) {
+        MINI_TRT_LOG_ERROR("ONNX graph: no output named 'logits'");
+        return false;
+    }
+
+    // profile：ONNX 图是整段前向（无 KV cache 输入），因此只挂 **prefill** 那一组。
+    // 依据（D4 的历史工程核对）：`1_gpt2_onnx/src/builder.cpp` 当年也是**单个** profile，
+    // 取值 min[1,1] / opt[1,64] / max[4,512]，与 EngineBuilder::Config 的 prefill 默认值一致。
+    // 多挂一组 decode profile 不会错，但会让 TRT 白编译一份用不到的形状。
+    if (model_config.architecture == "cnn") {
+        if (!AddCvOptimizationProfile(builder.get(), trt_config.get(), network.get())) {
+            MINI_TRT_LOG_ERROR("Failed to set up CV optimization profile for ONNX");
+            return false;
+        }
+    } else {
+        if (!AddLlmOptimizationProfiles(builder.get(), trt_config.get(), network.get(),
+                                        BuildStage::kPrefill)) {
+            MINI_TRT_LOG_ERROR("Failed to set up LLM prefill profile for ONNX");
+            return false;
+        }
+    }
 
     std::unique_ptr<nvinfer1::IHostMemory> serialized(
         builder->buildSerializedNetwork(*network, *trt_config));

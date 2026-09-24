@@ -65,10 +65,20 @@ class EngineBuilder {
                          const std::string& engine_path,
                          BuildStage stage = BuildStage::kSingle);
 
-    // 方案 B：从 ONNX + Plugin 替换构建
-    bool BuildFromOnnx(const std::string& onnx_path,
+    // 方案 B：从 ONNX 构建。
+    //
+    // model_dir 提供 `config.json`——profile 规则按 `architecture` 选择，与方案 A **同一套**
+    // 语义（否则"ONNX 引擎与原生引擎对齐"这个判据就没有意义）。
+    //
+    // subgraph_names 是**要识别并核对**的子图名（如 "attention" / "layernorm" /
+    // "position_embedding"）。当前阶段（D1=C）不做替换，只做识别声明与校验：
+    // 结构识别本身落在 `tools/inspect_onnx.py`（Python 侧不需要 CUDA，C++ 侧的
+    // nvonnxparser 需要 `createInferBuilder`，在无 GPU 环境跑不了）。
+    // 名字写错即失败——"声明了却没核对"比不声明更危险。
+    bool BuildFromOnnx(const std::string& model_dir,
+                       const std::string& onnx_path,
                        const std::string& engine_path,
-                       const std::vector<std::string>& plugin_ops);
+                       const std::vector<std::string>& subgraph_names = {});
 
     ModelRegistry* GetRegistry() { return registry_.get(); }
 

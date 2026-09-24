@@ -11,16 +11,22 @@
 
 进度概览：
 
-- **Phase 0（基础设施与通用化骨架）**：已完成。CMake 骨架、Utils、Core 骨架、Safetensors/JSON 加载、SentencePiece 与 GoogleTest 源码嵌入、单元测试均已就位并通过。
-- **Phase 1（自定义 Plugin 基础）**：进行中。`IPluginV3` 基类已完成，15 项关键技术决策已全部确认；下一步实现 `RMSNormPlugin`。
-- 后续 Phase 2–5（GPT-2 原生构建 / ONNX+Plugin / ResNet18 替换 / 清理旧模块）尚未开始。
+- **Phase 0（基础设施与通用化骨架）**：已完成。
+- **Phase 1（自定义 Plugin 基础）**：已完成（RMSNorm / RoPE / PagedAttention 插件 + 采样器，真机验证通过）。
+- **Phase 1.5（全流程测试基建与收尾）**：已完成（端到端骨架、dynamic shape / optimization profile）。
+- **Phase 2（GPT-2 原生构建）**：已完成——真实 GPT-2 贪心生成 8 token 与 HuggingFace 基线逐 token 一致。
+- **Phase 3（GPT-2 ONNX 路径）**：已完成——与原生构建的 logits 相对偏差 `5.66e-07`（阈值 `1e-5`）。
+- **Phase 4 / 5**（ResNet18 替换 / 清理旧模块）：未开始。
+
+> 详细状态与决策见 `docs/PROGRESS.md`；各阶段的开发/测试计划见 `docs/phase*_*.md`。
 
 主要入口：
 
 - 核心代码：`mini_trt_llm/`
 - 进度交接文档：`docs/PROGRESS.md`
 - 设计文档：`docs/mini_trt_llm_design.md`
-- Phase 1 方案与决策清单：`docs/phase1_development_plan.md`
+- Phase 2 开发计划：`docs/phase2_development_plan.md`
+- Phase 3 开发计划与测试计划：`docs/phase3_development_plan.md` / `docs/phase3_test_plan.md`
 
 ## 构建与测试
 
