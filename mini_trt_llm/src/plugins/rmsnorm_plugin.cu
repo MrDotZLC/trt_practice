@@ -1,5 +1,7 @@
 #include "mini_trt_llm/plugins/rmsnorm_kernel.hpp"
 #include "mini_trt_llm/plugins/rmsnorm_plugin.hpp"
+#include "mini_trt_llm/utils/cuda_dtype.cuh"
+#include "mini_trt_llm/utils/cuda_reduce.cuh"
 #include "mini_trt_llm/utils/logger.hpp"
 
 #include <cuda_fp16.h>
@@ -19,23 +21,10 @@ constexpr int kThreadsPerBlock = 256;
 constexpr int kVecFloat = 4;
 constexpr int kVecHalf = 8;
 
-// 归约过程中第一级 warp 内归约用的掩码：blockDim 固定为 kThreadsPerBlock 的整数倍，
-// 因此 block 内每个 warp 都是满编的。
-constexpr unsigned int kFullWarpMask = 0xffffffffu;
-
-__device__ __forceinline__ float ToFloat(float v) { return v; }
-__device__ __forceinline__ float ToFloat(__half v) { return __half2float(v); }
-
-template <typename T>
-__device__ __forceinline__ T FromFloat(float v);
-template <>
-__device__ __forceinline__ float FromFloat<float>(float v) {
-    return v;
-}
-template <>
-__device__ __forceinline__ __half FromFloat<__half>(float v) {
-    return __float2half_rn(v);
-}
+// dtype 转换与归约在多个 kernel 间共用，实现见 utils/cuda_dtype.cuh / utils/cuda_reduce.cuh。
+using cuda::BlockReduceSum;
+using cuda::FromFloat;
+using cuda::ToFloat;
 
 // kVec 个元素打包成一个 16B 单元，配合 alignas 让 reinterpret_cast 合法。
 // 调用方负责保证 hidden_size 能被 kVec 整除，否则走标量 kernel。
@@ -43,37 +32,6 @@ template <typename T, int kVec>
 struct alignas(16) VecPack {
     T v[kVec];
 };
-
-// Block 内求和归约，结果通过 shared memory 广播给所有线程。
-//
-// 用 __shfl_down_sync 而非共享内存树形归约：warp 内 shuffle 不需要同步且没有 bank 冲突。
-__device__ __forceinline__ float BlockReduceSum(float val, float* scratch) {
-    const int lane = threadIdx.x & 31;
-    const int warp = threadIdx.x >> 5;
-    const int num_warps = (blockDim.x + 31) >> 5;
-
-#pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        val += __shfl_down_sync(kFullWarpMask, val, offset);
-    }
-    if (lane == 0) {
-        scratch[warp] = val;
-    }
-    __syncthreads();
-
-    if (warp == 0) {
-        float total = (lane < num_warps) ? scratch[lane] : 0.0f;
-#pragma unroll
-        for (int offset = 16; offset > 0; offset >>= 1) {
-            total += __shfl_down_sync(kFullWarpMask, total, offset);
-        }
-        if (lane == 0) {
-            scratch[0] = total;
-        }
-    }
-    __syncthreads();
-    return scratch[0];
-}
 
 // 向量化路径：一次读写 16B，只在设备端做两趟扫描（统计平方和 → 归一化写回）。
 template <typename T, int kVec>

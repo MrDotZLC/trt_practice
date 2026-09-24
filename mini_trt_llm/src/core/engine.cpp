@@ -32,6 +32,17 @@ bool Engine::SetInputShape(const std::string& name, nvinfer1::Dims dims) {
     return true;
 }
 
+bool Engine::SetOptimizationProfile(int32_t index, cudaStream_t stream) {
+    if (!context_ || index < 0) {
+        return false;
+    }
+    if (!context_->setOptimizationProfileAsync(index, stream)) {
+        MINI_TRT_LOG_ERROR("setOptimizationProfileAsync failed for profile: " << index);
+        return false;
+    }
+    return true;
+}
+
 bool Engine::SetTensorAddress(const std::string& name, void* ptr) {
     if (!context_->setTensorAddress(name.c_str(), ptr)) {
         MINI_TRT_LOG_ERROR("setTensorAddress failed for tensor: " << name);

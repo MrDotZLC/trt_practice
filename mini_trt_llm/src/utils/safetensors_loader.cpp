@@ -1,9 +1,68 @@
 #include "mini_trt_llm/utils/safetensors_loader.hpp"
 #include "mini_trt_llm/utils/logger.hpp"
 #include <algorithm>
+#include <cuda_fp16.h>
 #include <cstring>
 
 namespace mini_trt_llm {
+namespace {
+
+// BF16 的位布局是 1 符号 + 8 指数 + 7 尾数，FP16 是 1 + 5 + 10，两者指数宽度不同，
+// 所以不能靠位截断互相转换，必须先还原成 FP32 再降到目标精度。
+inline float Bf16BitsToFloat(uint16_t bits) {
+    const uint32_t widened = static_cast<uint32_t>(bits) << 16;
+    float value = 0.0f;
+    std::memcpy(&value, &widened, sizeof(float));
+    return value;
+}
+
+inline float Fp16BitsToFloat(uint16_t bits) {
+    __half half = __ushort_as_half(bits);
+    return __half2float(half);
+}
+
+// 源类型与目标类型本就一致时可直接零拷贝。刻意不用 SafetensorsToTrtDtype 做这个判断：
+// 该函数对 BF16 / FLOAT64 会回退成 kFLOAT，会让「源是 BF16、目标是 kFLOAT」被误判为同类型，
+// 从而把 BF16 原始数据当成 FP32 返回。
+bool IsDirectCopy(safetensors::dtype src, nvinfer1::DataType target) {
+    return (src == safetensors::kFLOAT32 && target == nvinfer1::DataType::kFLOAT) ||
+           (src == safetensors::kFLOAT16 && target == nvinfer1::DataType::kHALF);
+}
+
+// 把受支持的源 dtype 转成 FP32 / FP16。累加统一走 FP32，只在写回时降到目标精度。
+bool ConvertTensorData(safetensors::dtype src_dtype, const void* src, size_t count,
+                       nvinfer1::DataType target, void* dst) {
+    const bool to_half = (target == nvinfer1::DataType::kHALF);
+    char* out = static_cast<char*>(dst);
+    for (size_t i = 0; i < count; ++i) {
+        float value = 0.0f;
+        switch (src_dtype) {
+            case safetensors::kFLOAT32:
+                value = static_cast<const float*>(src)[i];
+                break;
+            case safetensors::kFLOAT16:
+                value = Fp16BitsToFloat(static_cast<const uint16_t*>(src)[i]);
+                break;
+            case safetensors::kBFLOAT16:
+                value = Bf16BitsToFloat(static_cast<const uint16_t*>(src)[i]);
+                break;
+            case safetensors::kFLOAT64:
+                value = static_cast<float>(static_cast<const double*>(src)[i]);
+                break;
+            default:
+                return false;
+        }
+        if (to_half) {
+            const __half half = __float2half_rn(value);
+            std::memcpy(out + i * 2, &half, 2);
+        } else {
+            std::memcpy(out + i * 4, &value, 4);
+        }
+    }
+    return true;
+}
+
+}  // namespace
 
 size_t SafetensorsDtypeSize(safetensors::dtype dtype) {
     // 按 Safetensors dtype 返回单个元素字节数；未命中类型返回 0 由调用方处理。
@@ -104,69 +163,61 @@ const void* SafetensorsLoader::GetRawData(const std::string& name,
 
 const void* SafetensorsLoader::GetConvertedData(const std::string& name,
                                                 nvinfer1::DataType target_type,
-                                                size_t* bytes) {
+                                                size_t* bytes) const {
     safetensors::tensor_t tensor;
     if (!st_.tensors.at(name, &tensor)) {
         return nullptr;
+    }
+    if (bytes != nullptr) {
+        *bytes = 0;
     }
 
     size_t num_elements = 1;
     for (auto dim : tensor.shape) {
         num_elements *= dim;
     }
-    size_t src_dtype_size = SafetensorsDtypeSize(tensor.dtype);
-    size_t src_bytes = num_elements * src_dtype_size;
 
-    nvinfer1::DataType src_trt_type = SafetensorsToTrtDtype(tensor.dtype);
-    if (src_trt_type == target_type) {
-        if (bytes) *bytes = src_bytes;
-        return GetRawData(name, nullptr);
+    if (IsDirectCopy(tensor.dtype, target_type)) {
+        return GetRawData(name, bytes);
     }
 
-    // 仅支持 BF16 -> FP32/FP16 转换
-    if (tensor.dtype != safetensors::kBFLOAT16) {
-        MINI_TRT_LOG_ERROR("Cannot convert dtype " << tensor.dtype
-                         << " to target TRT dtype");
+    if (target_type != nvinfer1::DataType::kFLOAT &&
+        target_type != nvinfer1::DataType::kHALF) {
+        MINI_TRT_LOG_ERROR("Conversion target must be FP32 or FP16");
         return nullptr;
+    }
+
+    const size_t dtype_size = (target_type == nvinfer1::DataType::kFLOAT) ? 4u : 2u;
+    const size_t dst_bytes = num_elements * dtype_size;
+
+    // 命中缓存直接返回：其一是省去重复转换，其二是保证同一张量多次请求拿到同一个稳定指针。
+    auto cached = conversion_cache_.find(name);
+    if (cached != conversion_cache_.end() && cached->second.size() == dst_bytes) {
+        if (bytes != nullptr) {
+            *bytes = dst_bytes;
+        }
+        return cached->second.data();
     }
 
     const void* raw = GetRawData(name, nullptr);
-    if (!raw) return nullptr;
-
-    size_t dst_dtype_size = 0;
-    if (target_type == nvinfer1::DataType::kFLOAT) {
-        dst_dtype_size = 4;
-    } else if (target_type == nvinfer1::DataType::kHALF) {
-        dst_dtype_size = 2;
-    } else {
-        MINI_TRT_LOG_ERROR("BF16 conversion target must be FP32 or FP16");
+    if (raw == nullptr) {
         return nullptr;
     }
 
-    size_t dst_bytes = num_elements * dst_dtype_size;
-    conversion_buffer_.Resize(dst_bytes);
-    void* dst = conversion_buffer_.data();
-
-    const uint16_t* src_bf16 = static_cast<const uint16_t*>(raw);
-    if (target_type == nvinfer1::DataType::kFLOAT) {
-        float* dst_f32 = static_cast<float*>(dst);
-        for (size_t i = 0; i < num_elements; ++i) {
-            // BF16 用 16 位表示高 16 位尾数，低 16 位补 0 即等价于 FP32 的 bit 模式。
-            // 因此将 uint16_t 左移 16 位后按 float reinterpret，完成 BF16 -> FP32。
-            uint32_t val = static_cast<uint32_t>(src_bf16[i]) << 16;
-            std::memcpy(&dst_f32[i], &val, sizeof(float));
-        }
-    } else {
-        // BF16 -> FP16：直接截断尾数（简单实现，后续可优化为 round-nearest）
-        uint16_t* dst_f16 = static_cast<uint16_t*>(dst);
-        for (size_t i = 0; i < num_elements; ++i) {
-            // BF16 与 FP16 的指数位相同，直接保留高 16 位即截断 FP16 没有的尾数部分。
-            dst_f16[i] = src_bf16[i];
-        }
+    std::vector<char> converted(dst_bytes);
+    if (!ConvertTensorData(tensor.dtype, raw, num_elements, target_type,
+                           converted.data())) {
+        MINI_TRT_LOG_ERROR("Unsupported dtype conversion for tensor "
+                           << name << " (source dtype " << tensor.dtype << ")");
+        return nullptr;
     }
 
-    if (bytes) *bytes = dst_bytes;
-    return dst;
+    auto& slot = conversion_cache_[name];
+    slot = std::move(converted);
+    if (bytes != nullptr) {
+        *bytes = dst_bytes;
+    }
+    return slot.data();
 }
 
 std::vector<std::string> SafetensorsLoader::GetTensorNames() const {

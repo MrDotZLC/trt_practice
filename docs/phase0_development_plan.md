@@ -452,15 +452,45 @@ mini_trt_llm/
 
 ## 4. 验收标准（Phase 0 整体）
 
-> 以下验收项已由用户在本地 WSL2 真机环境确认通过（Agent 沙箱无 GPU，无法复现 CUDA 相关验证）。
+> **判据写法约定（自本节起沿用）**：Phase 0 最初的判据以"文件存在 / 命令能跑通"为准，
+> 结果是 `AddCvOptimizationProfile`、`AddLlmOptimizationProfiles` 这类**只声明未定义**的方法
+> 也被算作通过——而 `BuildFromConfig` 的动态 shape 能力实际上完全不可用，
+> 一直遗留到 Phase 1.5 才补齐（详见 `docs/TROUBLESHOOTING.md` #5 的教训）。
+>
+> 因此本节改写为**可执行判据**：每条都写明用什么命令或用例验证、以及判定通过的标准。
+> 后续 Phase 的验收标准一律采用这种写法，不再接受"代码/文件已存在"作为通过依据。
 
-- [x] `cmake -B build -DCMAKE_BUILD_TYPE=Release` 根目录配置成功。
-- [x] `cmake --build build --target mini_trt_llm` 编译成功。
-- [x] `cmake -B build -DBUILD_TESTS=ON && cmake --build build && ctest` 全部通过。
-- [x] 旧模块 `trt_resnet18`、`trt_gpt2` 仍可正常构建。
-- [x] SentencePiece 只编译核心 static lib，README.md 记录禁用功能。
-- [x] Safetensors 能读取 header 与张量元数据。
-- [x] `EngineBuilder` 通用化骨架可扩展（注册新的 IModelBuilder 不修改 Builder 类）。
+| # | 判据 | 验证方式（可执行） | 结果 |
+|---|---|---|---|
+| 1 | 根目录 CMake 配置成功 | `cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=75` | ✅ |
+| 2 | `mini_trt_llm` 目标编译成功 | `cmake --build build --target mini_trt_llm` 返回 0 | ✅ |
+| 3 | 单元测试全部通过 | `ctest --test-dir build`，判据为 **0 failed**；GPU 用例以 `GTEST_SKIP` 跳过不计为失败 | ✅ 当前 92 用例 |
+| 4 | SentencePiece 只编静态库且禁用非必要功能 | 产物中**无** `libsentencepiece.so`（只有 `.a`）；`grep '^SPM_' build/CMakeCache.txt` 中 `BUILD_TEST` / `ENABLE_SHARED` / `ENABLE_TCMALLOC` / `ENABLE_NFKC_COMPILE` / `BUILD_PYTHON_BINDINGS` 均为 OFF | ✅ |
+| 5 | Safetensors 能读取 header 与张量元数据 | `--gtest_filter='SafetensorsLoaderTest.*'`：须覆盖真实文件解析、dtype 与 shape 校验（不满足于"文件不存在返回 false"这类负向用例） | ✅ 9 用例 |
+| 6 | `EngineBuilder` 骨架可扩展：新增模型无需修改 Builder 类 | 测试侧独立注册 4 个 `IModelBuilder` 并成功构建 engine，且 `EngineBuilder` 源码未被改动 | ✅ `E2eSingleOpTest` |
+| 7 | **Optimization profile 能力可用**（Phase 0 遗漏、Phase 1.5 补齐的新增判据） | 两个 `Add*OptimizationProfile` 方法**有定义**且被 `BuildFromConfig` 按 architecture 调用；`--gtest_filter='E2eDynamicShapeTest.*'` 通过 | ✅ Phase 1.5 补齐 |
+| 8 | 旧模块 `trt_resnet18` / `trt_gpt2` 仍可构建 | **已失效**：根 `CMakeLists.txt` 自 Phase 1 起已注释掉这两个 `add_subdirectory`，当前无法通过根构建验证 | ⚠️ 见下 |
+
+### 4.1 关于 #7 的说明
+
+这一条是补写出来的，不是新增需求：`EngineBuilder::Config` 里 CV / Prefill / Decode 三组
+`min/opt/max_*` 字段从 Phase 0 就在，设计文档也把「Prefill / Decode 双 OptimizationProfile」
+列为已确认前提，但两个 profile 方法在 Phase 0 只写了声明、没有定义、也没有任何调用点。
+Phase 1.5 补齐后（2 个定义 + `BuildFromConfig` 中的调用），本条才真正成立。
+
+### 4.2 关于 #8 的说明
+
+Phase 0 的迁移策略是「保守并行，先共存后移除」，所以当时要求旧模块仍可构建。
+Phase 1 起旧模块已从根 `CMakeLists.txt` 注释掉，该判据**已不再适用**——它的目的（确认新框架
+不破坏旧能力）已经完成，而旧模块本就计划在 Phase 5 移除。两条出路，需要在 Phase 5 一并决定：
+
+- 若希望在移除前一直保有「旧模块可构建」的保证，应恢复 `add_subdirectory`；
+- 否则按原计划在 Phase 5 直接归档/删除，本条判据随之作废。
+
+当前默认按后者处理（不恢复），因为它会拖慢日常构建。
+
+> 补充：真机相关的验证（CUDA / TensorRT 执行）无法在 Agent 沙箱内复现，这一类判据统一由用户在
+> WSL2 环境执行，并在 `docs/PROGRESS.md` 的「真机验证记录」中留痕；沙箱内只跑 host 侧用例。
 
 ---
 

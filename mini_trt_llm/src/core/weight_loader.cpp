@@ -33,7 +33,7 @@ void WeightLoader::SetWeightMap(const JsonValue& map) {
 
 const void* WeightLoader::GetWeightBySourceKey(const std::string& source_key,
                                                nvinfer1::DataType target_type,
-                                               size_t* bytes) {
+                                               size_t* bytes) const {
     if (!loader_.HasTensor(source_key)) {
         MINI_TRT_LOG_WARN("Weight not found in safetensors: " << source_key);
         return nullptr;
@@ -43,7 +43,7 @@ const void* WeightLoader::GetWeightBySourceKey(const std::string& source_key,
 
 const void* WeightLoader::GetWeight(const std::string& trt_name,
                                     nvinfer1::DataType target_type,
-                                    size_t* bytes) {
+                                    size_t* bytes) const {
     auto it = weight_map_.find(trt_name);
     if (it != weight_map_.end()) {
         return GetWeightBySourceKey(it->second, target_type, bytes);

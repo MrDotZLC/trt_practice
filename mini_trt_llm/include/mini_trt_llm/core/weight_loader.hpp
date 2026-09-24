@@ -20,18 +20,20 @@ class WeightLoader {
     // 加载目录下的 model.safetensors
     bool Load(const std::string& model_dir);
 
-    // 设置 weight_map：source_key -> trt_name
+    // 设置 weight_map。方向是 TRT 层权重名 -> safetensors 中的 source key，
+    // 与 ModelConfig::weight_map 的语义一致，不要写反。
     void SetWeightMap(const JsonValue& map);
 
     // 直接通过 source key 获取权重
     const void* GetWeightBySourceKey(const std::string& source_key,
                                      nvinfer1::DataType target_type,
-                                     size_t* bytes);
+                                     size_t* bytes) const;
 
     // 通过 TRT 名称获取权重：先在 weight_map 中查找 source_key，再读取
+    // const 是为了配合 IModelBuilder::Build 的 const WeightLoader& 参数
     const void* GetWeight(const std::string& trt_name,
                           nvinfer1::DataType target_type,
-                          size_t* bytes);
+                          size_t* bytes) const;
 
     bool HasWeight(const std::string& trt_name) const;
 

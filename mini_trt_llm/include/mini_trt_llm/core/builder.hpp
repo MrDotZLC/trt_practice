@@ -72,10 +72,13 @@ class EngineBuilder {
                       std::unique_ptr<nvinfer1::INetworkDefinition>& network,
                       std::unique_ptr<nvinfer1::IBuilderConfig>& config);
 
-    bool AddCvOptimizationProfile(nvinfer1::IOptimizationProfile* profile,
+    // OptimizationProfile 只能由 IBuilder 创建，因此这几个入口都需要 builder。
+    bool AddCvOptimizationProfile(nvinfer1::IBuilder* builder,
+                                  nvinfer1::IBuilderConfig* config,
                                   nvinfer1::INetworkDefinition* network);
 
-    bool AddLlmOptimizationProfiles(nvinfer1::IBuilderConfig* config,
+    bool AddLlmOptimizationProfiles(nvinfer1::IBuilder* builder,
+                                    nvinfer1::IBuilderConfig* config,
                                     nvinfer1::INetworkDefinition* network);
 
     bool SerializeAndSave(nvinfer1::IHostMemory* serialized,

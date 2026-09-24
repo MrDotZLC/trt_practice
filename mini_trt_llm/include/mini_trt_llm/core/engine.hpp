@@ -28,6 +28,11 @@ class Engine {
     bool SetInputShape(const std::string& name, nvinfer1::Dims dims);
     bool SetTensorAddress(const std::string& name, void* ptr);
 
+    // 多 optimization profile 场景下选择使用哪一组形状。
+    // 单 profile 或全静态网络的 engine 无需调用。必须在 enqueue 之前设置；
+    // 切换 profile 后需要重新绑定 tensor address（TRT 会按新形状校验地址）。
+    bool SetOptimizationProfile(int32_t index, cudaStream_t stream);
+
     // 提交推理到指定 stream（异步）
     bool Enqueue(cudaStream_t stream);
 

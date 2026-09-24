@@ -230,5 +230,38 @@
 
 ---
 
+## 9. Phase 1 明确延后的能力
+
+以下三项在 Phase 1 实现算子层时**有意**未做，属于"能力延后"而非"漏项"，故从 `docs/PROGRESS.md`
+的下一步计划中迁出、归档到这里。
+
+### 9.1 PagedAttention 的 Prefill 阶段
+
+- **优先级**：P1
+- **背景**：Phase 1 只实现了 Decoding 阶段（query 序列长度为 1，决策 D1）。
+  Prefill 需要对 query 序列做因果 mask 与按位置分块，kernel 结构与 Decode 路径差异较大，
+  混在一起会同时拖慢两条路径。
+- **工作内容**：新增 Prefill kernel（因果 mask + 分块 softmax），Plugin 侧按 `seq_len` 分派；
+  去掉 `configurePlugin` 中"拒绝 `seq_len > 1`"的校验。
+- **触发时机**：Phase 2 的 GPT-2 若走单引擎（不分 Prefill/Decode 两个 engine），就必须先补。
+
+### 9.2 Sampler 的手写高性能 kernel
+
+- **优先级**：P1
+- **背景**：Phase 1 用 CUB 分段排序保证正确性（决策 Q15），Top-K / Top-P 目前每步都要对整行
+  `vocab_size` 做一次降序排序，是明显的性能瓶颈（`vocab_size` 可达 128K）。
+- **工作内容**：warp-level Top-K 选择（无需全排序）、bitonic sort、以及与后续 continuous batching 的配合。
+- **触发时机**：Phase 2 跑通端到端吞吐后，用 `nsys` / `ncu` 定位到 sampler 占比显著时。
+
+### 9.3 采样器参考数据固化为数据文件
+
+- **优先级**：P2
+- **背景**：D3 要求 Generation 层"对比分布"。Phase 1 已落地两件事：C++ 侧的统计检验
+  （词频收敛到解析 softmax 概率）与 `scripts/ref_sampler.py`（打印 HF 风格截断语义）。
+  尚未做的是把 Python 输出落盘成 `.bin` 供 C++ 测试直接载入，因此**与 HF 截断语义的自动化交叉验证缺失**。
+- **工作内容**：脚本导出 nucleus 集合与概率，测试读取并比对；顺带覆盖 `p` 接近 1 的边界。
+
+---
+
 *文档版本：v1.0*  
 *关联文档：`docs/mini_trt_llm_design.md`、`docs/phase0_development_plan.md`*

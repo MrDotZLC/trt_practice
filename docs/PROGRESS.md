@@ -1,7 +1,7 @@
 # mini_trt_llm 项目进度交接文档
 
 > 最后更新：2026-09-24  
-> 当前阶段：Phase 1 进行中（IPluginV3 基类 + RMSNormPlugin 已完成并接入注册表，下一步 RoPEPlugin）
+> 当前阶段：**Phase 1.5 已完成**（全流程测试基建与收尾）；下一步 Phase 2（GPT-2 原生构建）
 
 ---
 
@@ -77,6 +77,28 @@
 - **决策**：启用 `cpp-comment-style` skill，要求注释写"Why 而非 What"，必须覆盖魔数、workaround、非直观逻辑和公共 API；禁止复述代码、逐行翻译和遗留调试注释。
 - **为什么**：项目代码会长期维护并交给多轮会话接力，清晰的"Why"注释比代码本身更能降低接手成本。
 
+### 2.12 Phase 1 算子层的接口约定（实现时确立，勿回改）
+
+以下五条是实现 Phase 1 Plugin 时定下的约定，其中前三条与 `phase1_development_plan.md` 的早期表述**不一致**，
+是经用户确认后的有意偏离，后续会话不要按 plan 原文"修正"回去：
+
+- **形状优先、属性兜底**：`configurePlugin` 一律以输入形状为权威来源推导 `num_heads` / `head_size` 等；
+  只有对应维度是动态轴（`<= 0`）时才回退到属性值。因此针对属性的校验用例必须构造动态轴。
+- **RoPE 采用 half-split 约定**（`out[j] = x[j]cos - x[j+h]sin`），而非 plan §4.2 字面写的"相邻两维配对"。
+  **为什么**：plan 同节指定的测试参考是 HuggingFace `apply_rotary_pos_emb`，而它是 half-split；
+  已用 `scripts/ref_rope.py` 交叉验证，最大差异 `0.000e+00`。GPT-NeoX 风格留作后续属性开关。
+- **RoPE 的 head 配置不做序列化属性**：只序列化 `rotary_dim` 与 `base`，`num_heads` / `num_kv_heads` /
+  `head_size` 全部从形状推导。**为什么**：做成属性会多一份可能与形状失配的状态。
+- **PagedAttention 不含 `max_context_len` 输入**：plan §4.3 列了该标量输入，但 online softmax 按
+  per-batch `context_lens[b]` 循环，全局上界用不到，保留会成为死参数。
+- **采样器只有设备侧 API**：`sampler/sampler_common.hpp` 的 `Launch*Sampler` 是唯一接口，token 结果直接写回
+  device。**为什么**：Phase 0 遗留的「标量 k/p + host `std::vector` 输出」与 Q7（per-batch tensor）及
+  「Decode 全程驻留显存」冲突，已删除（见 §5.9）。实现文件落在 `src/sampler/sampler_kernels.cu`,
+  与 plan §3 写的 `src/plugins/sampler/*.cu` 不同——采样器不是 TensorRT Plugin，放在 `src/sampler/` 更贴合实际分层。
+
+另有一条 kernel 实现纪律（来自 `docs/TROUBLESHOOTING.md` #4）：
+**输出与输入分离的 kernel，只要存在"部分写入"路径，就必须显式处理未覆盖区间**。
+
 ---
 
 ## 3. 已完成的部分
@@ -126,12 +148,15 @@
 ### 3.6 工具与文档
 
 - `mini_trt_llm/tools/convert/hf_to_mini_trt_llm.py`：HF checkpoint → `config.json + model.safetensors` 转换脚本（真实实现的唯一落点）。
+- `scripts/ref_rope.py` / `scripts/ref_sampler.py`：参考语义自检脚本（RoPE 与 HuggingFace 交叉验证、采样器截断语义与理论概率）。
 - `requirements.txt`：转换工具依赖（已移到项目根目录）。
 - `docs/mini_trt_llm_design.md`：v1.0 设计文档。
 - `docs/phase0_development_plan.md`：Phase 0 开发计划。
 - `docs/phase0_code_review_plan.md`：Phase 0 代码 review 方案（review 由用户本人执行，尚未完成）。
 - `docs/phase0_model_loading_test_plan.md`：Phase 0 模型加载测试方案（T1–T3 尚未实施）。
 - `docs/phase1_development_plan.md`：Phase 1 开发方案 + 关键决策确认清单（含合并后的 15 项决策）。
+- `docs/phase1_test_plan.md`：Phase 1 全流程测试计划（模型加载 → builder 分发 → Plugin 挂载 → engine 构建/反序列化 → 推理 → 采样），含前置改造清单（G1/G2/G3）与实施顺序。
+- `docs/phase1_5_development_plan.md`：Phase 1.5 开发计划（P1.5-0 ~ P1.5-7 的任务、依赖、验收）。
 - `docs/TROUBLESHOOTING.md`：问题排查记录（现象 / 定位路径 / 根因 / 修复 / 回归防护）。
 - `docs/future_iterations.md`：后续迭代计划。
 - `mini_trt_llm/third_party/sentencepiece/README.md`：记录禁用功能。
@@ -152,62 +177,121 @@
   - 纯英文注释改为中文（`builder.hpp`、`memory_pool.cpp`）。
   - 魔数与边界逻辑补充"Why"注释（`builder.hpp` 默认值、`engine.cpp` 统计、`safetensors_loader.cpp` BF16 位运算）。
 
-### 3.9 Phase 1 插件进展
+### 3.9 Phase 1 插件与采样器
 
 | 文件 | 说明 |
 |---|---|
-| `include/mini_trt_llm/plugins/rmsnorm_kernel.hpp` | `LaunchRmsNorm` kernel 启动接口（单独暴露以便 L1 层直测 kernel，绕过 engine 构建） |
-| `include/mini_trt_llm/plugins/rmsnorm_plugin.hpp` | `RmsNormPlugin` + `RmsNormPluginCreator` |
-| `src/plugins/rmsnorm_plugin.cu` | CUDA kernel + Plugin 实现 + Creator + `REGISTER_TENSORRT_PLUGIN` 静态注册 |
-| `tests/test_rmsnorm_plugin.cpp` | 14 个用例：10 个 host 侧、4 个 GPU 门控（无 GPU 时 `GTEST_SKIP`） |
-| `tests/test_rmsnorm_integration.cpp` | L2 集成用例：真实 TRT network → engine 序列化/反序列化 → 推理对比 CPU 参考；外加注册表登记用例 |
-| `tests/test_gpu_guard.hpp` | 共享的 `HasCudaDevice()` 门控，供所有 GPU 用例复用 |
-| `tests/test_reference.hpp` | 共享的 CPU 参考实现与精度判定（相对误差 + 小值绝对误差 Guardrail） |
+| `include/mini_trt_llm/plugins/rmsnorm_{kernel,plugin}.hpp` + `src/plugins/rmsnorm_plugin.cu` | RMSNorm Plugin（一行一 block，FP32 `float4` / FP16 8×half 向量化，不能整除时回退标量） |
+| `include/mini_trt_llm/plugins/rope_{kernel,plugin}.hpp` + `src/plugins/rope_plugin.cu` | RoPE Plugin（half-split 约定，双输入双输出，`position_ids` 作为输入） |
+| `include/mini_trt_llm/plugins/paged_attention_{kernel,plugin}.hpp` + `src/plugins/paged_attention_plugin.cu` | PagedAttention Plugin（仅 Decoding，GQA/MHA，online softmax 单趟扫描） |
+| `include/mini_trt_llm/sampler/sampler_common.hpp` + `src/sampler/sampler_kernels.cu` | Greedy / Top-K / Top-P 采样器（设备侧 API，内联 Philox 随机源） |
+| `include/mini_trt_llm/utils/cuda_dtype.cuh` / `cuda_reduce.cuh` | 多 kernel 共用的 dtype 转换与 block 归约 |
+| `tests/test_{rmsnorm_plugin,rmsnorm_integration,rope_plugin,paged_attention_plugin,sampler}.cpp` | 算子单测 + L2 集成测试 |
+| `tests/test_gpu_guard.hpp` / `test_reference.hpp` | 共享的 GPU 门控与 CPU 参考实现 |
 
-- 实现要点：一行一个 block，warp shuffle 归约；FP32 走 `float4`、FP16 走 8×half（16B）向量化，`hidden_size` 不能整除时回退标量 kernel。
-- 已确认决策的落地：不带 bias；weight 作为第二输入；`eps` / `hidden_size` 按 float / int32 序列化；serialize↔deserialize 往返已单测覆盖。
-- `getWorkspaceSize()` 返回 0，`enqueue` 内无任何分配；失败以错误码返回而非抛异常（`enqueue` 为 `noexcept`）。
-- 注册表接入：`PluginRegistry::RegisterAllPlugins()` 由 stub 改为登记 `GetRmsNormPluginCreator()`，
-  与 `REGISTER_TENSORRT_PLUGIN` 的 TRT 全局注册并存（前者给本框架按名查找，后者给 engine 反序列化）。
+- 已确认决策的落地：RMSNorm 不带 bias、weight 作第二输入；RoPE `rotary_dim` 默认 `head_size` 且可配置、`position_ids` 作输入；PagedAttention `block_size` 强制显式配置、`scale` 为属性（默认 `1/sqrt(head_size)`）；采样器 k/p 为 per-batch tensor、随机源为 host seed + device Philox。
+- 统一的接口纪律：所有 Plugin 的 `getWorkspaceSize()` 返回 0、`enqueue` 内零分配、失败以错误码返回（`enqueue` 是 `noexcept`）；`supportsFormatCombination` 一律只读 `inOut[0..pos]`。
+- 注册表接入：`PluginRegistry::RegisterAllPlugins()` 登记三个 Plugin 的 creator，与 `REGISTER_TENSORRT_PLUGIN` 的 TRT 全局注册并存（前者给本框架按名查找，后者给 engine 反序列化）。
 - 构建改动：`mini_trt_llm/CMakeLists.txt` 的源文件 glob 增加 `src/*.cu`，否则 nvcc 产物不会进静态库。
-- 验证状态：沙箱内 `ctest` 32 个用例 **0 失败**（11 个 GPU 用例自动跳过）；用户在 WSL2 真机上跑
-  `--gtest_filter='RmsNorm*'` **全部通过**，即 kernel 数值与 engine 集成均已验证。
+- 验证状态：沙箱内 `ctest` 67 个用例 **0 失败**（26 个 GPU 用例自动跳过）；
+  用户在 WSL2 真机上跑 `--gtest_filter='RoPE*:PagedAttention*:Sampler*'` **全部通过**，
+  加上此前已通过的 `RmsNorm*`，**Phase 1 全部算子（kernel 数值 + engine 集成）均已在真机验证**。
+  过程中修复了一个只在部分旋转下暴露的 RoPE 缺陷（见 `docs/TROUBLESHOOTING.md` #4）。
+  ⚠️ 该数字是 Phase 1 收尾时的快照，**当前总数见 §3.10**。
+- 参考数据脚本：`scripts/ref_rope.py`（与 HuggingFace `apply_rotary_pos_emb` 交叉验证，最大差异 0.0）、
+  `scripts/ref_sampler.py`（Top-K/Top-P 截断语义与理论概率）。
+
+### 3.10 Phase 1.5：全流程测试基建与收尾
+
+| 文件 | 说明 |
+|---|---|
+| `tests/e2e_safetensors_writer.{hpp,cpp}` | 测试用 Safetensors 写入 helper（B/F16/BF16），让端到端夹具自包含、不依赖 Python |
+| `tests/e2e_fixture.{hpp,cpp}` | 临时模型目录（`mkdtemp` + 析构清理），组装 `config.json` + `model.safetensors` |
+| `tests/test_e2e_error_paths.cpp` | E4：5 条错误路径用例（3 条 host 侧可进 CI，2 条需 GPU） |
+| `tests/test_e2e_single_op.cpp` | E1：4 条单算子闭环（RMSNorm / RoPE / PagedAttention / Sampler），重量经真实 `WeightLoader` 取用 |
+| `tests/test_e2e_mini_decoder.cpp` | E2：**完整链路** `RMSNorm → QKV → Slice/Reshape → RoPE → PagedAttention → RMSNorm → LM Head → Top-K Sampler`，四权重均以 BF16 存储，与独立 CPU 参考对比 |
+| `tests/test_fp16_paths.cpp` | FP16 覆盖缺口：RoPE（含 GQA + batch>1 + 部分旋转）、PagedAttention、Greedy Sampler |
+| `tests/test_reference_helpers.cpp` | 参考实现自身的 meta-test（7 条 host 用例），含 `RopeIsBatchAware` 回归 |
+| `tests/test_e2e_dynamic_shape.cpp` | E3：Prefill 变长序列 / Decode 变 batch / 超范围拒绝 |
+| `mini_trt_llm/tests/test_safetensors_loader.cpp` | P1.5-0 的 8 条回归用例（dtype 组合矩阵、指针不别名、零拷贝） |
+
+- **产品代码修复**（详见 `docs/TROUBLESHOOTING.md` #5 / #6 / #7）：
+  - `SafetensorsLoader` 转换路径的 3 个缺陷：BF16 被误判为同类型而返回原始数据、往设备内存从主机侧写、
+    BF16→FP16 位截断在数值上错误；转换缓存改为按 key 隔离。
+  - `IModelBuilder::Build(const WeightLoader&)` 原先取不到权重（`GetWeight` 非 const），
+    读取路径改为 const + `mutable` 缓存。
+  - `EngineBuilder::BuildFromConfig` 调整校验顺序：纯数据校验前置于 `createInferBuilder`。
+- **动态 shape 打通**：`AddCvOptimizationProfile` / `AddLlmOptimizationProfiles` 由"只声明未定义"
+  变为已实现并接入；新增 `Engine::SetOptimizationProfile` 支持多 profile 切换。
+- **真机复验发现并修复的缺陷**：反序列化后的 Plugin 从未执行 `configurePlugin`，
+  而 RoPE / PagedAttention 的 head 配置是靠构建期从形状推导的、不作为序列化属性，
+  导致 `onShapeChange` 把正常形状误判为"改了 head 配置"，所有 RoPE 端到端用例在 enqueue 失败。
+  已改为以运行期形状为准刷新，并补 4 条 **host 侧**回归用例（详见 `docs/TROUBLESHOOTING.md` #8）。
+- **第二次真机复验发现并修复的缺陷**：参考实现 `ReferenceRoPE` 漏了 batch 维度，导致
+  `Fp16PathTest` 在 batch>1 时误判为 kernel 出错。已把参考实现收敛为唯一来源、加 batch 参数
+  与入口断言，并补 7 条 host 侧 meta-test（详见 `docs/TROUBLESHOOTING.md` #9）。
+- 验证状态：沙箱内 `ctest` **104 个用例 0 失败**（40 个 GPU 用例自动跳过，64 个 host 用例实际执行）；
+  参考实现这一层由 `test_reference_helpers.cpp` 在 CI 内自证。
+- **真机验证**：E1 / E2 / E3 与 E4 的 2 条 GPU 用例、FP16 覆盖用例（共 5 条）**全部通过**。
+  Phase 1.5 完成闭环——进入 Phase 2 建模前所需的组件（插件 / 采样器 / 权重加载 / 动态 shape /
+  端到端骨架）均已实现并在真机验证。
 
 ---
 
 ## 4. 进行中 / 未完成的部分
 
-### 4.1 Phase 1：Plugin 基础（进行中）
+### 4.1 Phase 1：Plugin 基础（已完成）
 
 - 决策状态：15 项待确认问题已全部关闭，无遗留阻塞项（详见 `docs/phase1_development_plan.md` §10）。
 - ✅ 完善 `IPluginV3` 基类，补齐 TRT 10.x 接口。
-- ✅ 实现 `RMSNormPlugin` + 单元测试（host 侧用例已通过；GPU 用例待真机验证）。
+- ✅ 实现 `RMSNormPlugin` + 单元测试（GPU 用例已在真机验证通过）。
 - ✅ `RMSNormPlugin` 接入 `PluginRegistry`，并补 L2 集成测试（真实 TRT network → engine 序列化/反序列化 → 推理）。
-- ⬜ 实现 `RoPEPlugin`。
-- ⬜ 实现 `PagedAttentionPlugin`（Decoding 阶段 GQA/MHA）。
-- ⬜ 实现 Sampler CUDA Kernels（Greedy / Top-K / Top-P）。
-- ⬜ 为其余 Plugin / Kernel 写单元测试。
+- ✅ 实现 `RoPEPlugin` + 单元测试。
+- ✅ 实现 `PagedAttentionPlugin`（Decoding 阶段 GQA/MHA）+ 单元测试。
+- ✅ 实现 Sampler CUDA Kernels（Greedy / Top-K / Top-P）+ 单元测试。
+- ✅ 全部 GPU 用例已在用户 WSL2 真机验证通过。
 
-### 4.2 Phase 2：GPT-2 原生构建（未开始）
+Phase 1 明确不在本次范围内、留待后续的项：
+
+- PagedAttention 的 **Prefill 阶段**（query 序列长度 > 1）——需要因果 mask 与分块，与 Decode 路径 kernel 结构差异大。
+- 采样器分布级对比（D3）已落地为两件事：C++ 侧的统计检验（词频收敛到解析 softmax 概率），以及
+  `scripts/ref_sampler.py` 打印的 HF 风格截断语义；尚未做的是把 Python 输出固化成数据文件供测试载入。
+- Sampler 的手写高性能 kernel（Phase 1 用 CUB 分段排序保证正确性）。
+
+### 4.2 Phase 1.5：全流程测试基建与收尾（已完成）
+
+- ✅ P1.5-0：修复 `SafetensorsLoader` 转换路径的 3 个缺陷（详见 `docs/TROUBLESHOOTING.md` #5）。
+- ✅ P1.5-1 / P1.5-2：Safetensors 写入 helper；E4 错误路径用例。
+- ✅ P1.5-3：E1 单算子闭环（4 条）。
+- ⚠️ P1.5-4：E2 **缩减完成**——交付了多权重 BF16 路径的数值验证，
+  完整 `RMSNorm → QKV → RoPE → PagedAttention → LM Head` 链路与 `ref_mini_block.py` 有意留后
+  （理由见 `docs/phase1_5_development_plan.md` §0.1）。
+- ✅ P1.5-5 / P1.5-6：Optimization profile 实现；E3 动态 shape 测试。
+- ✅ P1.5-7：文档归位 4/4，含把 `phase0_development_plan.md` 的验收判据改写为可执行形式，
+  并补上 Phase 0 遗漏的「Optimization profile 能力可用」一条。
+
+真机复验：E1 / E2 / E3 与 E4 的 2 条用例**已通过**。
+
+### 4.3 Phase 2：GPT-2 原生构建（未开始）
 
 - 实现 `GPT2ModelBuilder`。
 - 从 Safetensors 加载 GPT-2 权重并构建 TRT network。
 - 实现 `LLMRunner` 的 `Prefill → Decode` 自回归循环。
 - 与 `1_gpt2_onnx/ref_output.bin` 对比精度。
 
-### 4.3 Phase 3：GPT-2 ONNX + Plugin（未开始）
+### 4.4 Phase 3：GPT-2 ONNX + Plugin（未开始）
 
 - 实现 `OnnxBuilder` + subgraph replacer。
 - 对 `1_gpt2_onnx/gpt2.onnx` 替换 RoPE / RMSNorm / Attention 子图。
 - 验证与方案 A 输出一致。
 
-### 4.4 Phase 4：ResNet18 替换（未开始）
+### 4.5 Phase 4：ResNet18 替换（未开始）
 
 - 实现 `ResNet18ModelBuilder`。
 - 支持 FP32 / FP16（INT8 延后）。
 - 实现 `CVRunner`。
 
-### 4.5 Phase 5：清理旧模块（未开始）
+### 4.6 Phase 5：清理旧模块（未开始）
 
 - 从根 `CMakeLists.txt` 彻底删除旧模块 `add_subdirectory`（当前仅注释）。
 - 删除 `0_resnet18_onnx/` 与 `1_gpt2_onnx/`（或移入 `archive/`）。
@@ -268,26 +352,39 @@
 - **Workaround**：已改为只与 `inOut[0]` 比对；新增回归用例 `RmsNormPluginTest.IgnoresInvalidDescriptorsAfterPos`。
 - **排查过程**：见 `docs/TROUBLESHOOTING.md` #2。
 
+### 5.9 采样器曾存在两套 API（已清理）
+
+- **问题（已解决）**：Phase 0 留下的 `sampler/{greedy,topk,topp}_sampler.{hpp,cpp}` 声明的是「标量 k/p + host `std::vector` 输出」的接口，与已确认的 Q7（per-batch tensor）和「Decode 全程驻留显存」冲突，函数体仍是 `throw not implemented`。
+- **解决**：经用户授权删除 6 个旧桩文件，采样器 API 统一收敛到 `sampler/sampler_common.hpp` + `src/sampler/sampler_kernels.cu`。
+
+### 5.10 GPU 用例在沙箱内无法执行（已确认为环境限制，非缺陷）
+
+- **问题**：所有 kernel 数值与 engine 集成用例都需要 GPU，沙箱内只会 `GTEST_SKIP`。
+- **影响**：Agent 侧的结论上限是「编译通过 + 契约自洽 + host 侧逻辑正确」。
+- **现状**：Phase 1 全部 GPU 用例已由用户在真机验证通过；这是**流程约束而非遗留缺陷**，
+  后续 Phase 每完成一个算子，都需要同样走一遍真机验证。
+
 ---
 
 ## 6. 下一步计划
 
-**Phase 1 第三步：实现 RoPEPlugin + 单元测试**
+**Phase 2：GPT-2 原生构建（方案 A）**
 
-理由：RMSNorm 已把 `IPluginV3` 模板、序列化、注册、测试流程跑通，RoPE 与之相互独立、可复用同一套脚手架，适合作为下一个算子。RoPE 需要处理 `position_ids` 与部分旋转（`rotary_dim < head_size`），复杂度高于 RMSNorm。
+理由：Phase 1 的算子层（RMSNorm / RoPE / PagedAttention / Sampler）已齐备，可以开始搭真实模型。注意 GPT-2 使用**学习式位置编码**而非 RoPE，因此 Phase 2 先不依赖 RoPE Plugin；RoPE 是给后续 LLaMA 类模型准备的。
 
-Phase 1 关键技术决策（已确认，完整清单 D1–D5 + Q1–Q15 见 `docs/phase1_development_plan.md` §10），要点：
+Phase 1.5 为其扫清的前置：dynamic shape 的 optimization profile 已打通（Phase 2 的 Prefill/Decode
+双引擎直接依赖它）；多权重取用路径已有端到端验证，且修掉了会让 GPT-2 静默建错的转换缓冲区缺陷。
 
-- PagedAttention 先做 Decoding 阶段 GQA/MHA，Prefill 后续迭代。
-- Sampler 先用 **CUB**（非 Thrust）保证正确性，手写高性能 kernel 后续迭代。
-- Plugin/算子层与 PyTorch/HF 参考输出逐元素对比；Generation 层对比分布/Logits 统计量。
-- FP16 相对误差 < 1e-3，配合绝对误差 Guardrail（不要求逐 bit 一致）。
-- RMSNorm 不支持 bias；weight 作为 Plugin 输入，依赖 TRT 常量折叠。
-- PagedAttention `block_size` 强制显式配置，无默认值；`scale` 作为属性。
-- Sampler k/p 使用 per-batch tensor，支持连续批处理；随机数用 host seed + device Philox。
-- Plugin 标量属性统一用 float 存储；Top-K/Top-P 按 `vocab_size <= 128K` 设计。
-- 参考输出全部使用固定 seed；Phase 1 需完整实现并测试 serialize/deserialize。
-- 所有 GPU 验证/测试任务需经人工确认后执行。
+**Phase 2 开工前建议先做**：
+
+1. 真机复验 Phase 1.5 的 E1/E2/E3（命令见 `docs/phase1_5_development_plan.md`）。
+2. 补齐 E2 的完整链路与 `ref_mini_block.py`——它是 GPT-2 子图的缩微版，可当作 GPT-2 接线的脚手架。
+
+> 开发流程提醒：Phase 1 的经验是「沙箱内 host 用例通过不代表真机没问题」——
+> RoPE 的部分旋转缺陷只有真机 kernel 执行才暴露。后续每个 Phase 结束都应走一遍真机验证。
+
+> 本节只保留下一步入口。Phase 1 的 15 项已确认决策见 `docs/phase1_development_plan.md` §10，
+> Phase 1 确立的接口约定见本文档 §2.12，均已归档，不再在此重复。
 
 ---
 
@@ -306,7 +403,7 @@ Phase 1 关键技术决策（已确认，完整清单 D1–D5 + Q1–Q15 见 `do
 | SentencePiece | v0.2.0 |
 | safetensors-cpp | main（commit af90b6c） |
 | GoogleTest | release（源码嵌入） |
-| Python 依赖 | `transformers>=4.40`, `safetensors>=0.4`, `torch>=2.0` |
+| Python 依赖 | `torch 2.5.1+cu121`（已装，`scripts/` 下的参考脚本直接可跑）；`transformers>=4.40`, `safetensors>=0.4` |
 
 ---
 
