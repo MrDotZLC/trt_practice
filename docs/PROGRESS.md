@@ -99,6 +99,24 @@
 另有一条 kernel 实现纪律（来自 `docs/TROUBLESHOOTING.md` #4）：
 **输出与输入分离的 kernel，只要存在"部分写入"路径，就必须显式处理未覆盖区间**。
 
+### 2.13 测试与验证约定（Phase 1 / 1.5 沉淀，后续沿用）
+
+- **参考实现必须唯一、必须自带断言、必须有 host 侧 meta-test**。
+  **为什么**：参考实现是裁决对错的标尺，标尺错了会给出错误裁决——Phase 1.5 就吃过一次
+  （`ReferenceRoPE` 漏了 batch 维度，把实现正确的 kernel 判成错的，见 #9）。
+  "参考与被测必须独立"针对的是参考 vs 实现；同一算子的两份参考彼此只会漂移，必须合并。
+  参考实现是纯 host 代码，进 CI 的成本远低于一次真机往返。
+- **带 batch 维的算子必须覆盖 `batch > 1`**。
+  **为什么**：Phase 1.5 的两个缺陷（C++ 参考、Python 交叉验证脚本）在 `batch=1` 时**都表现为通过**。
+- **验证分层**：host 侧用例（含参考实现 meta-test）进沙箱 / CI；GPU 用例在用户 WSL2 真机跑，
+  并在本文档 §3 留痕。**沙箱内 host 全绿不代表真机没问题**——Phase 1 的 RoPE 部分旋转缺陷、
+  Phase 1.5 的反序列化缺陷都只在真机暴露。
+- **每个 Phase 结束必须走一遍真机验证**，不留给下个阶段。
+- **失败时的判别方法**：先看"错误从哪个维度边界开始"——这通常直接指向是哪个维度的处理写错了；
+  再用"某个配置下能过"反推可以排除哪些代码路径。两者都比逐行读代码快。
+- **`pipeline` 组件要区分构建期与运行期**：凡是"从形状推导"的状态，运行期入口
+  （`onShapeChange`）都必须能自行推导，不能依赖只在构建期发生的初始化（见 #8）。
+
 ---
 
 ## 3. 已完成的部分
@@ -141,9 +159,12 @@
 
 ### 3.5 测试
 
-- `mini_trt_llm/tests/test_*.cpp`：覆盖 cuda_check、logger、timer、memory_pool、io、model_config、model_registry、safetensors_loader、engine。
-- 当前状态：用户本地 **100% tests passed**。
-- 覆盖度局限：`test_safetensors_loader.cpp` 目前只有「文件不存在返回 false」一个负向用例，真实文件解析、ONNX→Engine、DummyBuilder 端到端尚未实现（见 `docs/phase0_model_loading_test_plan.md`）。
+- `mini_trt_llm/tests/test_*.cpp`：Utils / Core 骨架（cuda_check、logger、timer、memory_pool、io、
+  model_config、model_registry、safetensors_loader、engine）+ Phase 1 算子 + Phase 1.5 端到端。
+- 当前状态：沙箱内 `ctest` **104 个用例 0 失败**（40 个 GPU 用例自动跳过）。
+  分层与覆盖度详见 §3.9 / §3.10 与 `docs/phase1_test_plan.md`。
+- 待补（不阻塞 Phase 2）：`docs/phase0_model_loading_test_plan.md` 里 T2（ONNX→Engine）仍未实施；
+  T1 / T3 的能力已由 Phase 1.5 的 E1/E2 以更强的形式覆盖。
 
 ### 3.6 工具与文档
 
@@ -153,7 +174,8 @@
 - `docs/mini_trt_llm_design.md`：v1.0 设计文档。
 - `docs/phase0_development_plan.md`：Phase 0 开发计划。
 - `docs/phase0_code_review_plan.md`：Phase 0 代码 review 方案（review 由用户本人执行，尚未完成）。
-- `docs/phase0_model_loading_test_plan.md`：Phase 0 模型加载测试方案（T1–T3 尚未实施）。
+- `docs/phase0_model_loading_test_plan.md`：Phase 0 模型加载测试方案。状态：T1 / T3 的能力已由
+  Phase 1.5 的 E1 / E2 以更强的形式覆盖；**T2（ONNX → Engine）仍未实施**。
 - `docs/phase1_development_plan.md`：Phase 1 开发方案 + 关键决策确认清单（含合并后的 15 项决策）。
 - `docs/phase1_test_plan.md`：Phase 1 全流程测试计划（模型加载 → builder 分发 → Plugin 挂载 → engine 构建/反序列化 → 推理 → 采样），含前置改造清单（G1/G2/G3）与实施顺序。
 - `docs/phase1_5_development_plan.md`：Phase 1.5 开发计划（P1.5-0 ~ P1.5-7 的任务、依赖、验收）。
@@ -274,10 +296,12 @@ Phase 1 明确不在本次范围内、留待后续的项：
 
 ### 4.3 Phase 2：GPT-2 原生构建（未开始）
 
-- 实现 `GPT2ModelBuilder`。
-- 从 Safetensors 加载 GPT-2 权重并构建 TRT network。
-- 实现 `LLMRunner` 的 `Prefill → Decode` 自回归循环。
-- 与 `1_gpt2_onnx/ref_output.bin` 对比精度。
+- 开工顺序与风险提示见 **§6.2**；关键事实（GPT-2 不用 RMSNorm / RoPE）见 **§6.1**。
+- 先做多权重加载 spike（约 150 个张量、BF16/FP16 源），再确认 LayerNorm / GELU(tanh)
+  用 TRT 原生层够用，然后实现 `GPT2ModelBuilder`（先 Prefill 单形状）。
+- 之后接 `PagedAttention` + Decode 引擎 + Prefill/Decode 双 profile，实现 `LLMRunner`
+  的 `Prefill → Decode` 自回归循环。
+- 精度对比基准：`1_gpt2_onnx/ref_output.bin`（PyTorch FP32）。
 
 ### 4.4 Phase 3：GPT-2 ONNX + Plugin（未开始）
 
@@ -319,11 +343,12 @@ Phase 1 明确不在本次范围内、留待后续的项：
 - **影响**：Tokenizer 结果可能与 Python `transformers` 不完全一致。
 - **Workaround**：后续实现 `BpeTokenizer : BaseTokenizer`，与 Python tokenizer 逐 case diff。
 
-### 5.4 BF16 → FP16 简单截断
+### 5.4 BF16 转换（已修复）
 
-- **问题**：`safetensors_loader.cpp` 中 BF16→FP16 直接截断尾数，非 round-nearest。
-- **影响**：精度损失略大。
-- **Workaround**：后续优化为 round-nearest 转换；或优先用 FP32 权重。
+- **原问题**：`safetensors_loader.cpp` 中 BF16→FP16 直接截断尾数，非 round-nearest；
+  且当时没有意识到 BF16 与 FP16 的指数位宽度不同（8 vs 5），位截断在数值上根本不成立。
+- **现状态**：已由 P1.5-0 修复——统一先还原成 FP32 再降到目标精度，并补齐
+  FP16→FP32 / FP32→FP16。详见 `docs/TROUBLESHOOTING.md` #5。
 
 ### 5.5 沙箱环境无法访问 GPU
 
@@ -370,21 +395,52 @@ Phase 1 明确不在本次范围内、留待后续的项：
 
 **Phase 2：GPT-2 原生构建（方案 A）**
 
-理由：Phase 1 的算子层（RMSNorm / RoPE / PagedAttention / Sampler）已齐备，可以开始搭真实模型。注意 GPT-2 使用**学习式位置编码**而非 RoPE，因此 Phase 2 先不依赖 RoPE Plugin；RoPE 是给后续 LLaMA 类模型准备的。
+### 6.1 关键事实：GPT-2 用不上 Phase 1 的 RMSNorm / RoPE
 
-Phase 1.5 为其扫清的前置：dynamic shape 的 optimization profile 已打通（Phase 2 的 Prefill/Decode
-双引擎直接依赖它）；多权重取用路径已有端到端验证，且修掉了会让 GPT-2 静默建错的转换缓冲区缺陷。
+对 `1_gpt2_onnx/gpt2.onnx` 做过算子统计：
 
-**Phase 2 开工前建议先做**：
+```
+LayerNormalization × 25   （2/block × 12 + 最终 1 层）
+Tanh × 12                 （gelu_new，tanh 近似）
+MatMul × 25 / Gemm × 48 / Softmax × 12
+输入 input_ids → 输出 logits
+```
 
-1. 真机复验 Phase 1.5 的 E1/E2/E3（命令见 `docs/phase1_5_development_plan.md`）。
-2. 补齐 E2 的完整链路与 `ref_mini_block.py`——它是 GPT-2 子图的缩微版，可当作 GPT-2 接线的脚手架。
+GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 RoPE。由此：
+
+- **`RMSNormPlugin` 与 `RoPEPlugin` 在当前 Phase 2–5 的计划里没有使用者**，其价值要等到接入
+  LLaMA 类模型时才兑现。这不算做错（PagedAttention 仍会用于 GPT-2 的 decode，且这三个插件是
+  Phase 1 已确认的交付），但排期时需要知道。
+- Phase 2 需要而 Phase 1 没提供的是 **LayerNorm**——但它在 ONNX 里是标准算子，
+  TRT 10 有原生实现，**预计不需要写插件**（开工前先确认）。
+
+> 注意：不要再用「E2 的 mini decoder 是 GPT-2 子图的缩微版」这个类比——E2 那条链
+> （`RMSNorm → RoPE → PagedAttention`）是 **LLaMA 风格**的，与 GPT-2 结构不同。
+> 该类比曾写进文档，已更正，见 `docs/phase1_5_development_plan.md` §0.1。
+
+### 6.2 建议的开工顺序（按风险从高到低）
+
+1. **多权重加载 spike（最高风险，先做）**：用 GPT-2 的真实权重（约 150 个张量、BF16/FP16 源）
+   跑通 `WeightLoader → GetWeight → addConstant`。P1.5-0 修的"转换缓冲区互相覆盖"在 2 个权重时
+   是 bug，在 150 个权重时是灾难——这是整个 Phase 2 最容易静默出错的地方。
+2. **确认 LayerNorm / GELU(tanh) 用 TRT 原生层够用**：纯调研，成本低，避免不必要地写插件。
+3. **写 `GPT2ModelBuilder`（先只做 Prefill、单形状）**，并配一条端到端用例。
+4. **接 PagedAttention + Decode 引擎 + Prefill/Decode 双 profile**。
+
+### 6.3 Phase 1.5 已扫清的前置
+
+- dynamic shape 的 optimization profile 已打通（Phase 2 的双引擎直接依赖）；
+- 多权重取用路径已有端到端验证，且修掉了会让 GPT-2 静默建错的转换缓冲区缺陷；
+- 端到端骨架（模型目录 fixture / safetensors 写入 helper / 参考实现 meta-test）可直接复用。
 
 > 开发流程提醒：Phase 1 的经验是「沙箱内 host 用例通过不代表真机没问题」——
 > RoPE 的部分旋转缺陷只有真机 kernel 执行才暴露。后续每个 Phase 结束都应走一遍真机验证。
 
+> Phase 1 / 1.5 沉淀的完整测试与验证约定见 **§2.13**（参考实现唯一性与 meta-test、
+> `batch > 1` 覆盖、验证分层、失败判别方法等）。
+
 > 本节只保留下一步入口。Phase 1 的 15 项已确认决策见 `docs/phase1_development_plan.md` §10，
-> Phase 1 确立的接口约定见本文档 §2.12，均已归档，不再在此重复。
+> 接口约定见本文档 §2.12，测试与验证约定见 §2.13，均已归档，不再在此重复。
 
 ---
 
