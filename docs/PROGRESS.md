@@ -340,8 +340,13 @@
   Phase 1.5 的 E1 / E2 以更强的形式覆盖；**T2（ONNX → Engine）仍未实施**。
 - `docs/phase1_development_plan.md`：Phase 1 开发方案 + 关键决策确认清单（含合并后的 15 项决策）。
 - `docs/phase1_test_plan.md`：Phase 1 全流程测试计划（模型加载 → builder 分发 → Plugin 挂载 → engine 构建/反序列化 → 推理 → 采样），含前置改造清单（G1/G2/G3）与实施顺序。
-  **Phase 1.5 的测试口径也在这里**（E1–E4 的设计与链路图；执行结果与验收见 `phase1_5_development_plan.md` §0）。
-  该阶段**没有独立测试计划文件**（有意，避免两处来源）。
+  E1–E4 的**设计**与链路图在这里（唯一来源）；执行结果与验收见 `phase1_5_development_plan.md` §0/§5。
+- `docs/phase1_5_test_plan.md`：Phase 1.5 测试计划——分层（**S 支撑层** host 契约 / **E1** 单算子闭环 /
+  **E2** 多算子链路 / **E3** 动态 shape / **E4** 错误路径）、
+  **用例清单（用例 → 判据 → 出处 → 环境 → 状态）**、执行方式（含 `MINI_TRT_REQUIRE_GPU=1` 的真机口径）、
+  覆盖缺口、结果快照。层名刻意不用 `L1`/`L2`——那套编号在 `phase1_test_plan.md` 里指"算子单测/集成"。
+  **该阶段原先有意不写独立测试计划**（理由是"只重复 E1–E4 的设计"）；2026-09-25 补写时把定位限定为
+  "索引 + 执行口径"，**设计仍只认 `phase1_test_plan.md` §4**，避免重开两处来源的坑。
 - `docs/phase2_test_plan.md`：Phase 2 测试计划（补记）——分层（L0 host 契约 / L1 建网 / L2 数值 / L3 端到端）、用例清单、判据出处与缺口（G2-1 ~ G2-4）。
 - `docs/phase3_test_plan.md`：Phase 3 测试计划——分层（L0 图结构 / L1a 参数校验 / L1b 图契约 / L2 数值 / L3 性能）、用例清单、判据出处与缺口（G1c 已关闭，余 G5/G6）。
 - `docs/phase1_5_development_plan.md`：Phase 1.5 开发计划（P1.5-0 ~ P1.5-7 的任务、依赖、验收）。

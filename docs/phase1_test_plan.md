@@ -155,7 +155,11 @@ key_cache / value_cache（网络输入） ────────────�
 | E4.4 | `weight_map` 指向不存在的 source key | builder 取权重失败 → 返回 false（不得建出错误 engine） |
 | E4.5 | Plugin 配置非法（如 PagedAttention 未配 `block_size`） | 构建失败且错误信息指向具体插件 |
 
-E4 全部可在沙箱内执行，是这批用例里唯一能进 CI 的部分。
+> ⚠️ **2026-09-25 更正**：这里原写"E4 全部可在沙箱内执行，是这批用例里唯一能进 CI 的部分"，
+> 实测**不成立**：E4.4（`weight_map` 指向不存在的 key）与 E4.5（构建期失败传播）都要走
+> `createInferBuilder`，无 GPU 时同样 `GTEST_SKIP`。实际口径是 **3 条沙箱（E4.1/E4.2/E4.3）
+> + 2 条真机（E4.4/E4.5）**，与 `PROGRESS.md` §3.10 的记录一致。
+> 用例 → 环境的完整映射见 `docs/phase1_5_test_plan.md` §2。
 
 ---
 

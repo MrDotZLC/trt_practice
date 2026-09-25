@@ -343,7 +343,10 @@ Phase 3 的两次测量方向相反（`docs/phase3_test_plan.md` §3.1）：
 | **G2-3** | 同上 | `LLMRunner` 只支持 `batch = 1`（有意限定） | 需要批处理时再扩（同时引入多序列 block 分配、各自 `context_lens` 与采样参数） |
 | **G2-4** | 同上 | EOS 无法在循环内早停（已知 workaround，语义正确） | 见 `docs/PROGRESS.md` §5.0；若要真早停，需设备侧 stop flag + 条件图 |
 | ~~G7~~ | 开发计划 §4 | ~~探针未接入 ctest~~ **已关闭**（2026-09-25）：注册为 `onnx_graph_probe`，缺环境返回 77 → ctest 报 Skipped | —— |
+| **P1.5-a** | `docs/phase1_5_test_plan.md` §5 | **Top-K / Top-P 的 FP16 分支未覆盖**（Greedy 已覆盖；三者同属采样器同一处 dtype 分派，风险低） | 真正跑非贪心采样时（`temperature` / `top_p` 一旦进入产品路径） |
+| **P1.5-b** | 同上 | E2 的**完整链路**（`RMSNorm → QKV → RoPE → PagedAttention → LM Head`）与 `ref_mini_block.py` 有意留后（P1.5-4 缩减完成） | 要往 LLaMA 风格链路继续做时（Phase 4 之后），或怀疑"多算子相邻契约"出问题时 |
+| **P1.5-c** | 同上 | E3 只验"接受/拒绝"，未验**同 engine 内多次切换 profile 后的数值一致性** | 真的依赖多 profile 混用时（当前 runner 每步只用 profile 0） |
+| **P1.5-d** | 同上 | 采样器**分布级数据未固化**（`scripts/ref_sampler.py` 只打印，输出没落成测试数据） | 要做采样的统计正确性回归时（属增强，见本文件 §9.3） |
 
 **判定原则**：这些是"覆盖不足"，不是"已知缺陷"——已发现的缺陷一律进
 `docs/TROUBLESHOOTING.md` 并配回归用例；缺口是"还没被盯住的地方"，处置方式不同。
-
