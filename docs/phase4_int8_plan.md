@@ -221,6 +221,12 @@ torchvision ResNet18 (FP32, 本地权重)
 
 ## 7. 执行结果（待回填）
 
+> **2026-09-26 补（立项）**：P4-7-3 留下的两个开放项已从 `future_iterations.md` §11 的"索引"
+> 升级为**正式排期条目**——**§1.5**（per-channel 整网退化根因；做法 = 探"**量化前**"的 float
+> 张量，量化后的会被 bin 边界 ±1 格噪声淹没）与 **§1.6**（INT8 精度判据 + 带真值标签的验收集；
+> **前置依赖 = 联网下载，须先获批**）。本文件 §4 的判据表在 §1.6 落地后需回写
+> （阈值 + 样本量 + 出处）；在 §1.5 有结论前，per-channel 的整网退化仍是"原因未知"。
+
 | ID | 状态 | 实际产出 / 实测值 |
 |---|---|---|
 | P4-7-0 | ✅ **完成（2026-09-26）** | **S1**：弱类型网络**接受**对称 Q/DQ（最小图解析 + 构建成功、Q/DQ 与 Conv 融合）；**非对称 Q/DQ 解析期即失败**（`Non-zero zero point is not supported`）。**S2**：torch FX PTQ 能导出 QDQ（33 Q + 83 DQ），但默认非对称 → TRT 不可用；自建对称 QConfig 被 fbgemm 后端的 `input_dtype=quint8` 定义**静默丢弃** → A1 被证伪，按触发条件退 A2（已由 P4-7-1 落地）。**S3**：设 `ProfilingVerbosity::kDETAILED` 后逐层精度可读——实测读到 `CaskConvolution / Inputs Int8 / Weights Int8 / TacticName ...i8i8_i8i32...tensor8x8x16`，**"跑的是 INT8"有了直接证据**；同时发现 ONELINE 不用 `[I8]` 标签、且 Q/DQ 不受 builder flag 影响（两个配置都跑 INT8） |
