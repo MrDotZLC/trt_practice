@@ -2,7 +2,9 @@
 
 // GPT-2 用例的共享测试件：
 //   1. 小型 GPT-2 夹具（结构与真实模型同构，维度缩到可随手造）；
-//   2. 数值差异诊断（DiffStats / ComputeDiffStats / WithinAbs / ReadFloats）。
+//   2. 数值差异诊断——**实现已迁到 `diff_stats.hpp`**（Phase 4 的 CV 用例也要用，
+//      放这里会让 ResNet18 的用例去包含一个 GPT-2 头文件）。本文件继续转发它，
+//      既有 GPT-2 用例无需改动，且口径仍只有一份来源。
 //
 // **为什么要提成共享头**：权重配方（`sin(0.31*i + 1.0) * scale`）与超参数必须让所有
 // 用例完全一致——一旦有两份副本，它们会各自演化，而"权重不一样"造成的失败会伪装成
@@ -10,6 +12,7 @@
 // 各用例各写一份，阈值口径就会漂移（见 AGENTS.md §7）。本文件是它们的唯一来源。
 
 #include "e2e_fixture.hpp"
+#include "diff_stats.hpp"
 #include "mini_trt_llm/core/builder.hpp"
 #include "mini_trt_llm/core/gpt2_model_builder.hpp"
 #include "mini_trt_llm/utils/cuda_check.hpp"
@@ -51,37 +54,6 @@ inline constexpr int32_t kBlocksPerSeq = kPositions / kBlockSize;  // = 4
 // 不能靠放宽阈值把它盖过去**。
 constexpr float kSingleKeyTol = 1e-5f;  // 只有一个 key：softmax 权重恒为 1
 constexpr float kMultiKeyTol = 1e-5f;   // 多个 key：见上面的实测依据
-
-// 诊断用的差异汇总。
-//
-// **绝对差与相对差都要看**：相对差在参考值接近 0 时会被放大（logits 里本来就有
-// 接近 0 的分量），只报相对差会把"绝对差 1e-4 作用在 0.003 上"读成 3% 的误差，
-// 从而把结论引向错误的方向。因此两个都算，判据用绝对差为主。
-struct DiffStats {
-    float max_abs = 0.0f;
-    float max_rel = 0.0f;  // 以 max|reference| 为分母，避免小值放大
-};
-
-inline DiffStats ComputeDiffStats(const std::vector<float>& reference,
-                          const std::vector<float>& actual) {
-    DiffStats stats;
-    float scale = 0.0f;
-    for (float v : reference) {
-        scale = std::max(scale, std::fabs(v));
-    }
-    const float denominator = scale > 0.0f ? scale : 1.0f;
-    for (size_t i = 0; i < reference.size(); ++i) {
-        const float diff = std::fabs(reference[i] - actual[i]);
-        stats.max_abs = std::max(stats.max_abs, diff);
-        stats.max_rel = std::max(stats.max_rel, diff / denominator);
-    }
-    return stats;
-}
-
-// 绝对差判据（参考值的幅度已知时最可靠），相对差另附在诊断行里。
-inline bool WithinAbs(float reference, float actual, float abs_tol) {
-    return std::fabs(reference - actual) < abs_tol;
-}
 
 inline std::string SmallGpt2ConfigJson() {
     return R"({
@@ -154,14 +126,6 @@ inline EngineBuilder::Config SmallGpt2BuilderConfig() {
     config.opt_decode_batch = 1;
     config.max_decode_batch = 1;
     return config;
-}
-
-// 把某个输出张量从设备读回主机。
-inline std::vector<float> ReadFloats(const void* device_ptr, size_t count) {
-    std::vector<float> host(count);
-    CUDA_CHECK(cudaMemcpy(host.data(), device_ptr, count * sizeof(float),
-                          cudaMemcpyDeviceToHost));
-    return host;
 }
 
 }  // namespace test_support

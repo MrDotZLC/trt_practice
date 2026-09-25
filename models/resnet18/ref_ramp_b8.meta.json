@@ -1,0 +1,63 @@
+{
+  "script": "scripts/ref_resnet18.py",
+  "torch_version": "2.5.1+cu121",
+  "torchvision_version": "0.20.1+cu121",
+  "device": "cpu",
+  "num_threads": 1,
+  "deterministic_algorithms": true,
+  "weights": {
+    "name": "ResNet18_Weights.DEFAULT",
+    "url": "https://download.pytorch.org/models/resnet18-f37072fd.pth",
+    "cached_file": "/home/mr_zlc/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth",
+    "cached_file_sha256": "f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec"
+  },
+  "input": {
+    "kind": "ramp",
+    "batch": 8,
+    "shape": [
+      8,
+      3,
+      224,
+      224
+    ],
+    "dtype": "float32",
+    "contract_path": "models/resnet18/inputs/ref_ramp_b8.contract_input.f32.bin",
+    "contract_sha256": "a1fb5a64e2eb89097c9b2666402e9ee485c323e14eec8bef998bcbe7368e05b5",
+    "normalized_path": null,
+    "normalized_sha256": null,
+    "description": "合成斜坡 (i%255)/255，未归一化（与历史工程 src/main.cpp 同式）"
+  },
+  "normalization": {
+    "mean": [
+      0.48500001430511475,
+      0.4560000002384186,
+      0.4059999883174896
+    ],
+    "std": [
+      0.2290000021457672,
+      0.2240000069141388,
+      0.22499999403953552
+    ]
+  },
+  "logits": {
+    "path": "models/resnet18/ref_ramp_b8.bin",
+    "shape": [
+      8,
+      1000
+    ],
+    "sha256": "01a21176c6113e59567348ee4a395bb1290884598c51835649e17d2163b64668",
+    "argmax_per_sample": [
+      858,
+      858,
+      858,
+      858,
+      858,
+      858,
+      858,
+      858
+    ],
+    "min": -3.893685817718506,
+    "max": 9.049394607543945,
+    "mean": 1.1871337846969254e-05
+  }
+}

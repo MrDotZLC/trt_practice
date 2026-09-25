@@ -1,0 +1,63 @@
+{
+  "script": "scripts/ref_resnet18.py",
+  "torch_version": "2.5.1+cu121",
+  "torchvision_version": "0.20.1+cu121",
+  "device": "cpu",
+  "num_threads": 1,
+  "deterministic_algorithms": true,
+  "weights": {
+    "name": "ResNet18_Weights.DEFAULT",
+    "url": "https://download.pytorch.org/models/resnet18-f37072fd.pth",
+    "cached_file": "/home/mr_zlc/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth",
+    "cached_file_sha256": "f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec"
+  },
+  "input": {
+    "kind": "pixels",
+    "batch": 8,
+    "shape": [
+      8,
+      3,
+      224,
+      224
+    ],
+    "dtype": "float32",
+    "contract_path": "models/resnet18/inputs/ref_pixels_b8.contract_input.f32.bin",
+    "contract_sha256": "0ed3779754e8f4393e960f0f5900d9d120b7beac43ab37a41d2d10dcb2962985",
+    "normalized_path": "models/resnet18/inputs/ref_pixels_b8.normalized.f32.bin",
+    "normalized_sha256": "55a058c52375a18fbb8c3094feaf513aa4eb4c200c9acf90010e621619b14350",
+    "description": "[0,255] 像素质（由 calib_data 反归一化四舍五入得到），归一化由消费方按 ImageNet mean/std 完成"
+  },
+  "normalization": {
+    "mean": [
+      0.48500001430511475,
+      0.4560000002384186,
+      0.4059999883174896
+    ],
+    "std": [
+      0.2290000021457672,
+      0.2240000069141388,
+      0.22499999403953552
+    ]
+  },
+  "logits": {
+    "path": "models/resnet18/ref_pixels_b8.bin",
+    "shape": [
+      8,
+      1000
+    ],
+    "sha256": "3eedabcc3958c098b45ca9091bcf8678128da03183f0f0543baec04ff578f826",
+    "argmax_per_sample": [
+      376,
+      1,
+      1,
+      1,
+      392,
+      1,
+      5,
+      1
+    ],
+    "min": -8.340639114379883,
+    "max": 24.911766052246094,
+    "mean": 2.6108742531505413e-05
+  }
+}

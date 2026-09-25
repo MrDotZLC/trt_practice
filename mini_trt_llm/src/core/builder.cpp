@@ -2,6 +2,7 @@
 #include "mini_trt_llm/utils/logger.hpp"
 #include "mini_trt_llm/core/model_config.hpp"
 #include "mini_trt_llm/core/gpt2_model_builder.hpp"
+#include "mini_trt_llm/core/resnet18_model_builder.hpp"
 #include "mini_trt_llm/core/weight_loader.hpp"
 #include "mini_trt_llm/utils/cuda_check.hpp"
 #include "mini_trt_llm/utils/io.hpp"
@@ -15,6 +16,16 @@
 #include <stdexcept>
 
 namespace mini_trt_llm {
+
+OnnxIoContract OnnxIoContractFor(const std::string& architecture) {
+    // 只有 cnn 是"像素质进、logits 出"的形态；其余（decoder_only / encoder_decoder）
+    // 都是 token 进、logits 出。默认走 LLM 契约：它是既有行为，改默认会静默影响 Phase 3 的用例。
+    if (architecture == "cnn") {
+        return {"input", "output"};
+    }
+    return {"input_ids", "logits"};
+}
+
 namespace {
 
 struct DimRange {
@@ -84,6 +95,7 @@ EngineBuilder::EngineBuilder(Logger& logger, const Config& config)
     // 内置模型随 EngineBuilder 一起可用，调用方不必先知道有哪些模型；
     // 外部/测试用模型仍可通过 RegisterModelBuilder 覆盖或追加。
     registry_->Register("gpt2", std::make_shared<GPT2ModelBuilder>());
+    registry_->Register("resnet18", std::make_shared<ResNet18ModelBuilder>());
 }
 
 EngineBuilder::~EngineBuilder() = default;
@@ -112,7 +124,15 @@ bool EngineBuilder::SetupBuilder(
     if (config_.precision == Precision::FP16) {
         config->setFlag(nvinfer1::BuilderFlag::kFP16);
     }
-    // INT8 后续迭代实现
+    // INT8 不需要任何 builder flag：`kINT8` 自 TRT 10.12 起废弃（由 Q/DQ 显式量化取代），
+    // 引擎的精度由网络里的 Q/DQ 节点决定。实测（手搓对称 Q/DQ 最小图）：弱类型网络下
+    // Q/DQ 被正常接受，且 Q/DQ 与 Conv 会融合。见 docs/phase4_int8_plan.md §1.3 的 S1-b。
+
+    if (config_.detailed_profiling) {
+        // 逐层精度只在 DETAILED 下写进引擎；默认（kLAYER_NAMES_ONLY）读不出精度，
+        // 也就无法自证"引擎真的在跑 INT8"。见 Config 里的注释与该配置项的出处。
+        config->setProfilingVerbosity(nvinfer1::ProfilingVerbosity::kDETAILED);
+    }
 
     return true;
 }
@@ -347,21 +367,26 @@ bool EngineBuilder::BuildFromOnnx(const std::string& model_dir,
 
     // ONNX 侧的输入输出契约：方案 B 的图必须与方案 A 同名同义，
     // 否则"两条路对齐"无从谈起；名字对不上就直接失败，而不是等到绑定时才报错。
-    if (network->getNbInputs() < 1 || std::string(network->getInput(0)->getName()) != "input_ids") {
-        MINI_TRT_LOG_ERROR("ONNX graph: expected an input named 'input_ids', got '"
+    //
+    // 契约随 architecture 变（LLM: input_ids/logits；CV: input/output）——见 OnnxIoContractFor。
+    const OnnxIoContract io = OnnxIoContractFor(model_config.architecture);
+    if (network->getNbInputs() < 1 ||
+        std::string(network->getInput(0)->getName()) != io.input_name) {
+        MINI_TRT_LOG_ERROR("ONNX graph: expected an input named '" << io.input_name << "', got '"
                            << (network->getNbInputs() > 0 ? network->getInput(0)->getName()
                                                           : "<none>")
-                           << "'");
+                           << "' (architecture=" << model_config.architecture << ")");
         return false;
     }
-    bool has_logits = false;
+    bool has_expected_output = false;
     for (int32_t i = 0; i < network->getNbOutputs(); ++i) {
-        if (std::string(network->getOutput(i)->getName()) == "logits") {
-            has_logits = true;
+        if (std::string(network->getOutput(i)->getName()) == io.output_name) {
+            has_expected_output = true;
         }
     }
-    if (!has_logits) {
-        MINI_TRT_LOG_ERROR("ONNX graph: no output named 'logits'");
+    if (!has_expected_output) {
+        MINI_TRT_LOG_ERROR("ONNX graph: no output named '" << io.output_name
+                           << "' (architecture=" << model_config.architecture << ")");
         return false;
     }
 

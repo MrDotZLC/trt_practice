@@ -346,6 +346,9 @@ Phase 3 的两次测量方向相反（`docs/phase3_test_plan.md` §3.1）：
 | **P1.5-a** | `docs/phase1_5_test_plan.md` §5 | **Top-K / Top-P 的 FP16 分支未覆盖**（Greedy 已覆盖；三者同属采样器同一处 dtype 分派，风险低） | 真正跑非贪心采样时（`temperature` / `top_p` 一旦进入产品路径） |
 | **P1.5-b** | 同上 | E2 的**完整链路**（`RMSNorm → QKV → RoPE → PagedAttention → LM Head`）与 `ref_mini_block.py` 有意留后（P1.5-4 缩减完成） | 要往 LLaMA 风格链路继续做时（Phase 4 之后），或怀疑"多算子相邻契约"出问题时 |
 | **P1.5-c** | 同上 | E3 只验"接受/拒绝"，未验**同 engine 内多次切换 profile 后的数值一致性** | 真的依赖多 profile 混用时（当前 runner 每步只用 profile 0） |
+| **P4-INT8-a** | `docs/TROUBLESHOOTING.md` #29 / #30 | **权重 per-channel 量化在整网上比 per-tensor 差得多**（余量子集 54.5% vs 100%），而单卷积与"真实权重+残差"的最小 block 上它都**不差**（甚至更好）→ **原因仍未找到**。已排除四条假设：写法错、死通道 scale 跨度、模拟不忠实、残差融合 | 需要更高 INT8 精度时。**下一步已写明**（且已试过一版并说明为什么它不够）：逐层对拍要探"**量化前**"的 float 张量，而不是量化后的——后者在 bin 边界附近被 ±1 格噪声主导（与 kernel 正常差异同量级），分辨不出信号。详见 `TROUBLESHOOTING.md` #30.5 / #30.6 |
+| **P4-INT8-b** | `docs/phase4_int8_plan.md` §5 | INT8 的**数值上界判据未定**（当前只在"有判别力子集"上用一致率判） | 需要给出 INT8 的绝对误差保证时（要更大、更有代表性的验收集） |
+| **P4-FP16-a** | `docs/phase4_int8_plan.md` §1.1 | **FP16 路径仍使用已废弃的 `BuilderFlag::kFP16`**（TRT 10.12 起废弃，指向 strong typing）；实测可用 | 真要迁到强类型网络时（两条 builder 的每个算子都要显式设类型，代价大） |
 | **P1.5-d** | 同上 | 采样器**分布级数据未固化**（`scripts/ref_sampler.py` 只打印，输出没落成测试数据） | 要做采样的统计正确性回归时（属增强，见本文件 §9.3） |
 
 **判定原则**：这些是"覆盖不足"，不是"已知缺陷"——已发现的缺陷一律进

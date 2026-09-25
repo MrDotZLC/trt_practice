@@ -11,6 +11,20 @@
 
 namespace mini_trt_llm {
 
+// ONNX 图的 I/O 契约随 architecture 而不同：
+//   LLM（decoder_only / encoder_decoder）→ 输入 `input_ids`、输出 `logits`；
+//   CV（cnn）                            → 输入 `input`、输出 `output`。
+//
+// 为什么做成独立的小函数而不是内联在 BuildFromOnnx 里：这张映射表也要能被**沙箱里的
+// host 用例**直接测到。内联时它只在"解析 ONNX + 建 builder"之后才执行，而那两步都需要 CUDA——
+// 等于把"名字写错即失败"这条护栏放到真机上才验证得到（Phase 4 的计划里 R1.4 就是这个用意）。
+struct OnnxIoContract {
+    const char* input_name;
+    const char* output_name;
+};
+
+OnnxIoContract OnnxIoContractFor(const std::string& architecture);
+
 // 统一 Engine 构建入口。
 // 支持两种模式：
 //   1. BuildFromConfig：从 Safetensors + JSON config 原生构建。
@@ -26,8 +40,13 @@ class EngineBuilder {
         size_t workspace_bytes = 1UL << 30;
 
         // CV 动态 batch 范围，覆盖 ResNet18 等 CNN 模型常见 batch。
+        //
+        // opt 取 8（而不是 1）：TRT 针对 kOPT 形状挑最快 kernel，"越接近 kOPT 性能越好"。
+        // 历史工程 0_resnet18_onnx/src/builder.cpp 用的就是 min/opt/max = 1/8/16，
+        // 沿用 1 会让 batch ≥ 2 的推理走非最优 kernel、性能结论失真。
+        // 见 docs/phase4_development_plan.md §3.5。
         int min_batch = 1;
-        int opt_batch = 1;
+        int opt_batch = 8;
         int max_batch = 16;
 
         // LLM Prefill 阶段动态 shape 范围。
@@ -52,6 +71,15 @@ class EngineBuilder {
         // 因为它会改变网络的 I/O 契约（多出 4 个中间张量，消费方必须逐个绑定），
         // 语义与后果见 BuildOptions::export_diagnostics。
         bool export_diagnostics = false;
+
+        // 逐层精度是否写进引擎（`ProfilingVerbosity::kDETAILED`），默认关。
+        //
+        // **为什么需要它**：`IEngineInspector::getLayerInformation` 在默认的
+        // `kLAYER_NAMES_ONLY` 下**只返回层名**，读不出每层的实际精度——那就无法证明
+        // "这个引擎真的在跑 INT8"（而不是静默回落 FP16/FP32）。实测与结论见
+        // docs/phase4_int8_plan.md §1.3 的 S3。
+        // 默认关的理由：它会增加引擎体积与构建时间，只有"需要自证精度"的场合才开。
+        bool detailed_profiling = false;
     };
 
     explicit EngineBuilder(Logger& logger, const Config& config);

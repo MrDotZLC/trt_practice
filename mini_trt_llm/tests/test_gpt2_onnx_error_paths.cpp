@@ -101,7 +101,12 @@ TEST_F(Gpt2OnnxErrorTest, RejectsUnreadableOnnxPath) {
 // ---------------------------------------------------------------------------
 //
 // 夹具直接用仓库里已有的 `0_resnet18_onnx/resnet18.onnx`：它的 I/O 名是
-// `input` / `output`，与方案 B 要求的 `input_ids` / `logits` 完全不同。
+// `input` / `output`，与**LLM 契约**要求的 `input_ids` / `logits` 完全不同。
+//
+// ⚠️ **架构必须声明成 LLM（2026-09-25 修正）**：P4-2 起 `cnn` 的契约就是 `input`/`output`，
+// 所以"配一个 cnn 配置"不再构成"外来 I/O 名"——最早那版正是这么写的，被真机全量回归抓红
+// （用例的**意图**不变：I/O 名与**声明的架构契约**不符时必须被拒；CNC 侧的正面覆盖
+// 由 `ResNet18OnnxBuildTest.*` 负责）。
 // **为什么用现成文件而不是造一个 ONNX**：造图需要 protobuf 级生成器（成本高、易错），
 // 而"非同名图"这个场景仓库里本来就有真实样本；省下的成本留给真正的缺口（见测试计划 G1c）。
 //
@@ -125,7 +130,7 @@ TEST_F(Gpt2OnnxErrorTest, RejectsGraphWithForeignIoNames) {
     // 给这份 ONNX 配一个合法的模型目录：这样失败一定来自 I/O 名校验，
     // 而不是"config 缺失"这类更早的检查。
     ASSERT_TRUE(directory_.WriteConfig(R"({
-        "model_type": "resnet18", "architecture": "cnn",
+        "model_type": "gpt2", "architecture": "decoder_only",
         "hyper_params": {}, "weight_map": {}
     })"));
     EngineBuilder builder(logger_, EngineBuilder::Config{});

@@ -42,3 +42,23 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(onnx_graph_probe PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
+# ---------------------------------------------------------------------------
+# ResNet18 转换脚本的"护栏自检"（Phase 4 P4-4）
+#
+# 为什么进 ctest：转换脚本里有 5 道自检（拒绝未消费的 initializer / 拒绝不支持的带权算子 /
+# 拒绝逻辑名冲突 / 拒绝形状不自洽 / 拒绝缺 fc）。**护栏没有用例证明"它会拦人"就等于没有护栏**——
+# 这个项目已经吃过"声明了却没人核对"的亏（见 docs/phase3_test_plan.md §5 的 G1c）。
+# 自检把真模型按 5 种方式改坏，逐个确认每道护栏都会拦。
+#
+# 环境语义：缺 Python / 缺 onnx 包 / 缺 resnet18.onnx 时**跳过**（返回 77），不是失败
+# ——与 onnx_graph_probe 同口径。无需 GPU，沙箱即可跑。
+# ---------------------------------------------------------------------------
+if(Python3_Interpreter_FOUND)
+    add_test(NAME resnet18_convert_selftest
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/convert/onnx_to_mini_trt_llm.py
+                --onnx ${CMAKE_CURRENT_SOURCE_DIR}/../../0_resnet18_onnx/resnet18.onnx
+                --output_dir ${CMAKE_CURRENT_BINARY_DIR}/resnet18_convert_selftest
+                --self-test --skip-if-missing)
+    set_tests_properties(resnet18_convert_selftest PROPERTIES SKIP_RETURN_CODE 77)
+endif()

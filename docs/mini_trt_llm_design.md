@@ -473,7 +473,11 @@ builder.BuildFromOnnx(onnx_path, engine_path);
 
 **产出**：`test_resnet18.cpp` 用例通过。
 
-### Phase 5：清理旧模块（0.5 周）
+### Phase 5：清理旧模块（0.5 周）—— **❌ 已永久取消（2026-09-26 用户决定）**
+
+> 本节保留为历史设计记录。**Phase 5 不做**：旧模块由作者本人按需处理，Agent 不要删除或移动
+> （它们同时是 ONNX / INT8 用例的本地产物来源）。
+
 
 1. 从根 `CMakeLists.txt` 移除 `0_resnet18_onnx` 与 `1_gpt2_onnx`。
 2. 删除旧目录（或移动到 `archive/` 备份）。

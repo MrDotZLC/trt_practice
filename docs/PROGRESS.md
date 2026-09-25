@@ -1,19 +1,22 @@
 # mini_trt_llm 项目进度交接文档
 
-> 最后更新：2026-09-25（Phase 2 / Phase 3 收口 + 提交状态与文档对账）  
-> 当前阶段：**Phase 3 已完成**（ONNX 路径与原生构建对齐：相对偏差 `5.66e-07`，阈值 `1e-5`）；
-> **下一步 Phase 4（ResNet18 替换）**。
+> 最后更新：2026-09-26（**Phase 4 收口**：CV 路径打通 + INT8 落地）  
+> 当前阶段：**Phase 4 已完成**（ResNet18：ONNX 路径 / 原生路径 / `CVRunner` / 转换工具 / FP16 / INT8）；
+> **没有下一阶段**——**Phase 5（清理旧模块）已永久取消**，旧模块由作者自行处理（见 §6.6）。
 >
-> **接手必读四件事**：
+> **接手必读五件事**：
 > 1. **GPT-2 的推荐精度是 FP32** —— FP16 端到端数值不稳定（NaN，层数随构建变化），
 >    按政策不修，见 §5.11 与 `docs/TROUBLESHOOTING.md` §18.1；
 > 2. Phase 2 的残余缺口（含已定位的已知限制）见 §5.12 与 `docs/phase2_test_plan.md` §5；
 > 3. Phase 3 仅剩 G5/G6 两项按触发条件处理的缺口，见 `docs/future_iterations.md` §11。
-> 4. **真机全量当前是 146 条 / 1 条红**（2026-09-25 实测，`MINI_TRT_REQUIRE_GPU=1`，0 跳过）：
->    唯一的红是 FP16 NaN 的**按设计红**复现器（`RealGpt2Fp16GreedyMatchesReferenceTokens`，
->    按 AGENTS.md §7 保持红色）。原第二条红（`PagedKVCacheTest.AppendCrossesBlockBoundary...`，
->    测试与 `AppendDecodeStep` 契约不同步）已按 #20 修复并复验。
+> 4. **真机全量当前是 182 条 / 1 条红 / 0 跳过**（2026-09-26 实测，`MINI_TRT_REQUIRE_GPU=1`）：
+>    唯一的红是 GPT-2 的 FP16 NaN **按设计红**复现器（`RealGpt2Fp16GreedyMatchesReferenceTokens`，
+>    按 AGENTS.md §7 保持红色）。**ResNet18 侧没有红**。
 >    跑真机时请带 `MINI_TRT_REQUIRE_GPU=1`：否则 GPU 用例会静默跳过，等于白跑。
+> 5. **Phase 4 的精度现状**：ResNet18 的 **FP32 / FP16 都健康**（argmax 全一致）；
+>    **INT8 走 Q/DQ 显式量化**，判据是"**FP32 有余量子集的一致率**"（实测 12/12 = 100%），
+>    权重默认 **per_tensor**；**per-channel 的整网退化原因未知**（开放项 P4-INT8-a，见 §6.6）。
+>    细节见 §3.0d 与 `docs/phase4_int8_plan.md`。
 
 ---
 
@@ -138,6 +141,38 @@
   - 实现细节：跳过必须用 **`MINI_TRT_SKIP_IF_NO_CUDA` 宏**。`GTEST_SKIP()`/`GTEST_FAIL()` 都是
     `return` 语句，封装成函数只会退出那个函数、测试体继续执行（实测：63 条用例从 Skipped
     变成 Failed）。
+- **凡是做精度比较的用例，必须在构建配置里显式写出目标精度并打印它**（2026-09-25 补）。
+  **为什么**：`EngineBuilder::Config::precision` 默认是 **FP16**，而弱类型网络的 I/O 会被 TRT
+  声明成 FP32——"看 I/O 精度"看不出内部是 FP16 计算。实测代价：ResNet18 对拍第一版写成
+  `Config{}`，拿 FP16 引擎比 FP32 基线，量到 `max_abs = 0.033`（真值 9.5e-6），
+  差点被当成"TRT 实现差异大"而放宽阈值。见 `TROUBLESHOOTING.md` #21。
+- **借别的模型的产物当负例夹具，等于把两边的契约耦合起来**（2026-09-25 补）。
+  **为什么**：`Gpt2OnnxErrorTest.RejectsGraphWithForeignIoNames` 借 `resnet18.onnx` 当"外来
+  I/O 名"样本，而 P4-2 把 `cnn` 契约定义成 `input`/`output` 之后，这份夹具就悄悄从"外来名"
+  变成了"完全合规"。借的时候必须在注释里点明依赖，并**保证真机全量跑得到它**
+  （沙箱里它会被跳过）。见 `TROUBLESHOOTING.md` #22.1。
+- **改完接口/契约必须跑真机全量**（2026-09-25 补，由 #22 再次验证）。
+  这次一次抓到两条：旧夹具失效 + 一条**单跑通过、全量 SEGFAULT** 的越界切片。
+  "单跑过了"不等于对——越界读属于看运气的缺陷，只能靠完整套件与不同堆布局暴露。
+- **护栏必须有用例证明它会拦人**（2026-09-26 补，Phase 4 P4-4 落地）。
+  转换脚本 / 校验器里的每条"拒绝逻辑"都要有一份**故意改坏**的输入把它打出来
+  （例：`resnet18_convert_selftest` 把真模型改坏 5 次，逐个确认自检生效）。
+  **为什么**：没有这条证据，"护栏"与"注释里的祈使句"没有区别——项目已经吃过
+  "声明了却没人核对"的亏（`phase3_test_plan.md` §5 的 G1c：子图名核对一栏当年没有用例）。
+- **新增源文件后必须重新 configure**（2026-09-26 补，**第二次踩**）。
+  `mini_trt_llm/CMakeLists.txt` 用 `file(GLOB ...)` 收源文件，GLOB 只在 configure 时求值；
+  不重新跑 cmake 的话新文件根本不参与构建，症状是链接期 `undefined reference to vtable for ...`。
+  排查捷径：先看 `cmake --build` 输出里**有没有这个文件的编译行**（见 #24.2）。
+- **TRT 的 element-wise 要求两侧 rank 相同**（不是 NumPy 广播）（2026-09-26 补）。
+  典型写法是把偏置常量声明成带前导 1 的 `[1, N]` 而不是 `[N]`；
+  写错时 `IModelBuilder::Build()` 会**返回 true**，错误拖到引擎构建期才报
+  （`Assertion x.nbDims == y.nbDims failed`）——见 #24.1，也见 `test_gpt2_network_build.cpp`
+  关于"shape 推导延迟报告"的既有警告。
+- **测试里的路径 helper 必须返回它名字声称的东西**（2026-09-26 补，由 #25 换来）。
+  返回文件却叫 `FindXxxDir()`，会让调用点拼出的路径永远不存在 → 用例**静默跳过**，
+  而"跳过"看起来像"跑过了"。**静默跳过比失败更贵**。
+  查覆盖时要看 `[ OK ]` / `[ SKIPPED ]` 行本身，别只看 `N passed`——
+  总数比预期少一条就是信号。
 
 ### 2.15 Phase 2 / 3 确立的接口约定（实现时确立，勿回改）
 
@@ -156,6 +191,15 @@
 | `LLMRunner` 启动时校验 decode `key_cache_0` 的声明精度 == `Config::is_half`，不一致**拒绝构造**（`ok() == false`） | cache 宽度是引擎与 `PagedKVCache` 之间的契约，错了 PagedAttention 会按错误宽度读。这道闸是把"内存越界"变成"一条可读启动错误"的机制，**无论将来走强类型还是消费方适配都要保留** |
 | 诊断输出（`mlp_fc_0` 等中途张量）必须由 `BuildOptions::export_diagnostics` **显式打开，默认关** | 建图侧 `markOutput` = 改 I/O 契约：每个消费方都要多分配并绑定，TRT 对未绑定输出**直接拒绝 enqueue**。默认带上它，曾经在真机上打挂 6 条用例（见 TROUBLESHOOTING #19）。要加新诊断输出，先 `grep` 全部绑定方与输出计数断言 |
 | 引擎缓存路径不得在"两种 I/O 契约"之间共用（如诊断开 / 诊断关） | 缓存只按路径名区分、**不随代码或开关失效**：共用一条路径时先跑的那次会决定后续用例拿到哪个引擎，测出假结果。诊断仪器因此单独用 `..._diag.engine` |
+| ONNX 的 I/O 契约**按 `architecture` 选**（`OnnxIoContractFor`：`cnn` → `input`/`output`；其余 → `input_ids`/`logits`），且该映射必须能被 host 用例直接测到 | 契约映射内联在 `BuildFromOnnx` 里时，它只在"解析 ONNX + `createInferBuilder`"之后才执行——那两步都要 CUDA，等于护栏只在真机才验证得到。抽成函数后沙箱即可覆盖（`OnnxIoContractTest.*`） |
+| CV 的 profile `opt_batch = 8`（历史工程口径），**不要改回 1** | TRT 针对 kOPT 形状挑最快 kernel；沿用 1 会让 batch ≥ 2 的推理走非最优 kernel、性能结论失真 |
+| `CVRunner` 的输入契约 = **float32、NCHW、`[0,255]` 像素质**，归一化由 Runner 自己做；失败一律返回**空 vector / 零值统计**并打日志 | 该形态与 P4-1 的契约输入一致（可直接对拍）；HWC→CHW 留给调用方——形参名 `image_nchw` 就是这么定的。失败约定与 `LLMRunner::Generate` 保持一致（异常只用于构造期与底层库） |
+| `CVRunner` 的维度与 batch 范围**必须向引擎查询**：输入用 `getProfileShape`、输出用 `getTensorShape` | 写死 224/1000/16 等于把"模型是什么"焊进 Runner；而两个查询 API 分工不同——`getProfileShape` **只对输入有效**（对输出返回 `Dims{-1,{}}`），用错的表现很像"契约不合法"（#23.2） |
+| `CVRunner` 的前处理入参是 **`pixels_per_channel`（=H*W）显式传入**，不从总长度反推 | NCHW 的通道下标是 `(i/(H*W))%C`；用"总元素数/C"当分母在 **batch=1 时恰好等价**、batch>1 才错（#23.1）。凡是按 NCHW 拆下标的代码都要覆盖 `batch>1` |
+| **建图侧 `markOutput` = 改 I/O 契约**：新增诊断输出必须由 `BuildOptions::export_diagnostics` 显式打开（默认关），且给独立引擎路径 | 默认带上诊断输出曾在真机打挂 6 条用例（#19）；引擎缓存只按路径名区分、不随开关失效 |
+| **凡是做精度比较的用例，必须显式写出目标精度并打印**（`Config::precision` 默认 FP16，弱类型引擎的 I/O 却常被 TRT 定成 FP32） | 第一版 ResNet18 对拍把 FP16 引擎当 FP32 用，量到 0.033 差点被当成"TRT 差异大"（#21） |
+| **INT8 走 Q/DQ 显式量化**：`SetupBuilder` 里 **不设任何 INT8 flag**，精度由图中的 Q/DQ 决定；Q/DQ 必须**对称**（zero_point 恒为 0），否则 TRT 解析期直接拒 | `kINT8` 自 TRT 10.12 废弃（由 strong typing / Q/DQ 取代）；非对称图报 `Non-zero zero point is not supported`（#27）。另外 Q/DQ **不受我们传的 precision 影响**——同一张 QDQ 图在 FP32/INT8 配置下都跑 INT8（层信息才是证据） |
+| **INT8 的判据是"FP32 有余量子集的一致率"**（阈值 ≥90%），整体一致率只作"没崩坏"下界；**能用 `IEngineInspector` 自证在跑 INT8**（需 `Config::detailed_profiling = true`，且判 `Format/Datatype: Int8`，**不是** `[I8]` 标签） | 这批图 FP32 自身摇摆（55% 样本 margin<2），整体一致率主要在测测试集噪声；不设 `kDETAILED` 则读不出逐层精度，会误判成"没跑 INT8"（#29.4 / #30.5 / `phase4_int8_plan` §4） |
 
 ### 2.14 证据纪律与操作纪律（Phase 2 沉淀，后续沿用）
 
@@ -280,6 +324,41 @@
 计划与验收见 `docs/phase2_supplement_plan.md`；缺陷与实测见 `docs/TROUBLESHOOTING.md` #19 / #20。
 **真机全量结果**：146 条，0 跳过（`MINI_TRT_REQUIRE_GPU=1`），**1 条红 = FP16 NaN 复现器（按设计红）**。
 
+### 3.0d Phase 4 交付（ResNet18 / CV 路径，2026-09-26）
+
+计划与测试计划：`docs/phase4_development_plan.md`、`docs/phase4_test_plan.md`；
+INT8 子计划：`docs/phase4_int8_plan.md`；缺陷与排查：#21 ~ #31。
+
+| 文件 / 模块 | 说明 |
+|---|---|
+| `core/resnet18_model_builder.{hpp,cpp}` | **原生建图**（零 Plugin：BN 已折叠；conv/relu/add/maxpool/GAP/flatten/gemm）；I/O 名复用 `OnnxIoContractFor("cnn")`；`stage != kSingle` 显式失败；注册进 `EngineBuilder` |
+| `core/cv_runner.{hpp,cpp}` | `CVRunner`：输入契约 **NCHW float `[0,255]`**、前处理归 Runner、维度与 batch 范围**向引擎查询**、失败返回空 vector/零值统计 |
+| `core/builder.{hpp,cpp}` 的改动 | `OnnxIoContractFor(architecture)`（`cnn → input/output`，可 host 测）；CV `opt_batch` 默认 1→8；`Config::detailed_profiling` |
+| `tools/convert/onnx_to_mini_trt_llm.py` | ONNX → `models/resnet18/{config.json, model.safetensors}`（42 张量；逻辑名从 **Conv/Gemm 节点名**推导；含 5 道自检 + `--self-test`，已接入 ctest） |
+| `tools/convert/quantize_resnet18.py` | ONNX → **对称 int8 Q/DQ** 图（PTQ：torch hook 收直方图 → 99.9 分位裁剪 → 每个 Conv 插输入/权重/输出三处 Q/DQ）；自检（60 对、zero_point 全 0、checker）+ fake-quant 预估 |
+| `scripts/ref_resnet18.py` | torchvision FP32 外部基线（ramp / pixels 两套输入；自证：两次运行逐位一致） |
+| 用例 | `test_resnet18_baseline` / `test_resnet18_weights` / `test_resnet18_onnx` / `test_resnet18_native` / `test_resnet18_fp16` / `test_resnet18_int8` / `test_cv_runner`（对应测试计划里的 R0.x / R1.x / R2.x / R3.x） |
+| 共享测试件 | `tests/cv_test_support.hpp`（CV 侧公式/路径/读写的唯一来源）、`tests/diff_stats.hpp`（差异口径的唯一来源，GPT-2 侧改为包含它） |
+
+**真机实测（关键数字）**：
+
+| 对拍 | 结果 |
+|---|---|
+| ONNX 路径 vs torchvision 基线 | ramp `max_abs = 9.54e-6`、pixels `1.34e-5`，argmax 全一致 |
+| **原生 vs ONNX**（同一份权重） | `max_abs = 1.07e-6`（阈值 `1e-5`） |
+| 原生 vs torchvision 基线 | `1.05e-5`（阈值 `1e-4`） |
+| **FP16** | ONNX-FP16 vs FP32 基线 `0.031`、原生-FP16 vs ONNX-FP16 `0.0076`、CVRunner+FP16 `0.062`、原生-FP16 vs 基线 `0.033`；**argmax 全一致、无 NaN**（阈值两档 `0.1` / `0.05`，出处 `TROUBLESHOOTING` #26） |
+| **INT8** | Q/DQ 引擎 **43 层 / 38 层含 Int8 张量 / 4 层 `i8i8` tactic**（对照 FP32 引擎 0 层 Int8）；**FP32 余量子集一致率 12/12 = 100%**、整体 38.3%（判据出处 `phase4_int8_plan.md` §4）。产物形态为 **`prequant_dq`**（预量化 int8 权重 + 只留 DQ，ONNX 44.7 MB → **13.3 MB**，实测与 `Q→DQ` 数值等价，见 `TROUBLESHOOTING.md` #31.3） |
+| `CVRunner` 端到端 | batch 1/8 对基线 `1.34e-5`；超范围 batch / 尺寸不符 / `ok()==false` 均显式失败；benchmark `mean≈8.4 ms`、`≈950 img/s`（**仅记录，非判据**） |
+| **真机全量** | **182 条 / 1 红 / 0 跳过**（唯一红 = GPT-2 的 FP16 已知限制） |
+
+**过程中的真缺陷/真问题（全部留痕）**：#21（把引擎建成 FP16 却比 FP32）、#22（旧夹具失效 + 越界切片）、
+#23（前处理通道下标在 batch>1 时算错、`getProfileShape` 用错 API）、#24（element-wise 的 rank 匹配、GLOB 需重跑 configure）、
+#25（路径 helper 返回文件 → 用例静默跳过）、#26（FP16 阈值不能用 FP32 的尺子）、
+#27 ~ #31（INT8：非对称 Q/DQ 被拒、per-channel 整网退化及其 11 条被否证的假设）。
+
+**开放项**：见 §6.6（P4-INT8-a / P4-INT8-b / P4-FP16-a 等）。
+
 ### 3.1 目录与构建
 
 - `mini_trt_llm/CMakeLists.txt`：C++17 + CUDA C++17、`sm_75`、static library、第三方依赖接入。
@@ -320,9 +399,9 @@
 
 - `mini_trt_llm/tests/test_*.cpp`：Utils / Core 骨架（cuda_check、logger、timer、memory_pool、io、
   model_config、model_registry、safetensors_loader、engine）+ Phase 1 算子 + Phase 1.5 端到端。
-- 当前状态（2026-09-25 实测，含 Phase 2 补丁 P2S-1~P2S-6）：沙箱内 `ctest` **146 个用例，0 失败**
-  （64 个 GPU 用例自动跳过、82 个 host 用例实际执行，含已接入的 `onnx_graph_probe` 与
-  `GpuEnvProbe`）。真机全量（`MINI_TRT_REQUIRE_GPU=1`）**0 跳过**、**1 条红**（FP16 NaN 复现器）。
+- 当前状态（2026-09-26 实测，含 Phase 4）：沙箱内 `ctest` **182 个用例，0 失败**
+  （**87 个 GPU 用例自动跳过、95 个 host 用例实际执行**，含 `onnx_graph_probe` 与 `GpuEnvProbe`）。
+  真机全量（`MINI_TRT_REQUIRE_GPU=1`）**182 条 / 0 跳过 / 1 条红**（GPT-2 的 FP16 NaN 复现器）。
   实测命令：`cmake --build build -j$(nproc) && ctest --test-dir build`（build 目录已配 `BUILD_TESTS=ON`）。
   分层与覆盖度详见 §3.9 / §3.10 与 `docs/phase1_test_plan.md`。
 - 待补（不阻塞 Phase 2）：`docs/phase0_model_loading_test_plan.md` 里 T2（ONNX→Engine）仍未实施；
@@ -481,17 +560,30 @@ Phase 1 明确不在本次范围内、留待后续的项：
 - 对 `1_gpt2_onnx/gpt2.onnx` 替换 RoPE / RMSNorm / Attention 子图。
 - 验证与方案 A 输出一致。
 
-### 4.5 Phase 4：ResNet18 替换（未开始）
+### 4.5 Phase 4：ResNet18 替换（✅ 已完成，2026-09-26）
 
-- 实现 `ResNet18ModelBuilder`。
-- 支持 FP32 / FP16（INT8 延后）。
-- 实现 `CVRunner`。
+**交付清单与实测数字见 §3.0d**。计划文档 `docs/phase4_development_plan.md`（§1 保留了
+"先读 `0_resnet18_onnx` 历史工程"的四条关键发现，供后续参考）：
 
-### 4.6 Phase 5：清理旧模块（未开始）
+1. 该 ONNX **已在导出时折叠 BatchNorm**（42 个 FP32 张量全是 Conv/Gemm 的 weight+bias），
+   算子是 `Conv/Relu/Add/MaxPool/GlobalAveragePool/Flatten/Gemm`——**原生建图不需要任何 Plugin**；
+2. 历史工程**没有留下外部基线**：它的"精度验证"是自相对（FP16/INT8 vs 它自己的 FP32），
+   且推理输入是合成 ramp、benchmark 输入是常量 0.5 → Phase 4 必须先造 torchvision 基线；
+3. **INT8 的三条口径互相矛盾**（本文档 §6 写"INT8 延后"、`future_iterations.md` §1.1 列为后续、
+   历史工程其实已有 calibrator + 500 张真实校准图）→ 由计划的 **D2** 收敛；
+4. `EngineBuilder::Config` 的 CV `opt_batch` 默认是 **1**，历史工程用的是 **8** → 会影响性能结论。
 
-- 从根 `CMakeLists.txt` 彻底删除旧模块 `add_subdirectory`（当前仅注释）。
-- 删除 `0_resnet18_onnx/` 与 `1_gpt2_onnx/`（或移入 `archive/`）。
-- 更新 `README.md`。
+任务分解 P4-0 ~ P4-8、测试要点、判据出处都在该计划里；INT8 子计划见 `docs/phase4_int8_plan.md`。
+**结论**：ResNet18 的 **FP32 / FP16 都健康**；**INT8 走 Q/DQ 显式量化、判据用"FP32 余量子集一致率"**
+（实测 12/12 = 100%），权重默认 per_tensor。**per-channel 的整网退化原因未知** → 开放项 §6.6。
+
+### 4.6 Phase 5：清理旧模块（❌ 已永久取消，2026-09-26 由用户决定）
+
+- **用户决定：Phase 5 永久取消**。旧模块 `0_resnet18_onnx/`、`1_gpt2_onnx/` 与根 `CMakeLists.txt`
+  里的注释项**保持原样**，**由作者本人按需处理**；Agent **不要**删除或移动它们。
+- **为什么不能擅自删**：它们不只是"旧代码"——`0_resnet18_onnx/` 还是 Phase 3（`gpt2.onnx` 走
+  `1_gpt2_onnx/`）与 INT8（`calib_data/` 500 张真实图 + `resnet18.onnx`）的**本地产物来源**，
+  删掉会让 ONNX / INT8 用例全部跳过。这也与 AGENTS.md §0.6 一致：**"这东西没人用"的判断权在作者**。
 
 ---
 
@@ -609,15 +701,16 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 
 ## 6. 下一步计划
 
-**Phase 4：ResNet18 替换** —— 实现 `ResNet18ModelBuilder`（FP32 / FP16，INT8 延后）与
-`CVRunner`，与 `0_resnet18_onnx` 对齐。
+**没有下一阶段。** Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成，**Phase 5（清理旧模块）已永久取消**（§4.6）。
 
-**开工前必做**（AGENTS.md §5 第 0 步）：先产出 `docs/phase4_development_plan.md` 并对账；
-计划里必须含"先读 `0_resnet18_onnx` 历史工程"这一步（它的 `src/builder.cpp` 与 `calib_data/`
-记录了当年的 profile 与 INT8 路线——Phase 3 用同样的动作省掉了一轮返工）。
+**接下来做什么，取决于触发条件**（全部见 §6.6 的开放项索引与 `future_iterations.md` §11）：
 
-Phase 3 的任务/结果/缺口见 `docs/phase3_development_plan.md` 与 `docs/phase3_test_plan.md`
-（含 §0.2 的实测修正与"性能结论未定"的记录）。
+- 需要更高 INT8 精度 → **P4-INT8-a**（per-channel 整网退化；**下一步方法已写明**：探"量化前"张量的逐层对拍）；
+- 需要 INT8 的绝对误差保证 → **P4-INT8-b**（要更有代表性的验收集）；
+- 真要迁强类型网络 → **P4-FP16-a / P4-INT8 的强类型路线**；
+- 要扩展 CV（新模型/动态分辨率/图像解码）→ 见 `future_iterations.md` 对应章节，**先产出计划文档再动手**（AGENTS.md §5）。
+
+**每轮的开工纪律**（Phase 4 全程验证过有效）：先计划对账 → 破坏性动作一次性列清单 → 真机全量回归 → 回填文档。
 
 <details><summary>Phase 2 原始开工顺序（已完成，保留备查）</summary>
 
@@ -698,6 +791,8 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 |---|---|---|
 | GPT-2 模型目录 | `models/gpt2/` | 由 `tools/convert/hf_to_mini_trt_llm.py` 生成（548 MB safetensors 被 .gitignore 忽略；`config.json` 入库） |
 | 测试用引擎缓存 | `/tmp/mini_trt_llm_gpt2_*.engine` | 首次运行自动构建（分钟级），之后复用；**删掉会强制重建**（测构建耗时时需要） |
+| **ResNet18 本地产物（四类）** | `models/resnet18/` | ① P4-1 基线：`ref_{ramp,pixels}_b8.bin` + `inputs/*.f32.bin` + `.meta.json`（14.5 MB）；② 原生路径权重：`model.safetensors`（42 张量 / 46.7 MB）+ `config.json`（入库）；③ INT8 图：`resnet18_qdq.onnx`（**13.3 MB**，`prequant_dq` 形态）+ `.meta.json`；④ `config.json` 入库，其余 `.bin`/`.safetensors`/`.onnx` 按 `.gitignore` **不入库**。再生命令见 §7 |
+| ResNet18 引擎缓存 | `/tmp/mini_trt_llm_resnet18_*.engine` | 含 fp32（ONNX / 原生）、fp16（ONNX / 原生）、qdq_int8；缓存**只按路径名区分**，改了产物或建图后必须先删再跑（见 §2.15） |
 | 引擎 I/O 探针 | **`mini_trt_llm/tools/inspect_engine.cpp`**（已入库，手动编译） | 反序列化任意 `.engine` 并打印其 I/O 契约（名字 / 方向 / **声明精度** / 维数）——**不建 context、不推理、不写数据**。用途见 `docs/TROUBLESHOOTING.md` #18：它是把"TRT 在弱类型 FP16 网络里把 K/V 与 logits 的输出定成 FP32"这件事**读出来**的工具（在此之前只能靠推断，而推断被证伪过两次）。编译命令写在文件头（工具不进构建流程，故无 CMake 目标）。**限制**：反序列化需要 CUDA 初始化，只能在真机跑（沙箱报 `error 35`）；实测无 GPU 时它会干净报错退出而不是崩溃 |
 
 **已知会失败/跳过的测试**（避免新会话误判为回归）：
@@ -713,6 +808,29 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
   别看到"FP16 出 NaN"就以为这条也该红。
 - 沙箱：全部 GPU 用例 `GTEST_SKIP`（无 GPU，见 §5.10）；`onnx_graph_probe` 在缺 `onnx` 包或
   缺 `1_gpt2_onnx/gpt2.onnx` 时返回 77 → `Skipped`（**设计如此**，缺环境 ≠ 图有问题）。
+
+## 6.6 当前未解决项（开放项索引，2026-09-26）
+
+> **细节的唯一来源是 `docs/future_iterations.md` §11**（那里有"是什么 / 触发条件"）；
+> 本节只做**索引**，避免两处维护。**这些都不是"已知缺陷"**——已发现的缺陷一律进
+> `TROUBLESHOOTING.md` 并配回归用例；开放项是"还没被盯住的地方 / 已知的限制"。
+
+| 开放项 | 一句话 | 触发条件（什么时候做） |
+|---|---|---|
+| **P4-INT8-a** | **权重 per-channel 量化在整网上比 per-tensor 差**（余量子集 54.5% vs 100%），而单卷积与最小残差 block 上它**不差**——原因未知；已排除 11 条假设（`TROUBLESHOOTING.md` #28/#29/#30/#31） | 需要更高 INT8 精度时。**下一步已写明**：整网逐层对拍要探**量化前**的 float 张量（量化后的会被 bin 边界 ±1 格噪声淹没） |
+| **P4-INT8-b** | INT8 的**绝对数值界未定**（当前只用"FP32 余量子集一致率"判，阈值 ≥90%，实测 12/12） | 需要给出 INT8 绝对误差保证时（要更大、更有代表性的验收集） |
+| **P4-FP16-a** | **FP16 路径仍用已废弃的 `BuilderFlag::kFP16`**（TRT 10.12 起废弃、指向 strong typing）；实测可用 | 真要迁到强类型网络时（两条 builder 的每个算子都要显式设类型） |
+| **G5 / G6** | ONNX 子图识别只做计数（未做拓扑级）／ONNX 性能无可复现测量方法 | 真要做子图替换 / 真要优化 ONNX 路径性能时（`future_iterations.md` §10.2） |
+| **G2-3 / G2-4** | `LLMRunner` 只支持 `batch = 1`（有意限定）／EOS 无法在循环内早停（语义正确、多算） | 需要批处理 / 需要真早停时 |
+| **P1.5-a ~ P1.5-d** | Top-K/Top-P 的 FP16 未覆盖；E2 完整链路留后；E3 未验多 profile 切换；采样器分布数据未固化 | 见 `future_iterations.md` §11（各有触发条件） |
+
+**另有两条"已取消 / 不属于开放项"的说明**：
+
+1. **Phase 5（清理旧模块）已永久取消**（用户 2026-09-26 决定）：`0_resnet18_onnx/`、`1_gpt2_onnx/`
+   与根 `CMakeLists.txt` 的注释项**由用户自行处理**，Agent 不要删除或移动它们——
+   它们还是 Phase 3/INT8 对拍与标定的**本地产物来源**（删掉会让 ONNX/INT8 用例跳过）。
+2. **R0.1（`ResNet18ConfigTest.LoadsCnnConfig`）不单独落地**：config 解析断言已由
+   `ResNet18WeightContractTest` 承担（见 `phase4_test_plan.md` §7），刻意不建重复用例。
 
 ## 7. 重要环境信息
 
@@ -738,6 +856,16 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 | `models/gpt2/config.json` + `model.safetensors`（548 MB） | `python3 mini_trt_llm/tools/convert/hf_to_mini_trt_llm.py --model_name_or_path <HF gpt2 目录> --output_dir models/gpt2` | 全部 GPT-2 真机用例（config.json 入库，safetensors 被 .gitignore 忽略） |
 | `1_gpt2_onnx/gpt2.onnx`（652 MB，仓库内已有） | 随仓库提供 | Phase 3 的对拍与探针 |
 | `/tmp/mini_trt_llm_gpt2_*.engine` | 首次跑用例时自动构建（分钟级），之后复用 | 真机用例；**删掉它会强制重建**（测构建耗时时需要） |
+| `models/resnet18/`（P4-1 基线：logits + 契约输入张量 + 元数据，共 14.5 MB） | `python3 scripts/ref_resnet18.py --input {ramp,pixels} --output models/resnet18/ref_{ramp,pixels}_b8.bin` | Phase 4 的 L2/L3 对拍；**缺了就 skip**（与 GPT-2 缺 `models/gpt2` 同口径） |
+| `models/resnet18/model.safetensors`（42 张量，46.7 MB；`config.json` 入库） | `python3 mini_trt_llm/tools/convert/onnx_to_mini_trt_llm.py --onnx 0_resnet18_onnx/resnet18.onnx --output_dir models/resnet18` | 原生 builder（P4-5）的权重来源；**缺了 host 用例会 skip** |
+| `models/resnet18/resnet18_qdq.onnx`（13.3 MB）+ `.meta.json` | `python3 mini_trt_llm/tools/convert/quantize_resnet18.py --onnx 0_resnet18_onnx/resnet18.onnx --calib-dir 0_resnet18_onnx/calib_data --output models/resnet18/resnet18_qdq.onnx --calib-images 500 --calib-percentile 99.9 --weight-form prequant_dq`（默认权重粒度 per_tensor；`--weight-scope per_channel` 可复现那个开放项） | INT8 用例（`ResNet18Int8*`）；**缺了会 skip** |
+| `0_resnet18_onnx/calib_data/`（500 张真实图，300 MB） | `python3 0_resnet18_onnx/prepare_calib_data.py`（需 datasets/PIL，联网下载 tiny-imagenet） | 生成 pixels 基线、INT8 校准 |
+| torchvision 权重缓存 `~/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth`（46 MB） | torchvision `ResNet18_Weights.DEFAULT` 首次使用时下载 | 生成 Phase 4 基线；**已在本地缓存** |
+
+> **注意**：上述 `models/resnet18/*.bin`、`calib_data/`、`*.onnx`、`*.safetensors` **都不入库**
+> （`.gitignore` 规则：`*.bin` / `*.onnx` / `*.safetensors` / `**/calib_data/`）。
+> 仓库只跟踪源码与文档；换机器要按上表重建本地产物。入库的只有 `.meta.json`（含各产物 SHA256，
+> 用于回答"基线有没有被改过"）。
 
 ---
 
