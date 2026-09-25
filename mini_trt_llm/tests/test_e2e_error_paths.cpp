@@ -125,9 +125,7 @@ TEST(E2eErrorPathTest, MissingWeightsFileFails) {
 }
 
 TEST(E2eErrorPathTest, UnknownWeightMapKeyFails) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     test_support::ModelDirectory dir = test_support::ModelDirectory::Create("err_map_key");
     ASSERT_TRUE(dir.valid());
     ASSERT_TRUE(dir.WriteConfig(ConfigFor("e2e_bad_map")));
@@ -147,9 +145,7 @@ TEST(E2eErrorPathTest, UnknownWeightMapKeyFails) {
 }
 
 TEST(E2eErrorPathTest, BuilderFailurePropagatesAndLeavesNoEngine) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // 对应"Plugin 配置非法"这类场景：builder 在构建期发现参数不合法并返回 false。
     test_support::ModelDirectory dir = test_support::ModelDirectory::Create("err_builder");
     ASSERT_TRUE(dir.valid());

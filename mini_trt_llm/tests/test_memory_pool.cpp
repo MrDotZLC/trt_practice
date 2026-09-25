@@ -6,9 +6,7 @@
 namespace mini_trt_llm {
 
 TEST(DeviceBufferTest, AllocateAndFree) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     DeviceBuffer buf;
     EXPECT_TRUE(buf.Allocate(1024));
     EXPECT_NE(buf.data(), nullptr);
@@ -18,18 +16,14 @@ TEST(DeviceBufferTest, AllocateAndFree) {
 }
 
 TEST(DeviceBufferTest, Resize) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     DeviceBuffer buf(1024);
     EXPECT_TRUE(buf.Resize(2048));
     EXPECT_GE(buf.size(), 2048u);
 }
 
 TEST(PinnedBufferTest, AllocateAndFree) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     PinnedBuffer buf;
     EXPECT_TRUE(buf.Allocate(1024));
     EXPECT_NE(buf.data(), nullptr);

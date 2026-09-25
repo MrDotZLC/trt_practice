@@ -249,6 +249,7 @@ bool EngineBuilder::BuildFromConfig(const std::string& model_dir,
     BuildOptions build_options;
     build_options.stage = stage;
     build_options.weight_dtype = ToTrtDataType(config_.precision);
+    build_options.export_diagnostics = config_.export_diagnostics;
 
     if (!builder_impl->Build(network.get(), weights, model_config, build_options)) {
         MINI_TRT_LOG_ERROR("Model builder failed: " << builder_impl->Name());

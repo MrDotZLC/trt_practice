@@ -83,9 +83,7 @@ double CosineSimilarity(const std::vector<float>& a, const std::vector<float>& b
 // token 只反映 argmax，argmax 一致并不排除 logits 整体有系统性偏移——
 // 那会影响后续采样（Top-K/Top-P）的行为，也会掩盖"某个算子在弱信号上算错"。
 TEST(Gpt2PrefillAccuracyTest, RealGpt2LogitsMatchReference) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindRealModelDir();
     const std::string ref_path = FindRefOutput();
     if (dir.empty() || ref_path.empty()) {

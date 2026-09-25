@@ -6,16 +6,12 @@
 namespace mini_trt_llm {
 
 TEST(CudaTimerTest, CreateDestroy) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     EXPECT_NO_THROW(CudaTimer timer);
 }
 
 TEST(CudaTimerTest, StartStop) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     CudaTimer timer;
     cudaStream_t stream = nullptr;
     EXPECT_NO_THROW(timer.Start(stream));

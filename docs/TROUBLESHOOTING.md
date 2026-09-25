@@ -781,3 +781,234 @@ TRT 反序列化都只读、不推理）得到：
    **只给第 0 层导出了**——看不到后面，就只能靠 K/V 粗判，于是现象看起来在漂移。
 2. **每轮只改一个变量**：第 2 轮的 LN 精度改动虽被否证，但它排除了一整个方向；
    而第 4 轮同时加了两个切点，读数直接分开了"`c_fc` 造的还是 `gelu` 造的"。
+
+---
+
+## 19. 诊断用的中途输出没被消费方绑定 → `kPrefill` / `kDecode` 引擎的输出契约被打破
+
+> **状态**：根因**已定位、真机实测确认、并按 F2 方案修复并复验**（2026-09-25）。
+> 修复任务与验收见 `docs/phase2_supplement_plan.md`；复验数据见本节末尾「修复与复验」。
+
+**现象（本轮由文档对账发现，尚未在真机复现）**：commit `625939c` 之后，
+`GPT2ModelBuilder::Build` 在**非 `kSingle`** 的切面上会额外导出 4 个中途张量
+（`mlp_fc_0` / `mlp_gelu_0` / `attn_res_0` / `mlp_res_0`，条件 `export_kv && layer == 0`，
+见 `src/core/gpt2_model_builder.cpp`），而消费方一行没改。由此产生**两条互相独立**的破坏：
+
+1. **绑定**：`LLMRunner::BindPrefill/BindDecode` 一律**按名绑定**（输入 + `logits` +
+   每层 K/V / cache），这 4 个输出**没有任何人绑**；全仓库也没有 `setOutputAllocator`。
+2. **契约断言**：`Gpt2NetworkBuildTest` 的 prefill / decode 两条用例都断言
+   `network->getNbOutputs() == 2 * kLayers + 1`，而现在实际是 `2 * kLayers + 1 + 4`。
+
+**证据链（三条独立来源，互相印证"TRT 要求每个输出都有地址或 allocator"）**：
+
+1. **头文件契约**（`/usr/include/x86_64-linux-gnu/NvInferRuntime.h`，本机 TRT 10.15.1）：
+   `setTensorAddress` 的文档原文 —— "Before calling enqueueV3(), each input must have a
+   non-null address and **each output must have a non-null address or an IOutputAllocator**
+   to set it later."
+2. **运行库里的报错串**：`strings libnvinfer.so.10 | grep "allocator is set"` →
+   `Neither address or allocator is set for output tensor `。
+3. **本仓库自己早就吃过这个约束**（最关键的一条）：`tests/test_gpt2_generate.cpp` 的
+   `GenerateWithoutCache` 有一个只为"讨好绑定器"而存在的 `kv_scratch` 出参，注释写着
+   "**kPrefill 引擎必须绑全所有输出才能 enqueue**，因此复用同一个引擎跑这条参考路径时
+   要把它们指到临时缓冲上"；同文件 FP16 诊断用例的注释里则**逐字**引用了上面那条报错
+   （当时是漏绑 `logits` 触发）。两处都是 d6af2eb / 625939c 的实测产物，不是从文档抄的。
+
+结论：per 契约，未绑定的输出会让 `enqueueV3` 返回 false；而 `LLMRunner` 两条 enqueue
+调用点都检查了返回值（`llm_runner.cpp:396` / `:509`），失败即 `Generate` 返回空 vector。
+
+**实测结果（2026-09-25，真机 GTX 1660 Ti，WSL2；先用 `nvidia-smi` 确认 GPU 可用，
+再跑 gtest filter，未走 ctest）**：
+
+| # | 用例 | 实测结果 | 与绑定的关系 |
+|---|---|---|---|
+| 1 | `Gpt2NetworkBuildTest.PrefillNetworkBuildsWithExpectedIo` | ❌ `getNbOutputs() = 9` vs 期望 5 | 纯建网断言，**不需要 enqueue**，与 TRT 是否容忍未绑定输出无关 |
+| 2 | `Gpt2NetworkBuildTest.DecodeNetworkBuildsWithPagedAttentionInputs` | ❌ 同上（9 vs 5） | 同上 |
+| 3 | `Gpt2DecodeConsistencyTest.DecodeStepMatchesPrefillAtSamePosition` | ❌ `prefill.Enqueue` 返回 false | 按名绑定，未绑 4 个诊断输出 |
+| 4 | `Gpt2DecodeConsistencyTest.DecodeWithEmptyCacheMatchesSingleTokenPrefill` | ❌ 同上 | 同上 |
+| 5 | `Gpt2DecodeConsistencyTest.TwoStepDecodeMatchesPrefillAfterAppend` | ❌ `run_prefill` 返回 false | 同上 |
+| 6 | `Gpt2GenerateTest.RunnerMatchesFullRecomputeWithoutCache` | ❌ `LLMRunner: prefill enqueue failed` → 0 token vs 期望 6 | runner 路径 + 参考路径都跑 kPrefill 引擎 |
+| 7 | `Gpt2GenerateTest.RealGpt2GreedyMatchesReferenceTokens` | ⏳ **未跑**（12 层引擎，分钟级）——同机制 | LLMRunner 路径 |
+| 8 | `Gpt2GenerateTest.RealGpt2Fp16GreedyMatchesReferenceTokens` | ⏳ **未跑**；原本就是预期失败，失败原因会从"NaN 导致 token 全 0"变成"空 vector" | LLMRunner 路径 |
+
+**对照组（同时实测，全部通过）**——正是它们证明"红的是这 4 个输出，不是别的"：
+
+| 用例 | 结果 | 说明 |
+|---|---|---|
+| `Gpt2NetworkBuildTest.SingleStageOmitsKvOutputs` | ✅ 通过 | `kSingle` 切面不导出诊断输出 → 输出数仍是 1 |
+| `Gpt2NetworkBuildTest.MissingWeightFailsTheBuild` | ✅ 通过 | 建网侧逻辑未受影响 |
+| `Gpt2GenerateTest.RejectsUnsupportedTemperature` | ✅ 通过 | 它在 enqueue 之前就返回，故不受影响（也说明它不是有效护栏） |
+
+**TRT 的实际报错（原文，第 3~6 条都是这一条）**：
+
+```
+IExecutionContext::enqueueV3: Error Code 3: API Usage Error
+  (Parameter check failed, condition: mContext.profileObliviousBindings.at(profileObliviousIndex)
+   || getPtrOrNull(mOutputAllocators, profileObliviousIndex).
+   Neither address or allocator is set for output tensor mlp_fc_0.
+   Call setOutputTensorAddress, setTensorAddress or setOutputAllocator before enqueue/execute.
+   In enqueueV3 at /_src/runtime/api/executionContext.cpp:2846)
+```
+
+报错**直接点名 `mlp_fc_0`**，即 4 个诊断输出里的第一个——与"建图侧多导出了输出、
+消费方没绑"这一根因逐字对应。至此三重证据里第 1、2 条（头文件契约、库里的串）不再是推断，
+而是被运行时行为验证过的。
+
+不受影响：`kSingle` 切面的用例（`Gpt2PrefillAccuracyTest`、`test_gpt2_onnx.cpp` 的原生对拍、
+`SingleStageOmitsKvOutputs`、`MissingWeightFailsTheBuild`）、通用绑定 I/O 的
+`Fp16PrefillOutputsDiagnostic`、以及不经过 GPT-2 builder 的插件 / E2E 用例。
+
+**为什么直到现在才被发现（三条同时成立才可能发生）**：
+
+1. **沙箱里两条最"硬"的断言被静默跳过**：`Gpt2NetworkBuildTest` 的 `SetUp` 调
+   `createInferBuilder`，在无 GPU 的沙箱返回 null → `GTEST_SKIP`。而该测试文件自己的注释
+   写着"建网络不需要 CUDA 设备，可以在沙箱 / CI 里跑"——**这条假设与
+   `docs/phase2_test_plan.md` §3 的"真机（`createInferBuilder` 需要 CUDA，**实测确认**）"
+   直接矛盾**。若沙箱真能跑，这两条断言在提交的那一刻就会红。
+   本轮把这条也实测了：沙箱内 `createInferBuilder` 报
+   `Error Code 6: API Usage Error (CUDA initialization failure with error: 35 ...)`
+   → 返回 null → `GTEST_SKIP`（见 `build/Testing/Temporary/LastTest.log`）。
+2. **NaN 排查期间只跑单条用例**：那段排查用的是
+   `--gtest_filter=Gpt2GenerateTest.Fp16PrefillOutputsDiagnostic`，而它**通用遍历 I/O 并全部绑定**，
+   恰好绕过了这个坑；依赖 `LLMRunner` / 网络断言的用例那条命令一条都没跑。
+3. **文档里的"真机 1 条失败"是沿用的、不是实测的**：`625939c` 提交时 PROGRESS 写的
+   "真机全量测试会出现 1 条 FAILED，那是预期的"用的是预测口吻，实际是**改动之前**状态的延续，
+   提交后没有重跑真机。
+
+**复现命令（已执行；保留给修复后的复验）**：
+
+```bash
+# 1) 先删掉引擎缓存：缓存路径只按名字区分，不随代码变更失效，
+#    留着旧引擎会让"通过"变成假象（旧引擎里没有这 4 个输出）
+rm -f /tmp/mini_trt_llm_gpt2_real_{prefill,decode}*.engine \
+      /tmp/mini_trt_llm_gpt2_accuracy*.engine
+
+# 2) 跑受影响的用例（第 1 次实测用的就是这条：6 条红、3 条对照绿）
+./build/mini_trt_llm/tests/mini_trt_llm_tests --gtest_filter='Gpt2NetworkBuildTest.*'
+./build/mini_trt_llm/tests/mini_trt_llm_tests \
+  --gtest_filter='Gpt2DecodeConsistencyTest.*:Gpt2GenerateTest.RunnerMatchesFullRecomputeWithoutCache:Gpt2GenerateTest.RejectsUnsupportedTemperature'
+
+# 3) 看引擎的 I/O 清单（应能看到那 4 个诊断输出）
+#    按 mini_trt_llm/tools/inspect_engine.cpp 文件头的命令编译后执行
+```
+
+注意：这些用例**在沙箱内不会跑**（`createInferBuilder` 报 `CUDA initialization failure
+with error: 35` → `GTEST_SKIP`），必须在真机执行；上表的数据即真机所得。
+
+**修复方向（未实施，按 AGENTS.md §5 第 0 步需先出计划并确认）**：
+
+| 方案 | 做什么 | 代价 / 风险 |
+|---|---|---|
+| F1 删掉 4 处 `markOutput` | 回到"kPrefill/kDecode 只导出 K/V + logits" | 最干净，但 FP16 NaN 定位能力要重新加（当时 5 轮真机往返的仪器） |
+| F2 挂到显式开关（如 `BuildOptions.export_diagnostics`，默认 false） | 保留仪器，默认不破契约 | 推荐；需同步改 `Gpt2NetworkBuildTest` 的两条断言（按 stage / 开关算期望值） |
+| F3 消费方通用绑定全部 I/O | `LLMRunner` 遍历 `getNbIOTensors()` 给所有输出兜底 | 最差：把一次性诊断仪器变成生产代码的**长期**义务（每加一个诊断输出都要多分配一份缓冲） |
+
+**教训（可检查）**：
+
+1. **建图侧 `markOutput` 就是改 I/O 契约**，属于接口变更：加之前先 `grep` 全部绑定方
+   （`SetTensorAddress` / `getNbIOTensors`）与全部计数断言；这条应并入 §5 第 0 步的对账清单。
+2. **"沙箱能跑"这句话要当场验，不能靠注释传播**。本轮的两条矛盾注释
+   （测试文件说能在沙箱跑 vs 测试计划说实测需要 CUDA）就是缺陷藏身之处。
+3. **凡是"真机 N 条失败"的结论，必须标注是实测还是沿用**；沿用来的数字要么重跑，要么写成
+   "未验证"。这与 §7 的"阈值必须写出处"是同一条纪律，只是对象从阈值换成了结论。
+
+---
+
+### 19.1 修复与复验（2026-09-25，按 F2 方案）
+
+**改法**：把 4 个诊断输出挂到显式开关上，默认关闭。
+
+- `BuildOptions::export_diagnostics`（默认 `false`）+ `EngineBuilder::Config::export_diagnostics`
+  透传；`gpt2_model_builder.cpp` 里 4 处 `markOutput` 的条件加上该开关。
+- 只有 `Gpt2GenerateTest.Fp16PrefillOutputsDiagnostic` 打开它，并改用独立引擎路径
+  `..._prefill_fp16_diag.engine`（引擎缓存只按路径名区分，与 NaN 复现器共用会互相踩）。
+- 顺带把"环境不具备"与"环境故障"分开：`test_gpu_guard.hpp` 新增基于 `cudaGetDeviceCount`
+  的显式探测，以及 `MINI_TRT_REQUIRE_GPU=1`（跳过即失败）闸门；`Gpt2NetworkBuildTest::SetUp`
+  里"有设备却建不出 builder"从 `GTEST_SKIP` 改成失败。
+
+**沙箱（无 GPU）实测**：
+
+```
+100% tests passed, 0 tests failed out of 145      （跳过 63 / 实际执行 82）
+[环境] cudaGetDeviceCount -> err=35 (CUDA driver version is insufficient ...), count=-1,
+        driver=0, runtime=12060, 可用=否, MINI_TRT_REQUIRE_GPU=0
+No CUDA device available —— cudaGetDeviceCount -> err=35 (...), count=-1 ...   ← 每条跳过都带探测结果
+MINI_TRT_REQUIRE_GPU=1 下同一条用例 → FAILED（不再静默跳过）
+```
+
+**真机全量实测**（`MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build`，538 s，**0 条跳过**）：
+
+| 结果 | 用例 |
+|---|---|
+| ✅ 恢复 | 6 条先前红全部转绿：2 条建网输出数断言（回到 5）、3 条 decode-consistency、1 条 runner 对拍；3 条对照用例仍绿 |
+| ✅ 仍可用 | `Fp16PrefillOutputsDiagnostic` 通过，读回 `mlp_fc_0=11.5 / mlp_gelu_0=11.5 / attn_res_0=13.86 / mlp_res_0=95.44`——与 §18.1 轮次 4/5 的记录逐位一致，仪器没被修复削弱 |
+| 🔴 按设计红 | `RealGpt2Fp16GreedyMatchesReferenceTokens`：失败原因回到 **NaN**（`首个含 NaN/Inf 的层 = 1`、`prefill 末行 logits 前 4 个 = nan`、"第 7 个 token 不符"），**不再是 enqueue 失败**——这条正是"开关默认关闭且 LLMRunner 路径恢复"的判据 |
+| 🔴 **新发现** | `PagedKVCacheTest.AppendCrossesBlockBoundaryAndAdvancesContextLens` —— 与本缺陷无关的**既有**测试缺陷，见 #20 |
+
+**回归防护（这次的改动靠什么拦住同类问题）**：
+
+1. `Gpt2NetworkBuildTest` 的两条输出数断言——建图侧再偷偷多挂输出，会立刻红；
+2. `MINI_TRT_REQUIRE_GPU=1`——真机 / 带 GPU 的 CI 上任何一次跳过都算失败，杜绝"静默跳过 → 假绿"；
+3. `GpuEnvProbe.ReportsCudaAvailability`——每次运行都在日志里留下 `cudaGetDeviceCount` 的原始结果。
+
+---
+
+## 20. `PagedKVCacheTest` 的追加用例与 `AppendDecodeStep` 契约不同步（已定位，**修复待确认**）
+
+> **状态**：真机全量跑出来的**既有缺陷**（不是 #19 引入的）；根因已定位，并已按
+> `docs/phase2_supplement_plan.md` 的 **P2S-6** 修复并真机复验（2026-09-25）。
+> 它属于"测试与 API 契约脱节"，产品代码本身没问题。
+
+**现象**：真机全量（2026-09-25，`MINI_TRT_REQUIRE_GPU=1`）里
+`PagedKVCacheTest.AppendCrossesBlockBoundaryAndAdvancesContextLens` 失败：
+
+```
+[ERROR]   PagedKVCache: AppendDecodeStep expects one K/V pair per layer
+test_paged_kv_cache.cpp:235: Failure
+Value of: cache.AppendDecodeStep({d_key.data()}, {d_value.data()}, nullptr)
+  Actual: 1 (cudaErrorInvalidValue)   Expected: 0
+```
+
+**根因**：用例的 cache 配置是 `num_layers = 2`（`MakeConfig()`，`test_paged_kv_cache.cpp:28`），
+而 `AppendDecodeStep` 的契约是**一次写全部层**、要求 `keys.size() == num_layers`
+（`paged_kv_cache.cpp:280`，即 TROUBLESHOOTING #16 定下的语义）。用例却只传了 1 对 K/V。
+
+**为什么这条一直没被发现（三条叠加）**：
+
+1. 沙箱无 GPU → 用例 `GTEST_SKIP`，永远不会红；
+2. `AppendDecodeStep` 与这个用例**是同一笔提交（d6af2eb）产出的**（`git log -S AppendDecodeStep`
+   与 `git log -- test_paged_kv_cache.cpp` 都只有 d6af2eb），也就是说**它自诞生起就不可能通过**——
+   当时 #16 刚把接口从"每层各自推进"改成"一次写全部层、只推进一次"，用例没跟着改；
+3. `docs/phase2_test_plan.md` 里写着 `PagedKVCacheTest.*` ✅ 真机，但**该提交之后没有真机全量跑过**
+   （#16 之后验的是 GPT-2 侧的 `TwoStepDecodeMatchesPrefillAfterAppend`）。又一次"文档结论
+   没有实测依据"——与 #19 的教训同源。
+
+**影响**：产品代码无问题（`AppendDecodeStep` 自己会拒绝非法参数，行为正确）；受影响的是
+**测试覆盖**——跨块追加这条路径在 cache 层实际上从来没有被验证过（只有 GPT-2 侧的间接覆盖）。
+另外它使 `phase2_test_plan.md` 的"✅ 真机"结论失真。
+
+**修复内容（2026-09-25，只改测试、不动产品代码）**：
+
+1. 追加调用改为**每层一对**，且两层取不同基址（layer 0 = 100 段、layer 1 = 200 段）；
+2. 读回断言从"只验 layer 0"扩成**两层都验**（同逻辑位置 3 / 4）。这一步把用例从"其实只覆盖
+   单层写法"升级为真正验证 `AppendDecodeStep` 的语义——#15（各层共用同一 cache 张量）正是
+   这个形态，原来的写法抓不到；
+3. 新增负例 `AppendDecodeStepRejectsLayerCountMismatch`：传 1 对而配置 2 层必须返回
+   `cudaErrorInvalidValue`，**且 host 侧 `SequenceLength(0)` 与设备端 `context_lens` 都保持 0**
+   （拒绝路径不许留半推进的长度，否则一次非法调用会污染后续推理）；
+4. `docs/phase2_test_plan.md` 的 `PagedKVCacheTest.*` 状态行已更正（原先那句"✅ 真机"没有依据）。
+
+**复验（真机，`MINI_TRT_REQUIRE_GPU=1`）**：
+
+```
+# 定向：4/4 通过
+[  PASSED  ] 4 tests.          （含新负例，它正确打印 "expects one K/V pair per layer" 后仍判过）
+# 全量：146 条 / 1 红 —— 只剩 FP16 那条按设计红
+99% tests passed, 1 tests failed out of 146
+ 33 - Gpt2GenerateTest.RealGpt2Fp16GreedyMatchesReferenceTokens (Failed)
+```
+
+**回归防护**：新负例钉住了"先校验后写"的顺序；两层分基址的读回断言能在任何一层写错位置
+（#15 的形态）时立刻变红。
+
+**未做**：计划里的可选项"把实现临时改成先写后校验、确认新负例会红"没有执行——那需要临时
+改动产品代码再回滚，属于计划外的动作；本条的判据改由代码阅读确认（校验在写入之前 return）。

@@ -76,15 +76,22 @@ std::map<std::string, test_support::TensorSpec> Weights() {
 // **为什么这条边界值得单独测**：TensorRT 的建网 API 用法（矩阵乘的额外维匹配、
 // shuffle 的零占位符、normalization 的 axesMask、softmax 的轴位图、dynamic slice
 // 的 size 输入）错了，绝大多数情况下**只在真机上以构建失败或数值错误的形式暴露**。
-// 而"建网络"这一步不需要 CUDA 设备，可以在沙箱 / CI 里跑——
-// 把这一层从真机验证里摘出来，能省掉大量真机往返。
+//
+// **环境语义（曾写错，勿再按错误版本改回）**：这里一度写着"建网络不需要 CUDA，
+// 可以在沙箱 / CI 里跑"，但 `createInferBuilder` 实测需要 CUDA 初始化——无 GPU 的沙箱里它报
+// `CUDA initialization failure with error: 35` 并返回 null。这条错误假设的代价很实在：
+// 两条本该在提交时变红的输出数断言被静默 skip 掉，缺陷一路滑到真机（TROUBLESHOOTING #19）。
+// 所以下面把两种失败**分开**：没有设备才算"环境不具备"，有设备却建不出 builder 是**真故障**。
 class Gpt2NetworkBuildTest : public ::testing::Test {
  protected:
     void SetUp() override {
+        // 没有设备 → 跳过（并打印 cudaGetDeviceCount 的探测结果，见 test_gpu_guard.hpp）
+        MINI_TRT_SKIP_IF_NO_CUDA();
         builder_.reset(nvinfer1::createInferBuilder(logger_));
-        if (builder_ == nullptr) {
-            GTEST_SKIP() << "TensorRT builder unavailable in this environment";
-        }
+        // 设备探测通过却建不出 builder：这是驱动/TensorRT 安装问题，不是"环境不具备"，
+        // 必须判失败——否则它又会变成一个安静的 skip（#19 的同款滑梯）。
+        ASSERT_NE(builder_, nullptr)
+            << "CUDA 设备可用但 createInferBuilder 失败，请检查 TensorRT/CUDA 安装";
     }
 
     // 返回建好网络的 engine builder（调用方负责析构），失败返回 nullptr。

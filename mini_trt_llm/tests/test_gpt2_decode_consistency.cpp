@@ -56,9 +56,7 @@ using test_support::WithinAbs;
 // 位置编码、当前 token 是否参与注意力，任何一处写错都会在这里露馅。
 // 且它**不依赖外部基线**，因此不受"参考数据是否可靠"的影响。
 TEST(Gpt2DecodeConsistencyTest, DecodeStepMatchesPrefillAtSamePosition) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     Logger logger;
     test_support::ModelDirectory directory =
         test_support::ModelDirectory::Create("gpt2_decode_consistency");
@@ -316,9 +314,7 @@ TEST(Gpt2DecodeConsistencyTest, DecodeStepMatchesPrefillAtSamePosition) {
 //   - 这条通过、多 token 那条差 1e-3 → 差异来自累积/算法，不是接线错误；
 //   - 这条就挂了 → 问题在 cache 为空时的路径、位置编码或当前 token 的处理上。
 TEST(Gpt2DecodeConsistencyTest, DecodeWithEmptyCacheMatchesSingleTokenPrefill) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     Logger logger;
     test_support::ModelDirectory directory =
         test_support::ModelDirectory::Create("gpt2_decode_single");
@@ -447,9 +443,7 @@ TEST(Gpt2DecodeConsistencyTest, DecodeWithEmptyCacheMatchesSingleTokenPrefill) {
 //   (b) 被追加的那份 K/V —— 直接量"追加的数据本身对不对"；
 //   (c) 第 2 步 logits —— 第一次读回追加数据，若这里显著变大就坐实了这条链。
 TEST(Gpt2DecodeConsistencyTest, TwoStepDecodeMatchesPrefillAfterAppend) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     Logger logger;
     test_support::ModelDirectory directory =
         test_support::ModelDirectory::Create("gpt2_two_step");

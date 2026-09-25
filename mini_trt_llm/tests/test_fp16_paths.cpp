@@ -18,7 +18,6 @@
 namespace mini_trt_llm {
 namespace {
 
-using test_support::HasCudaDevice;
 using test_support::WithinTolerance;
 
 // FP16 覆盖缺口：Phase 1 的 L1 用例原先只有 RMSNorm 覆盖了 FP16，
@@ -54,9 +53,7 @@ float DeterministicValue(int64_t index, float phase) {
 
 // 一条用例同时补三个缺口：FP16 计算、GQA（heads != kv_heads）、batch > 1。
 TEST(Fp16PathTest, RoPEHandlesFp16WithGqaAndMultipleBatches) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     constexpr int32_t kBatch = 2;
     constexpr int32_t kHeads = 4;
     constexpr int32_t kKvHeads = 2;  // GQA：每 2 个 query head 共享 1 个 kv head
@@ -148,9 +145,7 @@ TEST(Fp16PathTest, RoPEHandlesFp16WithGqaAndMultipleBatches) {
 }
 
 TEST(Fp16PathTest, PagedAttentionMatchesFp16Reference) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     constexpr int32_t kHeads = 2;
     constexpr int32_t kHeadSize = 8;
     constexpr int32_t kBlockSize = 8;
@@ -242,9 +237,7 @@ TEST(Fp16PathTest, PagedAttentionMatchesFp16Reference) {
 }
 
 TEST(Fp16PathTest, GreedySamplerMatchesArgmaxOnFp16Logits) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     constexpr int32_t kBatch = 3;
     constexpr int32_t kVocab = 512;
 

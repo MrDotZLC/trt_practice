@@ -108,9 +108,7 @@ TEST_F(Gpt2OnnxErrorTest, RejectsUnreadableOnnxPath) {
 // 它验证的是这条护栏真的会拦人：任何 I/O 名与方案 A 不同的图都不会被悄悄接受——
 // 否则"ONNX 与原生对齐"就会变成一句空话（绑定时才报错，甚至数值错而无人察觉）。
 TEST_F(Gpt2OnnxErrorTest, RejectsGraphWithForeignIoNames) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "解析 ONNX 需要 CUDA（createInferBuilder）";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA("解析 ONNX 需要 CUDA（createInferBuilder）");
     const std::vector<std::string> candidates = {
         "0_resnet18_onnx/resnet18.onnx", "../0_resnet18_onnx/resnet18.onnx",
         "../../0_resnet18_onnx/resnet18.onnx", "../../../0_resnet18_onnx/resnet18.onnx"};
@@ -147,9 +145,7 @@ TEST_F(Gpt2OnnxErrorTest, RejectsGraphWithForeignIoNames) {
 // 环境语义：解析需要 CUDA（GPU 门控）；缺 python3/onnx 导致夹具生成失败时**跳过**——
 // 缺环境不等于图的契约有问题，混在一起会让失败信号失真。
 TEST_F(Gpt2OnnxErrorTest, RejectsGraphWithoutLogitsOutput) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "解析 ONNX 需要 CUDA（createInferBuilder）";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA("解析 ONNX 需要 CUDA（createInferBuilder）");
     const std::vector<std::string> generator_candidates = {
         "mini_trt_llm/tools/make_tiny_onnx.py", "../mini_trt_llm/tools/make_tiny_onnx.py",
         "../../mini_trt_llm/tools/make_tiny_onnx.py",

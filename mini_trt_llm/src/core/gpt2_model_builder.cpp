@@ -344,6 +344,10 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
     // prefill 与 decode 都要把每层的 K/V 导出：前者用来写 cache，
     // 后者是"下一轮追加"的数据来源。
     const bool export_kv = options.stage != BuildStage::kSingle;
+    // 诊断输出（第 0 层的中途张量）**只在显式要求时**才挂。它们是排查 FP16 NaN 的一次性仪器，
+    // 却会改掉网络的 I/O 契约——曾经默认带上，导致真机上 LLMRunner 与两条建网断言共 6 条用例
+    // 变红（消费方没绑这些输出，enqueueV3 直接拒绝执行）。见 docs/TROUBLESHOOTING.md #19。
+    const bool export_diagnostics = options.export_diagnostics && export_kv;
     const nvinfer1::DataType dtype = options.weight_dtype;
     const int32_t hidden = cfg.n_embd;
     const int32_t heads = cfg.n_head;
@@ -661,7 +665,8 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
         // 数值定位：第 0 层 MLP 的两个切点（gelu 前 / gelu 后）。
         // "NaN 是 c_fc 造出来的、还是 gelu 造出来的"是这次排查的关键分界，
         // 在图上留两个输出比逐次猜算子便宜（见 TROUBLESHOOTING #18）。
-        if (export_kv && layer == 0) {
+        // 仅在显式打开 export_diagnostics 时挂：它们会改 I/O 契约（#19）。
+        if (export_diagnostics && layer == 0) {
             mlp->setName("mlp_fc_0");
             network->markOutput(*mlp);
         }
@@ -670,7 +675,7 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
         }
         // gelu_new 就是 tanh 近似，与 kGELU_TANH 是同一个公式。
         gelu->setName(LayerName(scope + "gelu_new").c_str());
-        if (export_kv && layer == 0) {
+        if (export_diagnostics && layer == 0) {
             gelu->getOutput(0)->setName("mlp_gelu_0");
             network->markOutput(*gelu->getOutput(0));
         }
@@ -687,11 +692,11 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
             return false;
         }
 
-        // 数值定位用的中途输出（仅第 0 层，且只在导出 K/V 的 stage）：
+        // 数值定位用的中途输出（仅第 0 层，且仅在显式打开 export_diagnostics 时）：
         // "某层的 K/V 出现 NaN 时，NaN 是来自本层的注意力还是 MLP" 是排查中反复要回答的问题，
         // 而在图上留两个输出就能直接读出来（成本：每层两份 [B,S,H]，第 0 层可忽略）。
         // 见 docs/TROUBLESHOOTING.md #18 的定位过程。
-        if (export_kv && layer == 0) {
+        if (export_diagnostics && layer == 0) {
             after_attn->setName("attn_res_0");
             hidden_state->setName("mlp_res_0");
             network->markOutput(*after_attn);

@@ -264,9 +264,7 @@ std::string BuildEngine(const std::string& tag, const std::string& model_type,
 }  // namespace
 
 TEST(E2eSingleOpTest, RmsNormThroughRealWeightLoader) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::vector<float> weight = MakeWeight(kHidden, 0.0f);
     const std::string engine_path =
         BuildEngine<RmsNormE2eBuilder>("rmsnorm", "e2e_rmsnorm", ConfigFor("e2e_rmsnorm", kHidden),
@@ -304,9 +302,7 @@ TEST(E2eSingleOpTest, RmsNormThroughRealWeightLoader) {
 }
 
 TEST(E2eSingleOpTest, RoPEThroughRealBuilder) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     std::map<std::string, TensorSpec> tensors;
     tensors["source.norm"] = TensorSpec{{kHidden}, TensorSpec::Dtype::kF32,
                                         MakeWeight(kHidden, 0.0f)};
@@ -362,9 +358,7 @@ TEST(E2eSingleOpTest, RoPEThroughRealBuilder) {
 }
 
 TEST(E2eSingleOpTest, PagedAttentionThroughRealBuilder) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     std::map<std::string, TensorSpec> tensors;
     tensors["source.norm"] = TensorSpec{{kHidden}, TensorSpec::Dtype::kF32,
                                         MakeWeight(kHidden, 0.0f)};
@@ -375,9 +369,7 @@ TEST(E2eSingleOpTest, PagedAttentionThroughRealBuilder) {
 }
 
 TEST(E2eSingleOpTest, LogitsFeedSamplerWithoutHostRoundTrip) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::vector<float> head = MakeWeight(kHidden * kHidden, 1.0f);
     const std::string engine_path = BuildEngine<SamplerE2eBuilder>(
         "sampler", "e2e_sampler", ConfigFor("e2e_sampler", kHidden),

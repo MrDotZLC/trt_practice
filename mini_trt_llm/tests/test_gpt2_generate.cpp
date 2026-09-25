@@ -165,9 +165,7 @@ std::vector<int64_t> GenerateWithoutCache(Engine* prefill, const std::vector<int
 // 这条能抓住循环本身的所有错误：cache 写错位置、context_lens 差一、position_ids 递推错、
 // 当前 token 被重复或漏掉、K/V 追加错层……而且不依赖任何外部参考数据。
 TEST(Gpt2GenerateTest, RunnerMatchesFullRecomputeWithoutCache) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     Logger logger;
     test_support::ModelDirectory directory =
         test_support::ModelDirectory::Create("gpt2_generate_small");
@@ -237,9 +235,7 @@ TEST(Gpt2GenerateTest, RunnerMatchesFullRecomputeWithoutCache) {
 
 // 接口契约：temperature != 1.0 必须显式失败（D5），不能静默忽略。
 TEST(Gpt2GenerateTest, RejectsUnsupportedTemperature) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     Logger logger;
     test_support::ModelDirectory directory =
         test_support::ModelDirectory::Create("gpt2_generate_temp");
@@ -278,9 +274,7 @@ TEST(Gpt2GenerateTest, RejectsUnsupportedTemperature) {
 //
 // 这条最贵（要建两个 12 层引擎），因此放在最后、且模型目录不存在时跳过。
 TEST(Gpt2GenerateTest, RealGpt2GreedyMatchesReferenceTokens) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindRealModelDir();
     if (dir.empty()) {
         GTEST_SKIP() << "models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）";
@@ -372,9 +366,7 @@ TEST(Gpt2GenerateTest, RealGpt2GreedyMatchesReferenceTokens) {
 // cache 精度必须与引擎激活精度一致，否则 PagedAttention 会按错误宽度读 cache——
 // 那是"能跑但数值全错"的类型，不会报错。
 TEST(Gpt2GenerateTest, RealGpt2Fp16GreedyMatchesReferenceTokens) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindRealModelDir();
     if (dir.empty()) {
         GTEST_SKIP() << "models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）";
@@ -447,9 +439,7 @@ TEST(Gpt2GenerateTest, RealGpt2Fp16GreedyMatchesReferenceTokens) {
 // 它取代了"猜哪个算子产生 NaN"：逐输出给出 max|v| 与 NaN 标记，
 // 先把范围钉到**具体的张量**，再决定改什么（见 TROUBLESHOOTING #18）。
 TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindRealModelDir();
     if (dir.empty()) {
         GTEST_SKIP() << "models/gpt2 不存在";
@@ -458,6 +448,9 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
     Logger logger;
     EngineBuilder::Config builder_config;
     builder_config.precision = Precision::FP16;
+    // 这是**唯一**该打开诊断输出的用例：它逐输出读回中途张量，正是靠这些输出才不用猜
+    // 哪个算子产生 NaN。默认关闭是刻意的——诊断输出会改 I/O 契约（见 TROUBLESHOOTING #19）。
+    builder_config.export_diagnostics = true;
     builder_config.min_prefill_batch = 1;
     builder_config.opt_prefill_batch = 1;
     builder_config.max_prefill_batch = 1;
@@ -466,7 +459,9 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
     builder_config.max_prefill_seq_len = static_cast<int32_t>(kExpectedPrompt.size());
     EngineBuilder builder(logger, builder_config);
 
-    const std::string prefill_path = "/tmp/mini_trt_llm_gpt2_real_prefill_fp16.engine";
+    // 引擎路径必须与 `RealGpt2Fp16Greedy...` 用的那个分开：引擎缓存只按路径名区分、
+    // 不随代码或开关失效，共用一条路径会让"要诊断输出"与"不要诊断输出"互相踩成假结果。
+    const std::string prefill_path = "/tmp/mini_trt_llm_gpt2_real_prefill_fp16_diag.engine";
     if (!std::filesystem::exists(prefill_path)) {
         ASSERT_TRUE(builder.BuildFromConfig(dir, prefill_path, BuildStage::kPrefill));
     }

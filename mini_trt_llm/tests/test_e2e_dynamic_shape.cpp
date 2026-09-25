@@ -162,9 +162,7 @@ RunResult RunWithShape(Engine* engine, int32_t profile_index, int32_t batch, int
 }  // namespace
 
 TEST(E2eDynamicShapeTest, PrefillAcceptsVaryingSeqLen) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string engine_path = BuildDynamicEngine("dyn_prefill");
     ASSERT_FALSE(engine_path.empty());
 
@@ -179,9 +177,7 @@ TEST(E2eDynamicShapeTest, PrefillAcceptsVaryingSeqLen) {
 }
 
 TEST(E2eDynamicShapeTest, DecodeAcceptsVaryingBatch) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string engine_path = BuildDynamicEngine("dyn_decode");
     ASSERT_FALSE(engine_path.empty());
 
@@ -196,9 +192,7 @@ TEST(E2eDynamicShapeTest, DecodeAcceptsVaryingBatch) {
 }
 
 TEST(E2eDynamicShapeTest, OutOfRangeShapeIsRejected) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string engine_path = BuildDynamicEngine("dyn_out_of_range");
     ASSERT_FALSE(engine_path.empty());
 

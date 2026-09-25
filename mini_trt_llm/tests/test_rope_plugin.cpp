@@ -17,7 +17,6 @@
 namespace mini_trt_llm {
 namespace {
 
-using test_support::HasCudaDevice;
 using test_support::WithinTolerance;
 
 // 浮点入参的薄封装：真正的参考实现在 test_support::ReferenceRoPE（唯一来源）。
@@ -259,9 +258,7 @@ TEST(RoPEPluginTest, DeserializedPluginStillRejectsInconsistentShape) {
 }
 
 TEST(RoPEKernelTest, MatchesCpuReferenceWithContiguousPositions) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     constexpr int32_t kBatch = 1;
     constexpr int32_t kHeads = 2;
     constexpr int32_t kSeq = 3;
@@ -301,9 +298,7 @@ TEST(RoPEKernelTest, MatchesCpuReferenceWithContiguousPositions) {
 }
 
 TEST(RoPEKernelTest, HandlesNonContiguousPositionIds) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // KV Cache 续写场景：position_ids 不连续，且 query/key 序列长度不同
     constexpr int32_t kBatch = 1;
     constexpr int32_t kHeads = 2;
@@ -341,9 +336,7 @@ TEST(RoPEKernelTest, HandlesNonContiguousPositionIds) {
 }
 
 TEST(RoPEKernelTest, SupportsPartialRotaryDim) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // rotary_dim=4 < head_size=8：后半部分维度应保持原值不变
     constexpr int32_t kBatch = 1;
     constexpr int32_t kHeads = 1;

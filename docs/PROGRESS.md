@@ -1,17 +1,19 @@
 # mini_trt_llm 项目进度交接文档
 
-> 最后更新：2026-09-25（Phase 2 / Phase 3 收口）  
+> 最后更新：2026-09-25（Phase 2 / Phase 3 收口 + 提交状态与文档对账）  
 > 当前阶段：**Phase 3 已完成**（ONNX 路径与原生构建对齐：相对偏差 `5.66e-07`，阈值 `1e-5`）；
 > **下一步 Phase 4（ResNet18 替换）**。
 >
-> **接手必读三件事**：
+> **接手必读四件事**：
 > 1. **GPT-2 的推荐精度是 FP32** —— FP16 端到端数值不稳定（NaN，层数随构建变化），
 >    按政策不修，见 §5.11 与 `docs/TROUBLESHOOTING.md` §18.1；
 > 2. Phase 2 的残余缺口（含已定位的已知限制）见 §5.12 与 `docs/phase2_test_plan.md` §5；
 > 3. Phase 3 仅剩 G5/G6 两项按触发条件处理的缺口，见 `docs/future_iterations.md` §11。
-> 4. **真机全量测试会出现 1 条 FAILED，那是预期的**：`Gpt2GenerateTest.RealGpt2Fp16GreedyMatchesReferenceTokens`
->    （FP16 已知限制的**复现器**，按 AGENTS.md §7"已知失败保持红色"）。别当成回归；
->    若将来解决了 §1.4 的路径，这条应当变绿。
+> 4. **真机全量当前是 146 条 / 1 条红**（2026-09-25 实测，`MINI_TRT_REQUIRE_GPU=1`，0 跳过）：
+>    唯一的红是 FP16 NaN 的**按设计红**复现器（`RealGpt2Fp16GreedyMatchesReferenceTokens`，
+>    按 AGENTS.md §7 保持红色）。原第二条红（`PagedKVCacheTest.AppendCrossesBlockBoundary...`，
+>    测试与 `AppendDecodeStep` 契约不同步）已按 #20 修复并复验。
+>    跑真机时请带 `MINI_TRT_REQUIRE_GPU=1`：否则 GPU 用例会静默跳过，等于白跑。
 
 ---
 
@@ -126,6 +128,16 @@
   再用"某个配置下能过"反推可以排除哪些代码路径。两者都比逐行读代码快。
 - **`pipeline` 组件要区分构建期与运行期**：凡是"从形状推导"的状态，运行期入口
   （`onShapeChange`）都必须能自行推导，不能依赖只在构建期发生的初始化（见 #8）。
+- **GPU 用例的"跳过"必须显式、且不许把真故障伪装成跳过**（2026-09-25 补）：
+  - 判定统一走 `test_support::ProbeCudaDevice()`（主判定 `cudaGetDeviceCount`），
+    跳过信息里必须打印探测结果；`MINI_TRT_REQUIRE_GPU=1` 时**跳过即失败**；
+  - "环境不具备"（无设备）才允许跳过；"有设备但 `createInferBuilder` 失败"是**故障**，必须红；
+  - 为什么：`test_gpt2_network_build.cpp` 曾把两者合成一个 `GTEST_SKIP`，让两条本该红的断言
+    一路滑到提交（TROUBLESHOOTING #19）。但**不能**因此把无 GPU 沙箱的跳过整体改成失败——
+    那会让 CI 永远不绿（§5.7）。
+  - 实现细节：跳过必须用 **`MINI_TRT_SKIP_IF_NO_CUDA` 宏**。`GTEST_SKIP()`/`GTEST_FAIL()` 都是
+    `return` 语句，封装成函数只会退出那个函数、测试体继续执行（实测：63 条用例从 Skipped
+    变成 Failed）。
 
 ### 2.15 Phase 2 / 3 确立的接口约定（实现时确立，勿回改）
 
@@ -139,6 +151,11 @@
 | `BuildFromOnnx(model_dir, onnx_path, engine_path, subgraph_names)` | profile 规则要按 `config.json` 的 `architecture` 选，与方案 A **同一套**（否则"两条路对齐"失去意义）；`subgraph_names` 是"要核对的子图名"，**写错即失败**；图必须有 `input_ids` 输入与 `logits` 输出 |
 | ONNX 图的 I/O 与原生**不同**（`input_ids` 是 INT64、且无 `position_ids`） | 调用方必须按**引擎声明的**契约准备输入；统一两者见 `docs/future_iterations.md` §10.1 |
 | `LLMRunner::Generate` 约定 | 返回**新生成**的 token（不含 prompt）；失败返回**空 vector**（成功至少 1 个 token）；`temperature != 1.0` 显式失败；循环内零 H2D/D2H（`position_ids` 由 kernel 从设备端 `context_lens` 填） |
+| `LLMRunner` 按引擎**声明的**边界精度分配缓冲（`prefill_kv_half_` / `*_logits_half_`），**不按 `Config::is_half`** | 弱类型网络下 K/V 与 logits 的输出类型**由 TRT 决定**（FP16 引擎实测为 FP32；`addCast` 钉不住，已实测否证）。按 config 假定宽度 → TRT 按 4 字节写进 2 字节缓冲 → **越界写 → 非法访存**，而 FP32 下永远不暴露（2 与 4 恰好一致）。见 TROUBLESHOOTING #18 |
+| `PagedKVCache::Config::source_is_half`（源 = 引擎导出的 K/V）与 `is_half`（目标 = cache 布局）是**两个独立**字段 | `WriteKVKernel` 因此是双模板 `<SrcT, DstT>` 并按源×目标四种组合显式分发；假定二者一致，则 FP32 源写进 FP16 cache 时宽度与数值全错。其中 `is_half` 仍跟引擎 **cache 输入**的声明精度走（不随源精度变），两件事别"顺便统一" |
+| `LLMRunner` 启动时校验 decode `key_cache_0` 的声明精度 == `Config::is_half`，不一致**拒绝构造**（`ok() == false`） | cache 宽度是引擎与 `PagedKVCache` 之间的契约，错了 PagedAttention 会按错误宽度读。这道闸是把"内存越界"变成"一条可读启动错误"的机制，**无论将来走强类型还是消费方适配都要保留** |
+| 诊断输出（`mlp_fc_0` 等中途张量）必须由 `BuildOptions::export_diagnostics` **显式打开，默认关** | 建图侧 `markOutput` = 改 I/O 契约：每个消费方都要多分配并绑定，TRT 对未绑定输出**直接拒绝 enqueue**。默认带上它，曾经在真机上打挂 6 条用例（见 TROUBLESHOOTING #19）。要加新诊断输出，先 `grep` 全部绑定方与输出计数断言 |
+| 引擎缓存路径不得在"两种 I/O 契约"之间共用（如诊断开 / 诊断关） | 缓存只按路径名区分、**不随代码或开关失效**：共用一条路径时先跑的那次会决定后续用例拿到哪个引擎，测出假结果。诊断仪器因此单独用 `..._diag.engine` |
 
 ### 2.14 证据纪律与操作纪律（Phase 2 沉淀，后续沿用）
 
@@ -211,8 +228,12 @@
 | `tools/convert/hf_to_mini_trt_llm.py` | 产出 mini_trt_llm 原生 `config.json`（`weight_map` / `skipped_tensors` / 布局声明 / `block_size`） |
 | `models/gpt2/` | 转换产物（`model.safetensors` 被 .gitignore 忽略，`config.json` 入库） |
 | 用例 | `test_gpt2_config` / `test_gpt2_network_build` / `test_gpt2_decode_consistency` / `test_gpt2_generate` / `test_gpt2_prefill_accuracy` / `test_paged_kv_cache` / `tests/gpt2_test_support.hpp` |
+| `tools/inspect_engine.cpp` | 引擎 I/O 探针：反序列化任意 `.engine` 并打印各 I/O 的名字 / 方向 / **声明精度** / 维数（不建 context、不推理）。**不进构建流程**，编译命令写在文件头；用途与限制见 §6.5 |
+| `tests/test_gpt2_generate.cpp` 的 FP16 补测 | 复现器 `RealGpt2Fp16GreedyMatchesReferenceTokens`（**真机预期失败**，见 §6.5）+ 纯打印诊断仪器 `Fp16PrefillOutputsDiagnostic`（逐输出给 `max|v|` 与 NaN 标记） |
 
-**真机验证结果**（全量 `ctest` 通过；沙箱内 132 用例 0 失败、GPU 用例自动跳过）：
+**真机验证结果**（Phase 2 收工时的快照；沙箱内 132 用例 0 失败、GPU 用例自动跳过，
+**当前总数见 §3.5**。注意：`625939c` 之后真机已有 6 条实测失败（见 §5.11 / TROUBLESHOOTING #19），
+下面这些数字是**该缺陷引入之前**的快照）：
 
 - 真实 GPT-2 贪心 8 token 与 HF 基线**逐 token 一致**：
   `[274, 389, 257, 1049, 835, 284, 651, 257]`（prompt = `"The quick brown fox"`）；
@@ -220,9 +241,10 @@
   `cosine = 1.0`、逐位置 argmax 一致；
 - 解码一致性（decode 一步 == prefill 对应位置）在严格阈值 `1e-5` 下通过。
 
-**过程中修掉的 4 个真缺陷**（详见 `docs/TROUBLESHOOTING.md`）：
+**过程中修掉的 5 个真缺陷**（详见 `docs/TROUBLESHOOTING.md`）：
 #13 粘性 CUDA 错误被误读、#14 KV Cache 写入路径两处、#15 decode 各层共用同一 cache 张量、
-#16 追加按层推进语境长度。
+#16 追加按层推进语境长度、#18（前半）FP16 缓冲按**假定**精度分配 → 越界写。
+同一条 #18 的**后半**是另一码事：FP16 图本身产生 NaN，已登记为已知限制（§5.11），按政策不修。
 
 ### 3.0b Phase 3 交付（GPT-2 ONNX 路径，2026-09-25）
 
@@ -241,6 +263,22 @@
 **口径与残余缺口**：见 `docs/phase3_test_plan.md`（G1c / G4b / G5 / G6）。
 **性能结论未定**：两次测量的方向相反（±25%，小于构建间噪声），不能据此判断 ONNX 路径
 是否更优，更不能据此决定是否做子图替换——见 `docs/future_iterations.md` §10.2。
+
+### 3.0c Phase 2 补丁（诊断输出开关 + CUDA 环境判定，2026-09-25）
+
+| 文件 / 模块 | 说明 |
+|---|---|
+| `core/imodel_builder.hpp` + `core/builder.{hpp,cpp}` | `BuildOptions::export_diagnostics` / `EngineBuilder::Config::export_diagnostics`，**默认关** |
+| `core/gpt2_model_builder.cpp` | 4 处诊断 `markOutput` 改由开关控制 → 默认构建的输出数回到 `2*n_layer + 1` |
+| `tests/test_gpu_guard.hpp` | `ProbeCudaDevice()`（主判定 `cudaGetDeviceCount`）+ `MINI_TRT_SKIP_IF_NO_CUDA` 宏 + `MINI_TRT_REQUIRE_GPU` 闸门 |
+| `tests/test_cuda_check.cpp` | `GpuEnvProbe.ReportsCudaAvailability`：**永不跳过**，每次运行都打印环境事实 |
+| `tests/test_gpt2_network_build.cpp` | SetUp 三分支："无设备"跳过、"有设备但建不出 builder"**判失败** |
+| `tests/*.cpp`（19 个文件、59 处） | GPU 跳过统一走显式探测宏，跳过信息里带 `cudaGetDeviceCount` 原始结果 |
+
+| `tests/test_paged_kv_cache.cpp` | P2S-6：追加用例改为**每层一对**并补两层读回断言；新增负例 `AppendDecodeStepRejectsLayerCountMismatch`（见 `TROUBLESHOOTING.md` #20） |
+
+计划与验收见 `docs/phase2_supplement_plan.md`；缺陷与实测见 `docs/TROUBLESHOOTING.md` #19 / #20。
+**真机全量结果**：146 条，0 跳过（`MINI_TRT_REQUIRE_GPU=1`），**1 条红 = FP16 NaN 复现器（按设计红）**。
 
 ### 3.1 目录与构建
 
@@ -282,7 +320,10 @@
 
 - `mini_trt_llm/tests/test_*.cpp`：Utils / Core 骨架（cuda_check、logger、timer、memory_pool、io、
   model_config、model_registry、safetensors_loader、engine）+ Phase 1 算子 + Phase 1.5 端到端。
-- 当前状态（2026-09-25 快照）：沙箱内 `ctest` **142 个用例 0 失败**（GPU 用例自动跳过，含已接入的 `onnx_graph_probe`）。
+- 当前状态（2026-09-25 实测，含 Phase 2 补丁 P2S-1~P2S-6）：沙箱内 `ctest` **146 个用例，0 失败**
+  （64 个 GPU 用例自动跳过、82 个 host 用例实际执行，含已接入的 `onnx_graph_probe` 与
+  `GpuEnvProbe`）。真机全量（`MINI_TRT_REQUIRE_GPU=1`）**0 跳过**、**1 条红**（FP16 NaN 复现器）。
+  实测命令：`cmake --build build -j$(nproc) && ctest --test-dir build`（build 目录已配 `BUILD_TESTS=ON`）。
   分层与覆盖度详见 §3.9 / §3.10 与 `docs/phase1_test_plan.md`。
 - 待补（不阻塞 Phase 2）：`docs/phase0_model_loading_test_plan.md` 里 T2（ONNX→Engine）仍未实施；
   T1 / T3 的能力已由 Phase 1.5 的 E1/E2 以更强的形式覆盖。
@@ -344,7 +385,7 @@
   用户在 WSL2 真机上跑 `--gtest_filter='RoPE*:PagedAttention*:Sampler*'` **全部通过**，
   加上此前已通过的 `RmsNorm*`，**Phase 1 全部算子（kernel 数值 + engine 集成）均已在真机验证**。
   过程中修复了一个只在部分旋转下暴露的 RoPE 缺陷（见 `docs/TROUBLESHOOTING.md` #4）。
-  ⚠️ 该数字是 Phase 1 收尾时的快照，**当前总数见 §3.10**。
+  ⚠️ 该数字是 Phase 1 收尾时的快照，**当前总数只认 §3.5**（§3.10 与本节都只是历史快照，勿叠加）。
 - 参考数据脚本：`scripts/ref_rope.py`（与 HuggingFace `apply_rotary_pos_emb` 交叉验证，最大差异 0.0）、
   `scripts/ref_sampler.py`（Top-K/Top-P 截断语义与理论概率）。
 
@@ -377,7 +418,8 @@
 - **第二次真机复验发现并修复的缺陷**：参考实现 `ReferenceRoPE` 漏了 batch 维度，导致
   `Fp16PathTest` 在 batch>1 时误判为 kernel 出错。已把参考实现收敛为唯一来源、加 batch 参数
   与入口断言，并补 7 条 host 侧 meta-test（详见 `docs/TROUBLESHOOTING.md` #9）。
-- 验证状态：沙箱内 `ctest` **104 个用例 0 失败**（40 个 GPU 用例自动跳过，64 个 host 用例实际执行）；
+- 验证状态（Phase 1.5 收尾时的快照）：沙箱内 `ctest` **104 个用例 0 失败**
+  （40 个 GPU 用例自动跳过，64 个 host 用例实际执行）；**当前总数见 §3.5**。
   参考实现这一层由 `test_reference_helpers.cpp` 在 CI 内自证。
 - **真机验证**：E1 / E2 / E3 与 E4 的 2 条 GPU 用例、FP16 覆盖用例（共 5 条）**全部通过**。
   Phase 1.5 完成闭环——进入 Phase 2 建模前所需的组件（插件 / 采样器 / 权重加载 / 动态 shape /
@@ -538,14 +580,27 @@ Phase 1 明确不在本次范围内、留待后续的项：
 - **Workaround**：用 FP32（已端到端验证：8/8 贪心 token 命中、logits 相对偏差 `1e-6`）。
 - **后续路径**：`docs/future_iterations.md` §1.4（关键算子保 FP32 → 逐算子二分 → 激活缩放）。
 - **完整定位过程（5 轮真机往返）**：`docs/TROUBLESHOOTING.md` §18.1。
+- **残留仪器变成的真缺陷（已修复，2026-09-25）**：定位时在图上留的 4 个中途输出
+  （`mlp_fc_0` / `mlp_gelu_0` / `attn_res_0` / `mlp_res_0`）曾经**无条件挂在图上**，
+  而消费方按名绑定、没人绑它们 → 真机 6 条用例 red（建网断言 `9 ≠ 5`、decode-consistency 与
+  runner 全部 enqueue 失败，TRT 直接点名 `mlp_fc_0`）。
+  **现方案（F2）**：诊断输出由 `BuildOptions::export_diagnostics` 控制、**默认关**，
+  只有 `Fp16PrefillOutputsDiagnostic` 打开（并用独立引擎路径）。真机复验：9 条目标用例全绿，
+  诊断仪器读回的中途张量数值与当初记录逐位一致。
+  完整证据与教训见 **`docs/TROUBLESHOOTING.md` #19**，任务与验收见
+  **`docs/phase2_supplement_plan.md`**。
 
 ### 5.12 Phase 2 修掉的缺陷（结论索引）
 
-Phase 2 的 4 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用 cache / 按层推进长度）
-全部已修复并有回归用例，经过与推导见 `docs/TROUBLESHOOTING.md` #13 ~ #16。
-其中 **#16 的教训影响接口设计**：`PagedKVCache` 的追加接口已拆成
-`AppendDecodeKV`（只写）+ `AppendDecodeStep`（一次写全部层、只推进一次长度），
-后续会话不要按"每层调用一次并各自推进"的直觉改回去。
+Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用 cache / 按层推进长度 /
+**FP16 缓冲按假定精度分配导致越界写**）全部已修复并有回归用例，
+经过与推导见 `docs/TROUBLESHOOTING.md` #13 ~ #16 与 #18（前半）。
+其中两条**影响接口设计**（均已落到 §2.15 的表里，勿回改）：
+
+- **#16**：`PagedKVCache` 的追加接口拆成 `AppendDecodeKV`（只写）+
+  `AppendDecodeStep`（一次写全部层、只推进一次长度）——不要按"每层调用一次并各自推进"的直觉改回去。
+- **#18（前半）**：凡"按配置推断别人的宽度"的地方都要改成"向对方查询"，即边界精度查询、
+  `source_is_half` 与 decode cache 输入精度校验这三条。
 
 ## 6. 下一步计划
 
@@ -616,9 +671,21 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 ## 6.5 工作区与本地产物状态（新会话先看这一节）
 
-**代码与文档的提交状态**：Phase 2 + Phase 3 的全部产物（源码、用例、工具、9 份文档）
-**尚未提交**，`git status` 是"脏"的——**这是预期状态，不是别人未完成的 WIP，不要 revert**。
-提交与 push 由用户决定（AGENTS.md §0.2）。
+**代码与文档的提交状态**：**已全部提交，工作区干净**（`git status` 无输出；不要去找"未提交的 WIP"）。
+最近一次提交 `625939c`（"test for supplementary Phase 2"，2026-09-25）一笔记下了三件事：
+
+1. Phase 2 的 **FP16 边界精度修复**——`src/core/llm_runner.cpp`（查询引擎声明的精度）、
+   `src/kv_cache/paged_kv_cache_kernels.cu`（`WriteKVKernel` 双模板）、
+   `src/core/gpt2_model_builder.cpp`（LayerNorm 显式 FP32 + 第 0 层诊断输出）；
+2. **复现器与仪器**——`tests/test_gpt2_generate.cpp`、`tools/inspect_engine.cpp`；
+3. 9 份文档的同步更新。
+
+> **更正记录（2026-09-25）**：本节原先写"Phase 2 + Phase 3 全部产物**尚未提交**、
+> `git status` 是'脏'的、这是预期状态"——那是同一笔提交落盘前的状态，提交后没有回改。
+> 保留这句的害处很实在：下一个会话若照它去找"未提交的 WIP"，轻则白跑一趟，
+> 重则把它当成别人的半成品而 `revert`/`stash`（AGENTS.md §5 第 4 条要的正是这种"文档与现状矛盾"的记录）。
+> **判断依据以 `git log` / `git status` 为准**，不是本文档。
+> 提交与 push 由用户决定（AGENTS.md §0.2）。
 
 **不在版本控制里、但跑测试需要的产物**：
 
@@ -630,7 +697,15 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 **已知会失败/跳过的测试**（避免新会话误判为回归）：
 
-- 真机：1 条**预期失败**——`RealGpt2Fp16GreedyMatchesReferenceTokens`（见上方"接手必读"第 4 条）；
+- 真机（`MINI_TRT_REQUIRE_GPU=1`，2026-09-25 全量实测 146 条 / 0 跳过 / **1 红**）：
+  - `RealGpt2Fp16GreedyMatchesReferenceTokens`：FP16 已知限制的**按设计红**（NaN → token 不符）。
+  - 原第二条红 `PagedKVCacheTest.AppendCrossesBlockBoundary...`（测试与 `AppendDecodeStep`
+    契约不同步）已修复，见 `docs/TROUBLESHOOTING.md` #20 / 计划 P2S-6。
+  改动过建图或开关时，**务必先删 `/tmp` 里的引擎缓存**（缓存路径只按名字区分，不随代码失效）。
+- 真机：**跑全量一定要带 `MINI_TRT_REQUIRE_GPU=1`**——否则无设备时用例会静默跳过，等于白跑。
+- 真机：`Fp16PrefillOutputsDiagnostic` **应当通过**——它是**纯打印**的诊断仪器（只输出
+  `max|v|` / NaN 标记，不 assert 数值），"它凭什么通过"的答案就是它不判定正确性；
+  别看到"FP16 出 NaN"就以为这条也该红。
 - 沙箱：全部 GPU 用例 `GTEST_SKIP`（无 GPU，见 §5.10）；`onnx_graph_probe` 在缺 `onnx` 包或
   缺 `1_gpt2_onnx/gpt2.onnx` 时返回 77 → `Skipped`（**设计如此**，缺环境 ≠ 图有问题）。
 

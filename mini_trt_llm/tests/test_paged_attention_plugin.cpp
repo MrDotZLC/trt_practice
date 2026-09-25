@@ -18,7 +18,6 @@
 namespace mini_trt_llm {
 namespace {
 
-using test_support::HasCudaDevice;
 using test_support::WithinTolerance;
 
 float DeterministicValue(int64_t index) {
@@ -360,9 +359,7 @@ TEST(PagedAttentionPluginTest, IndexTensorsMustBeInt32) {
 }
 
 TEST(PagedAttentionKernelTest, MhaMatchesCpuReferenceAcrossMultipleBlocks) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // 逻辑块顺序 [0,1] 映射到物理块 [5,2]，且两个序列共用同一组物理块，
     // 确保 kernel 真正按块表寻址而不是顺序读缓存。
     const std::vector<int32_t> context_lens{20, 7};
@@ -375,9 +372,7 @@ TEST(PagedAttentionKernelTest, MhaMatchesCpuReferenceAcrossMultipleBlocks) {
 }
 
 TEST(PagedAttentionKernelTest, GqaSharesKvHeadsAcrossQueryHeads) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // num_heads=4 / num_kv_heads=2 → 每 2 个 query head 共享 1 个 kv head
     const std::vector<int32_t> context_lens{13};
     const std::vector<int32_t> block_tables{3, 1};
@@ -389,9 +384,7 @@ TEST(PagedAttentionKernelTest, GqaSharesKvHeadsAcrossQueryHeads) {
 }
 
 TEST(PagedAttentionKernelTest, ZeroContextLengthProducesZeros) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // context_len = 0 时不能除零，输出应为 0
     const std::vector<int32_t> context_lens{0};
     const std::vector<int32_t> block_tables{0};
@@ -417,9 +410,7 @@ TEST(PagedAttentionKernelTest, RejectsInvalidArguments) {
 // 此时 softmax 只有一个元素、权重恒为 1，输出必须**逐元素等于 value_new**；
 // 漏掉当前 token 的实现会走 context_len=0 的兜底分支返回全 0，一眼可辨。
 TEST(PagedAttentionKernelTest, CurrentTokenIsAttendedEvenWithEmptyCache) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::vector<int32_t> context_lens{0};
     const std::vector<int32_t> block_tables{0};
     AttentionFixture fixture = MakeFixture(/*batch=*/1, /*heads=*/2, /*kv_heads=*/2,
@@ -457,9 +448,7 @@ TEST(PagedAttentionKernelTest, CurrentTokenIsAttendedEvenWithEmptyCache) {
 
 // 缓存 + 当前 token 一起参与时的数值，与 CPU 参考对比（含 GQA 与 batch>1）
 TEST(PagedAttentionKernelTest, CurrentTokenMatchesCpuReferenceWithGqa) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::vector<int32_t> context_lens{5, 3};
     const std::vector<int32_t> block_tables{1, 0, 3, 2, 1, 0};
     AttentionFixture fixture = MakeFixture(/*batch=*/2, /*heads=*/4, /*kv_heads=*/2,

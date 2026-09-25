@@ -47,6 +47,11 @@ class EngineBuilder {
         int min_decode_seq_len = 1;
         int opt_decode_seq_len = 1;
         int max_decode_seq_len = 512;
+
+        // 诊断输出开关，默认关。只有"定位某个张量为何出 NaN"这类仪器用例才该打开，
+        // 因为它会改变网络的 I/O 契约（多出 4 个中间张量，消费方必须逐个绑定），
+        // 语义与后果见 BuildOptions::export_diagnostics。
+        bool export_diagnostics = false;
     };
 
     explicit EngineBuilder(Logger& logger, const Config& config);

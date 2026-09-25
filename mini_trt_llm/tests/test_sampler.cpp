@@ -15,8 +15,6 @@
 namespace mini_trt_llm {
 namespace {
 
-using test_support::HasCudaDevice;
-
 // 固定 seed：Q12 要求参考结果可复现，采样用例必须由 seed 完全决定。
 constexpr uint64_t kSeed = 42;
 
@@ -217,9 +215,7 @@ TEST(SamplerTest, RejectsNullPointersAndWorkspace) {
 }
 
 TEST(SamplerKernelTest, GreedyMatchesArgmax) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     constexpr int32_t kBatch = 4;
     constexpr int32_t kVocab = 1000;
 
@@ -229,9 +225,7 @@ TEST(SamplerKernelTest, GreedyMatchesArgmax) {
 }
 
 TEST(SamplerKernelTest, GreedyPrefersLowestIndexOnTie) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // 与 torch.argmax 一致：并列时取最小下标
     constexpr int32_t kBatch = 1;
     constexpr int32_t kVocab = 8;
@@ -242,9 +236,7 @@ TEST(SamplerKernelTest, GreedyPrefersLowestIndexOnTie) {
 }
 
 TEST(SamplerKernelTest, TopKWithKEqualsOneBehavesLikeGreedy) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // k=1 时候选集只有 argmax，采样结果必须与 greedy 完全一致
     constexpr int32_t kBatch = 4;
     constexpr int32_t kVocab = 512;
@@ -255,9 +247,7 @@ TEST(SamplerKernelTest, TopKWithKEqualsOneBehavesLikeGreedy) {
 }
 
 TEST(SamplerKernelTest, TopKResultAlwaysWithinTopKSet) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     constexpr int32_t kBatch = 3;
     constexpr int32_t kVocab = 256;
     constexpr int32_t kK = 5;
@@ -276,9 +266,7 @@ TEST(SamplerKernelTest, TopKResultAlwaysWithinTopKSet) {
 }
 
 TEST(SamplerKernelTest, TopKSamplingIsDeterministicForFixedSeed) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // Q12：固定 seed 必须得到完全相同的结果，否则参考对比无法回归
     constexpr int32_t kBatch = 4;
     constexpr int32_t kVocab = 512;
@@ -295,9 +283,7 @@ TEST(SamplerKernelTest, TopKSamplingIsDeterministicForFixedSeed) {
 }
 
 TEST(SamplerKernelTest, TopPWithTinyPicksArgmax) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // p 极小 → 截断到最前面的 token，退化为 greedy
     constexpr int32_t kBatch = 2;
     constexpr int32_t kVocab = 128;
@@ -308,9 +294,7 @@ TEST(SamplerKernelTest, TopPWithTinyPicksArgmax) {
 }
 
 TEST(SamplerKernelTest, TopPIsDeterministicForFixedSeed) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     constexpr int32_t kBatch = 3;
     constexpr int32_t kVocab = 512;
 
@@ -322,9 +306,7 @@ TEST(SamplerKernelTest, TopPIsDeterministicForFixedSeed) {
 }
 
 TEST(SamplerKernelTest, TopKDistributionMatchesSoftmaxProbabilities) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // k = vocab 时等价于全词表 softmax 采样，词频应收敛到解析概率。
     // 这是 D3「Generation 层对比分布」在 Phase 1 可落地的最小形式：
     // 逐 token 一致做不到，但分布必须对得上。
@@ -346,9 +328,7 @@ TEST(SamplerKernelTest, TopKDistributionMatchesSoftmaxProbabilities) {
 }
 
 TEST(SamplerKernelTest, TopPWithFullProbabilityDoesNotOverTruncate) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // p = 1.0 时 nucleus 应覆盖整个词表；若截断逻辑有 off-by-one 或提前收敛，
     // 概率最小的 token 会永远采不到。
     constexpr int32_t kVocab = 4;

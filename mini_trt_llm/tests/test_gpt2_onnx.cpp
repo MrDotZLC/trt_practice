@@ -189,9 +189,7 @@ std::vector<float> RunEngine(Engine* engine, const std::vector<int64_t>& prompt,
 // 所以任何差异都只可能来自"图的分解方式"或"我们的实现"，不涉及外部基线是否可靠。
 // 同时与 `ref_output.bin`（HF FP32）做三方对照。
 TEST(Gpt2OnnxTest, MatchesNativeBuildOnSamePrompt) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindModelDir();
     const std::string onnx = FindOnnx();
     const std::string ref_path = FindRefOutput();
@@ -329,9 +327,7 @@ TEST(Gpt2OnnxTest, MatchesNativeBuildOnSamePrompt) {
 // 注意 ONNX 与原生在 FP16 下**各自的 Cast/精度处理不同**（见 TROUBLESHOOTING #17），
 // 因此这里比的是"两条路在 FP16 下是否一致"，而不是"与 HF 是否一致"（HF 参考是 FP32）。
 TEST(Gpt2OnnxTest, Fp16PathsAgree) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindModelDir();
     const std::string onnx = FindOnnx();
     if (dir.empty() || onnx.empty()) {
@@ -394,9 +390,7 @@ TEST(Gpt2OnnxTest, Fp16PathsAgree) {
 // 此形状下没有 HF 参考（`ref_output.bin` 只有 seq=4），因此比的是两条路彼此——
 // 它们用的是同一份数值（TROUBLESHOOTING #17 已核对），任何差异都是实现差异。
 TEST(Gpt2OnnxTest, MatchesAcrossProfileShapes) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindModelDir();
     const std::string onnx = FindOnnx();
     if (dir.empty() || onnx.empty()) {

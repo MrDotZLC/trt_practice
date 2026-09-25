@@ -368,9 +368,7 @@ std::vector<double> RunReference(const Weights& weights,
 }  // namespace
 
 TEST(E2eMiniDecoderTest, FullChainMatchesIndependentCpuReference) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
 
     Weights weights;
     weights.norm1 = MakeWeight(kHidden, 0.0f);
@@ -510,9 +508,7 @@ TEST(E2eMiniDecoderTest, FullChainMatchesIndependentCpuReference) {
 }
 
 TEST(E2eMiniDecoderTest, RejectsMissingWeightFromMap) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // weight_map 指向的 source key 不存在时，builder 必须失败而不是建出错误 engine
     Weights weights;
     weights.norm1 = MakeWeight(kHidden, 0.0f);

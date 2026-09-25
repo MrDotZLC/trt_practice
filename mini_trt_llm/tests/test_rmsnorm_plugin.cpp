@@ -18,7 +18,6 @@
 namespace mini_trt_llm {
 namespace {
 
-using test_support::HasCudaDevice;
 using test_support::CpuRmsNorm;
 using test_support::DeterministicValue;
 using test_support::WithinTolerance;
@@ -272,9 +271,7 @@ TEST(RmsNormPluginTest, WorkspaceIsZeroBecauseReductionUsesSharedMemory) {
 // -----------------------------------------------------------------------------
 
 TEST(RmsNormKernelTest, FloatMatchesCpuReference) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     constexpr int64_t kRows = 8;
     constexpr int32_t kHidden = 64;
     constexpr float kEps = 1e-6f;
@@ -301,9 +298,7 @@ TEST(RmsNormKernelTest, FloatMatchesCpuReference) {
 }
 
 TEST(RmsNormKernelTest, HalfMatchesCpuReferenceWithinFp16Tolerance) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     constexpr int64_t kRows = 4;
     constexpr int32_t kHidden = 128;
     constexpr float kEps = 1e-6f;
@@ -332,9 +327,7 @@ TEST(RmsNormKernelTest, HalfMatchesCpuReferenceWithinFp16Tolerance) {
 }
 
 TEST(RmsNormKernelTest, OddHiddenSizeFallsBackToScalarPath) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // 33 不能被 4 整除，强制走标量 kernel，覆盖向量化路径之外的边界
     constexpr int64_t kRows = 3;
     constexpr int32_t kHidden = 33;
@@ -361,9 +354,7 @@ TEST(RmsNormKernelTest, OddHiddenSizeFallsBackToScalarPath) {
 }
 
 TEST(RmsNormKernelTest, SingleRowDynamicDecodeShape) {
-    if (!HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
     // Decode 阶段的典型形状：[batch=1, seq=1, hidden]，rows 退化为 1
     constexpr int64_t kRows = 1;
     constexpr int32_t kHidden = 768;

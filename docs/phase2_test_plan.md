@@ -38,6 +38,12 @@ models/gpt2/{config.json, model.safetensors}
 |---|---|---|---|
 | **L0 host 契约** | 配置解析与校验、权重名集合（148）、真实转换产物的权重与关键形状、块分配器 | **沙箱**（不需要 GPU） | `test_gpt2_config.cpp`、`test_paged_kv_cache.cpp`（BlockAllocator 部分） |
 | **L1 建网** | prefill / decode 网络的输入输出契约、逐层 shape 冒烟、缺权重必须在建网阶段失败 | 真机（`createInferBuilder` 需要 CUDA，实测确认） | `test_gpt2_network_build.cpp` |
+
+> ⚠️ **2026-09-25 更正**：`test_gpt2_network_build.cpp` 里曾写"建网络不需要 CUDA，可以在沙箱 / CI
+> 里跑"——**该注释是错的**，与上表（以及沙箱实测：`createInferBuilder` 报
+> `CUDA initialization failure with error: 35`）矛盾。这条错误假设让两条本该红的输出数断言在
+> 沙箱里被静默跳过，缺陷一路滑到提交（见 `docs/TROUBLESHOOTING.md` #19）。注释已改，
+> 并且"无设备才跳过、有设备却建不出 builder 判失败"已成为硬约束。
 | **L2 数值** | prefill 对 `ref_output.bin`；decode 与 prefill 同位置一致；分页 cache 写入 / 追加；FP16 分支 | 真机 | `test_gpt2_prefill_accuracy.cpp`、`test_gpt2_decode_consistency.cpp`、`test_paged_kv_cache.cpp`（GPU 部分）、`test_fp16_paths.cpp`（Phase 1 遗留 + 复用） |
 | **L3 端到端** | 带 KV Cache 的生成 vs 每步全序列重算；真实 GPT-2 的 8 个贪心 token 与 HF 基线；`temperature` 拒绝 | 真机 | `test_gpt2_generate.cpp` |
 
@@ -58,7 +64,7 @@ CUDA 初始化**——把它与"建引擎 + 数值"混在一起时，真机失�
 | `Gpt2DecodeConsistencyTest.DecodeStepMatchesPrefillAtSamePosition` | L2 | decode 一步 == prefill 同位置；分层 K/V 差异用于定位 | §4.10（P2-6） | ✅ 真机 |
 | `Gpt2DecodeConsistencyTest.TwoStepDecodeMatchesPrefillAfterAppend` | L2 | 追加一次后再 decode 仍一致（三个独立量：步1 logits / 追加的 K/V / 步2 logits） | §4.10 + TROUBLESHOOTING #16 | ✅ 真机（该用例即 #16 的判别实验） |
 | `Gpt2DecodeConsistencyTest.DecodeWithEmptyCacheMatchesSingleTokenPrefill` | L2 | 单 key 时两条路几乎逐位一致（硬判据 `1e-5`） | §4.10 | ✅ 真机 |
-| `PagedKVCacheTest.*` | L2 | 写入走块表 / 跨块追加 / 越界拒绝 / 设备端长度推进 | §4.8（P2-4） | ✅ 真机 |
+| `PagedKVCacheTest.*`（现 4 条） | L2 | 写入走块表 / 跨块追加（**两层都验**）/ 越界拒绝 / **层数不匹配必须被拒且不留副作用** | §4.8（P2-4） | ✅ 真机（2026-09-25 复验 4/4）。⚠️ 更正：此前这条写"✅ 真机"时，`AppendCrossesBlockBoundary...` **自 d6af2eb 起就不可能通过**（传 1 对 vs 契约要求每层一对），沙箱跳过掩盖了它——详见 `docs/TROUBLESHOOTING.md` #20 |
 | `Gpt2GenerateTest.RunnerMatchesFullRecomputeWithoutCache` | L3 | runner（带 cache）与每步全序列重算**逐 token 一致** | §4.11 | ✅ 真机 |
 | `Gpt2GenerateTest.RealGpt2GreedyMatchesReferenceTokens` | L3 | 与 HF 基线逐 token 一致：`[274, 389, 257, 1049, 835, 284, 651, 257]` | §0.3 / §4.11 | ✅ 真机 |
 | `Gpt2GenerateTest.RejectsUnsupportedTemperature` | L3 | `temperature != 1.0` 必须返回失败（不静默忽略） | D5 | ✅ 真机 |
@@ -83,7 +89,7 @@ CUDA 初始化**——把它与"建引擎 + 数值"混在一起时，真机失�
 
 | ID | 缺口 | 影响 | 触发条件 / 做法 |
 |---|---|---|---|
-| **G2-1** | ~~真实 GPT-2 的 FP16 端到端未测~~ **用例已就位并执行；结果：FP16 端到端数值不稳定（NaN），按政策不修，登记为已知限制** | 这条缺口**首跑即立功**：不仅抓出缓冲按假定精度分配导致的非法访存（已修复），还暴露出"GPT-2 在弱类型 FP16 下端到端不可用"这一性质 | 用例保留为**复现器**（`RealGpt2Fp16GreedyMatchesReferenceTokens` 预期失败；`Fp16PrefillOutputsDiagnostic` 为逐输出诊断仪器）。结论、证据与理由见 `docs/TROUBLESHOOTING.md` §18.1；后续解决路径见 `docs/future_iterations.md` §1.4 | 方案：新增 `Gpt2GenerateTest.RealGpt2Fp16GreedyMatchesReferenceTokens` —— FP16 下 `EngineBuilder` + **`LLMRunner::Config::is_half = true`**（cache 精度必须与引擎激活精度一致，否则 PagedAttention 按错误宽度读 cache），8 个贪心 token 与 HF 基线逐 token 对照。判据用 D6 的 FP16 档（`cosine ≥ 0.999`、相对界 `< 5e-3`）+ **语义判据：8 个 token 必须全中**；实测值打印出来供后续按"实测收敛"处理 |
+| **G2-1** | ~~真实 GPT-2 的 FP16 端到端未测~~ **用例已就位并执行；结果：FP16 端到端数值不稳定（NaN），按政策不修，登记为已知限制** | 这条缺口**首跑即立功**：不仅抓出缓冲按假定精度分配导致的非法访存（已修复），还暴露出"GPT-2 在弱类型 FP16 下端到端不可用"这一性质 | 用例保留为**复现器**（`RealGpt2Fp16GreedyMatchesReferenceTokens` 预期失败；`Fp16PrefillOutputsDiagnostic` 为逐输出诊断仪器，**自 2026-09-25 起需显式打开 `export_diagnostics` 并用独立引擎路径**——诊断输出会改 I/O 契约，见 `docs/TROUBLESHOOTING.md` #19）。结论、证据与理由见 §18.1；后续解决路径见 `docs/future_iterations.md` §1.4 | 方案：新增 `Gpt2GenerateTest.RealGpt2Fp16GreedyMatchesReferenceTokens` —— FP16 下 `EngineBuilder` + **`LLMRunner::Config::is_half = true`**（cache 精度必须与引擎激活精度一致，否则 PagedAttention 按错误宽度读 cache），8 个贪心 token 与 HF 基线逐 token 对照。判据用 D6 的 FP16 档（`cosine ≥ 0.999`、相对界 `< 5e-3`）+ **语义判据：8 个 token 必须全中**；实测值打印出来供后续按"实测收敛"处理 |
 | **G2-2** | **P2-0 的专用"多权重要素"用例未写**（计划里叫 `test_gpt2_weight_plumbing.cpp`） | 计划中的该项没有独立用例 | **以更强证据覆盖**，故不补：148 个权重经真实 `weight_map` 建出 engine，且数值与 HF 对拍通过——这比"逐个 `addConstant` 后比对"强。若将来出现"权重静默失效"的疑似缺陷，再补该用例 |
 | **G2-3** | `LLMRunner` **只支持 `batch = 1`**（有意限定，见计划 §4.11） | 批处理场景不可用 | 需要批处理时再扩（届时同时引入多序列 block 分配、各自 `context_lens` 与采样参数） |
 | **G2-4** | EOS 无法在循环内早停（**已知 workaround**，非缺陷） | EOS 前仍跑满 `max_new_tokens`，多余计算被丢弃；语义正确 | 见 `docs/PROGRESS.md` §5.0（含后续可选方案） |

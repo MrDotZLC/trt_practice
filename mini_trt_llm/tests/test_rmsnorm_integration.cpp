@@ -55,9 +55,7 @@ TEST(RmsNormPluginRegistryTest, RegisterAllPluginsRegistersRmsNormCreator) {
 // -----------------------------------------------------------------------------
 
 TEST(RmsNormIntegrationTest, SerializedEngineInferenceMatchesCpuReference) {
-    if (!test_support::HasCudaDevice()) {
-        GTEST_SKIP() << "No CUDA device available";
-    }
+    MINI_TRT_SKIP_IF_NO_CUDA();
 
     Logger logger;
 
