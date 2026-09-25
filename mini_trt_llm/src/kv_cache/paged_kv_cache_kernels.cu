@@ -17,9 +17,9 @@ constexpr int32_t kThreadsPerBlock = 256;
 // 一个线程负责一个元素：搬运动作没有归约、没有跨元素依赖，
 // 用"一元素一线程 + grid-stride"换取最简单且无分支错误的索引推导。
 // 维度分解从最后一维往前推，避免出现多个维度的整数除法混在一起。
-template <typename T>
-__global__ void WriteKVKernel(const T* __restrict__ key, const T* __restrict__ value,
-                              T* __restrict__ key_cache, T* __restrict__ value_cache,
+template <typename SrcT, typename DstT>
+__global__ void WriteKVKernel(const SrcT* __restrict__ key, const SrcT* __restrict__ value,
+                              DstT* __restrict__ key_cache, DstT* __restrict__ value_cache,
                               const int32_t* __restrict__ block_tables,
                               const int32_t* __restrict__ context_lens,
                               int32_t kv_heads, int32_t tokens, int32_t head_size,
@@ -43,8 +43,10 @@ __global__ void WriteKVKernel(const T* __restrict__ key, const T* __restrict__ v
             ((static_cast<int64_t>(physical_block) * block_size + slot) * kv_heads + h) *
                 head_size +
             d;
-        key_cache[cache_offset] = key[i];
-        value_cache[cache_offset] = value[i];
+        // 源与目标精度可能不同（见头文件说明）：统一经 float 中转，避免直接
+        // static_cast 在半精度/单精度之间踩隐式取整规则的坑。
+        key_cache[cache_offset] = cuda::FromFloat<DstT>(cuda::ToFloat(key[i]));
+        value_cache[cache_offset] = cuda::FromFloat<DstT>(cuda::ToFloat(value[i]));
     }
 }
 
@@ -80,19 +82,26 @@ cudaError_t LaunchWriteKV(const PagedKVWriteArgs& args, cudaStream_t stream) {
     // 后面 cudaGetLastError() 的结果才只反映本次 launch（见 TROUBLESHOOTING #13）。
     (void)cudaGetLastError();
 
+    // 四种组合（FP32/FP16 × FP32/FP16）：源由引擎决定、目标由 cache 决定，
+    // 两者独立，所以必须显式分发而不是假定一致。
     const dim3 grid(static_cast<unsigned int>(blocks));
-    if (args.is_half) {
-        WriteKVKernel<__half><<<grid, kThreadsPerBlock, 0, stream>>>(
-            static_cast<const __half*>(args.key), static_cast<const __half*>(args.value),
-            static_cast<__half*>(args.key_cache), static_cast<__half*>(args.value_cache),
+    const auto launch = [&](auto src_tag, auto dst_tag) {
+        using SrcT = decltype(src_tag);
+        using DstT = decltype(dst_tag);
+        WriteKVKernel<SrcT, DstT><<<grid, kThreadsPerBlock, 0, stream>>>(
+            static_cast<const SrcT*>(args.key), static_cast<const SrcT*>(args.value),
+            static_cast<DstT*>(args.key_cache), static_cast<DstT*>(args.value_cache),
             args.block_tables, args.context_lens, args.num_kv_heads, args.tokens,
             args.head_size, args.block_size, args.max_blocks_per_seq, args.append, elements);
+    };
+    if (args.source_is_half && args.is_half) {
+        launch(__half{}, __half{});
+    } else if (args.source_is_half && !args.is_half) {
+        launch(__half{}, float{});
+    } else if (!args.source_is_half && args.is_half) {
+        launch(float{}, __half{});
     } else {
-        WriteKVKernel<float><<<grid, kThreadsPerBlock, 0, stream>>>(
-            static_cast<const float*>(args.key), static_cast<const float*>(args.value),
-            static_cast<float*>(args.key_cache), static_cast<float*>(args.value_cache),
-            args.block_tables, args.context_lens, args.num_kv_heads, args.tokens,
-            args.head_size, args.block_size, args.max_blocks_per_seq, args.append, elements);
+        launch(float{}, float{});
     }
     return cudaGetLastError();
 }

@@ -32,8 +32,11 @@ class PagedKVCache {
         int32_t num_layers = 0;
         int32_t num_kv_heads = 0;
         int32_t head_size = 0;
-        // cache 元素精度必须与引擎激活精度一致，否则 PagedAttention 会读到错位数据。
+        // cache 元素精度（由 PagedAttention 的 cache 输入精度决定）。
         bool is_half = false;
+        // 引擎导出的 K/V **源**精度。弱类型网络下 TRT 决定它（FP16 引擎里实测是 FP32），
+        // 与 cache 精度不一定相同——写入内核按"源→目标"转换（TROUBLESHOOTING #18）。
+        bool source_is_half = false;
         // block table 的宽度（每个序列最多多少块）。
         // **必须等于引擎侧 block_tables 输入的第二维**，也就是
         // ceil(n_positions / block_size)——那条推导在 GPT2ModelBuilder 里；

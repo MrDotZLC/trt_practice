@@ -5,9 +5,11 @@
 #include "mini_trt_llm/utils/cuda_check.hpp"
 #include "mini_trt_llm/utils/logger.hpp"
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -40,6 +42,58 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
         return;
     }
 
+    // **校验引擎声明的边界精度，而不是假定它**（TROUBLESHOOTING #18）：
+    // 弱类型网络里导出的 K/V 与 logits 的类型**由 TRT 决定，不由 `weight_dtype` 决定**
+    // （实测 FP16 引擎下它们是 FP32；试过用 `addCast` 在图上钉死，实测无效）。
+    // 而这种不一致的后果是"缓冲越界写 / cache 宽度全错"，**不报错**——
+    // 所以必须在这里显式拒绝启动，并打印两边的精度。
+    const nvinfer1::DataType expected =
+        config_.is_half ? nvinfer1::DataType::kHALF : nvinfer1::DataType::kFLOAT;
+    const auto check = [&](Engine* engine, const char* name,
+                           const char* description) -> bool {
+        nvinfer1::ICudaEngine* cuda = engine->GetCudaEngine();
+        if (cuda == nullptr) {
+            return false;
+        }
+        const nvinfer1::DataType actual = cuda->getTensorDataType(name);
+        if (actual != expected) {
+            MINI_TRT_LOG_ERROR("LLMRunner: "
+                               << description << " '" << name << "' declares "
+                               << (actual == nvinfer1::DataType::kHALF ? "FP16" : "FP32")
+                               << " but config says "
+                               << (config_.is_half ? "FP16" : "FP32")
+                               << " —— cache/缓冲/采样器的宽度会全错，拒绝启动");
+            return false;
+        }
+        return true;
+    };
+    // **cache 输入必须与 config 一致**：它是引擎与 PagedKVCache 之间的契约（布局与宽度），
+    // 不一致会让 PagedAttention 按错误宽度读 cache——保留这道闸，不与"可适配"混为一谈。
+    if (!check(decode_engine_.get(), "key_cache_0", "decode KV cache 输入")) {
+        return;
+    }
+    // K/V 与 logits 的**实际**精度：TRT 决定，因此只记录、不假定（#18）。
+    // 缓冲按它们分配，KV 写入内核按"源→目标"转换，采样器按 logits 精度读。
+    const auto dtype_of = [](Engine* engine, const char* name) {
+        return engine->GetCudaEngine()->getTensorDataType(name) == nvinfer1::DataType::kHALF;
+    };
+    prefill_kv_half_ = dtype_of(prefill_engine_.get(), "k_layer0");
+    decode_kv_half_ = dtype_of(decode_engine_.get(), "k_layer0");
+    prefill_logits_half_ = dtype_of(prefill_engine_.get(), "logits");
+    decode_logits_half_ = dtype_of(decode_engine_.get(), "logits");
+    MINI_TRT_LOG_INFO("LLMRunner: 引擎边界精度 prefill K/V="
+                      << (prefill_kv_half_ ? "FP16" : "FP32") << ", prefill logits="
+                      << (prefill_logits_half_ ? "FP16" : "FP32") << ", decode K/V="
+                      << (decode_kv_half_ ? "FP16" : "FP32") << ", decode logits="
+                      << (decode_logits_half_ ? "FP16" : "FP32"));
+    if (prefill_kv_half_ != decode_kv_half_) {
+        MINI_TRT_LOG_ERROR("LLMRunner: prefill 与 decode 的 K/V 输出精度不一致，"
+                           "KV Cache 无法用同一路径写入");
+        return;
+    }
+
+    // KV Cache 的创建放在精度查询**之后**：cache 的元素精度（is_half）取自家配置，
+    // **源**精度（引擎导出的 K/V）取查询结果——两者不同时由写入内核做转换（#18）。
     PagedKVCache::Config cache_config;
     cache_config.num_blocks = config_.num_blocks;
     cache_config.block_size = config_.block_size;
@@ -47,6 +101,7 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
     cache_config.num_kv_heads = config_.num_kv_heads;
     cache_config.head_size = config_.head_size;
     cache_config.is_half = config_.is_half;
+    cache_config.source_is_half = prefill_kv_half_;
     cache_config.max_blocks_per_seq = config_.max_blocks_per_seq;
     kv_cache_ = std::make_unique<PagedKVCache>(cache_config);
     if (!kv_cache_->valid()) {
@@ -62,7 +117,12 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
 LLMRunner::~LLMRunner() = default;
 
 bool LLMRunner::ReserveBuffers(int32_t prompt_len, int32_t max_new_tokens) {
-    const size_t elem = ElementSize(config_.is_half);
+    // 各张量分别按其**实际声明精度**分配（#18）：不再用一个全局 elem ——
+    // FP16 引擎里 logits/K/V 实测是 FP32，用一个假定值会直接越界写。
+    const size_t prefill_kv_elem = ElementSize(prefill_kv_half_);
+    const size_t decode_kv_elem = ElementSize(decode_kv_half_);
+    const size_t prefill_logits_elem = ElementSize(prefill_logits_half_);
+    const size_t decode_logits_elem = ElementSize(decode_logits_half_);
     const size_t kv_layer_elems = static_cast<size_t>(config_.num_kv_heads) *
                                  config_.head_size;
 
@@ -74,7 +134,7 @@ bool LLMRunner::ReserveBuffers(int32_t prompt_len, int32_t max_new_tokens) {
         for (int32_t layer = 0; layer < config_.num_layers; ++layer) {
             for (int32_t which = 0; which < 2; ++which) {
                 auto buffer = std::make_unique<DeviceBuffer>();
-                if (!buffer->Allocate(kv_layer_elems * prompt_len * elem)) {
+                if (!buffer->Allocate(kv_layer_elems * prompt_len * prefill_kv_elem)) {
                     MINI_TRT_LOG_ERROR("LLMRunner: failed to allocate prefill K/V buffer");
                     return false;
                 }
@@ -84,7 +144,7 @@ bool LLMRunner::ReserveBuffers(int32_t prompt_len, int32_t max_new_tokens) {
         if (!d_prompt_.Allocate(static_cast<size_t>(prompt_len) * sizeof(int32_t)) ||
             !d_position_.Allocate(static_cast<size_t>(prompt_len) * sizeof(int32_t)) ||
             !d_prefill_logits_.Allocate(static_cast<size_t>(prompt_len) *
-                                        config_.vocab_size * elem)) {
+                                        config_.vocab_size * prefill_logits_elem)) {
             MINI_TRT_LOG_ERROR("LLMRunner: failed to allocate prefill buffers");
             return false;
         }
@@ -96,14 +156,15 @@ bool LLMRunner::ReserveBuffers(int32_t prompt_len, int32_t max_new_tokens) {
         for (int32_t layer = 0; layer < config_.num_layers; ++layer) {
             for (int32_t which = 0; which < 2; ++which) {
                 auto buffer = std::make_unique<DeviceBuffer>();
-                if (!buffer->Allocate(kv_layer_elems * elem)) {
+                if (!buffer->Allocate(kv_layer_elems * decode_kv_elem)) {
                     MINI_TRT_LOG_ERROR("LLMRunner: failed to allocate decode K/V buffer");
                     return false;
                 }
                 d_decode_kv_.push_back(std::move(buffer));
             }
         }
-        if (!d_decode_logits_.Allocate(static_cast<size_t>(config_.vocab_size) * elem)) {
+        if (!d_decode_logits_.Allocate(static_cast<size_t>(config_.vocab_size) *
+                                      decode_logits_elem)) {
             return false;
         }
     }
@@ -128,10 +189,13 @@ bool LLMRunner::ReserveBuffers(int32_t prompt_len, int32_t max_new_tokens) {
 }
 
 const void* LLMRunner::LogitsRow(int32_t row) const {
-    const size_t elem = ElementSize(config_.is_half);
+    // 行步长按**该缓冲的实际精度**算（两张缓冲精度可能不同，见 #18）
+    const bool is_prefill = row >= 0;
+    const size_t elem =
+        ElementSize(is_prefill ? prefill_logits_half_ : decode_logits_half_);
     // prefill 的 logits 是 [1, S0, V]，需要最后一行；decode 是 [1, 1, V]，row = 0。
-    const DeviceBuffer& buffer = row >= 0 ? d_prefill_logits_ : d_decode_logits_;
-    const int32_t index = row >= 0 ? row : 0;
+    const DeviceBuffer& buffer = is_prefill ? d_prefill_logits_ : d_decode_logits_;
+    const int32_t index = is_prefill ? row : 0;
     return static_cast<const char*>(buffer.data()) +
            static_cast<size_t>(index) * config_.vocab_size * elem;
 }
@@ -140,6 +204,8 @@ bool LLMRunner::SampleInto(void* token_out, int32_t row, uint64_t offset,
                            cudaStream_t stream) {
     const bool use_top_p = options_top_p_ < 1.0f;
     const bool use_greedy = !use_top_p && options_top_k_ <= 1;
+    // logits 的实际精度决定采样器怎么读（row<0 表示 decode 那一路）
+    const bool logits_half = row >= 0 ? prefill_logits_half_ : decode_logits_half_;
 
     if (use_greedy) {
         SamplerArgs args;
@@ -147,7 +213,7 @@ bool LLMRunner::SampleInto(void* token_out, int32_t row, uint64_t offset,
         args.token_ids = static_cast<int32_t*>(token_out);
         args.batch_size = 1;
         args.vocab_size = config_.vocab_size;
-        args.is_half = config_.is_half;
+        args.is_half = logits_half;
         args.seed = options_seed_;
         args.offset = offset;
         return LaunchGreedySampler(args, stream) == cudaSuccess;
@@ -158,7 +224,7 @@ bool LLMRunner::SampleInto(void* token_out, int32_t row, uint64_t offset,
         args.token_ids = static_cast<int32_t*>(token_out);
         args.batch_size = 1;
         args.vocab_size = config_.vocab_size;
-        args.is_half = config_.is_half;
+        args.is_half = logits_half;
         args.seed = options_seed_;
         args.offset = offset;
         args.top_p = static_cast<const float*>(d_top_p_.data());
@@ -170,7 +236,7 @@ bool LLMRunner::SampleInto(void* token_out, int32_t row, uint64_t offset,
     args.token_ids = static_cast<int32_t*>(token_out);
     args.batch_size = 1;
     args.vocab_size = config_.vocab_size;
-    args.is_half = config_.is_half;
+    args.is_half = logits_half;
     args.seed = options_seed_;
     args.offset = offset;
     args.top_k = static_cast<const int32_t*>(d_top_k_.data());
@@ -343,6 +409,79 @@ std::vector<int64_t> LLMRunner::Generate(const std::vector<int64_t>& input_ids,
             return {};
         }
     }
+    // 诊断（INFO 级，常驻）：把 prefill 最后一行 logits 的少量统计量打出来。
+    // 为什么值得常驻：FP16 下"logits 是 NaN"与"logits 全是 0"都会表现为
+    // "贪心永远返回 0"，而这两者的成因完全不同（前者是数值溢出，后者是没写进去）。
+    // 一行统计量就能分辨，省掉一次真机往返（见 TROUBLESHOOTING #18）。
+    {
+        const void* row_ptr = LogitsRow(prompt_len - 1);
+        const size_t elem = ElementSize(prefill_logits_half_);
+        std::vector<char> raw(static_cast<size_t>(config_.vocab_size) * elem);
+        if (cudaMemcpy(raw.data(), row_ptr, raw.size(), cudaMemcpyDeviceToHost) ==
+            cudaSuccess) {
+            double sum = 0.0;
+            float max_value = -1e30f;
+            float first[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            bool has_nan = false;
+            for (int32_t i = 0; i < config_.vocab_size; ++i) {
+                const float v = prefill_logits_half_
+                                    ? __half2float(reinterpret_cast<const __half*>(raw.data())[i])
+                                    : reinterpret_cast<const float*>(raw.data())[i];
+                if (std::isnan(v) || std::isinf(v)) {
+                    has_nan = true;
+                }
+                if (i < 4) {
+                    first[i] = v;
+                }
+                max_value = std::max(max_value, v);
+                sum += v;
+            }
+            // 逐层扫 K/V 找 NaN：K/V 是各层 LN+c_attn 的直接产物，能定出"NaN 从第几层开始"，
+            // 从而把范围从"整张图"缩到"某一层的前半段"。二分比逐层打印便宜得多，
+            // 也比"猜 LayerNorm"可靠（见 TROUBLESHOOTING #18）。
+            int32_t first_nan_layer = -1;
+            for (int32_t layer = 0; layer < config_.num_layers && first_nan_layer < 0; ++layer) {
+                const void* kv_ptr = d_prefill_kv_[static_cast<size_t>(layer) * 2]->data();
+                const size_t kv_bytes = static_cast<size_t>(config_.num_kv_heads) *
+                                        prompt_len * config_.head_size *
+                                        ElementSize(prefill_kv_half_);
+                std::vector<char> kv_raw(kv_bytes);
+                if (cudaMemcpy(kv_raw.data(), kv_ptr, kv_bytes, cudaMemcpyDeviceToHost) !=
+                    cudaSuccess) {
+                    break;
+                }
+                const size_t kv_count = kv_bytes / ElementSize(prefill_kv_half_);
+                float max_abs = 0.0f;
+                for (size_t i = 0; i < kv_count; ++i) {
+                    const float v =
+                        prefill_kv_half_
+                            ? __half2float(reinterpret_cast<const __half*>(kv_raw.data())[i])
+                            : reinterpret_cast<const float*>(kv_raw.data())[i];
+                    if (std::isnan(v) || std::isinf(v)) {
+                        first_nan_layer = layer;
+                        break;
+                    }
+                    max_abs = std::max(max_abs, std::fabs(v));
+                }
+                // 前 3 层打印幅值：能区分"NaN 突变"与"幅值逐层膨胀到溢出"
+                if (layer < 3) {
+                    MINI_TRT_LOG_INFO("LLMRunner 诊断：layer " << layer
+                                      << " K/V max|v| = " << max_abs);
+                }
+            }
+            MINI_TRT_LOG_INFO("LLMRunner 诊断：首个含 NaN/Inf 的层 = "
+                              << (first_nan_layer < 0 ? std::string("无（K/V 全干净）")
+                                                      : std::to_string(first_nan_layer))
+                              << "；K/V 精度 = " << (prefill_kv_half_ ? "FP16" : "FP32"));
+            MINI_TRT_LOG_INFO("LLMRunner 诊断：prefill 末行 logits 前 4 个 = "
+                              << first[0] << ", " << first[1] << ", " << first[2] << ", "
+                              << first[3] << "；max = " << max_value
+                              << "；mean = " << sum / config_.vocab_size
+                              << "；含 NaN/Inf = " << (has_nan ? "是" : "否")
+                              << "；精度 = " << (prefill_logits_half_ ? "FP16" : "FP32"));
+        }
+    }
+
     // 采样器直接写进结果缓冲的第 0 位，省掉一次拷贝
     if (!SampleInto(static_cast<char*>(d_tokens_.data()), /*row=*/prompt_len - 1,
                     /*offset=*/0, nullptr)) {

@@ -1,13 +1,17 @@
 # mini_trt_llm 项目进度交接文档
 
-> 最后更新：2026-09-25  
-> 当前阶段：**Phase 3 已完成**（GPT-2 ONNX 路径落地并与原生构建对齐：相对偏差 `5.66e-07`，
-> 阈值 `1e-5`；测试口径与残余缺口见 `docs/phase3_test_plan.md`）；
-> 下一步 Phase 4（ResNet18 替换）或先做 Phase 5（清理旧模块）
+> 最后更新：2026-09-25（Phase 2 / Phase 3 收口）  
+> 当前阶段：**Phase 3 已完成**（ONNX 路径与原生构建对齐：相对偏差 `5.66e-07`，阈值 `1e-5`）；
+> **下一步 Phase 4（ResNet18 替换）**。
 >
-> Phase 3 仅剩两项**按触发条件处理**的测试缺口（不阻塞下一阶段，细节见
-> `docs/future_iterations.md` §11）：G5（子图拓扑级识别，等真要做替换时）、
-> G6（性能测量方法，等真要优化 ONNX 路径时）。G1a/G1b/G1c/G3/G4/G4b/G7 均已关闭。
+> **接手必读三件事**：
+> 1. **GPT-2 的推荐精度是 FP32** —— FP16 端到端数值不稳定（NaN，层数随构建变化），
+>    按政策不修，见 §5.11 与 `docs/TROUBLESHOOTING.md` §18.1；
+> 2. Phase 2 的残余缺口（含已定位的已知限制）见 §5.12 与 `docs/phase2_test_plan.md` §5；
+> 3. Phase 3 仅剩 G5/G6 两项按触发条件处理的缺口，见 `docs/future_iterations.md` §11。
+> 4. **真机全量测试会出现 1 条 FAILED，那是预期的**：`Gpt2GenerateTest.RealGpt2Fp16GreedyMatchesReferenceTokens`
+>    （FP16 已知限制的**复现器**，按 AGENTS.md §7"已知失败保持红色"）。别当成回归；
+>    若将来解决了 §1.4 的路径，这条应当变绿。
 
 ---
 
@@ -185,30 +189,18 @@
 - 读回/对拍时先确认**读取范围落在同一段分配内**（那次 `cudaMemcpy` 越界报 invalid argument
   就是这么来的）。
 - 关键诊断要同时给**绝对差与相对差**：相对差在小值上会放大，单看相对差会误判严重程度。
+- **仪器覆盖不够时，别把"观测缺口"当成现象**：Phase 2 排查 FP16 NaN 时，
+  三次运行的"首个 NaN 层"分别是 1/0/2，一度被读成"边界随机漂移"；
+  真实原因是中间切点只给第 0 层导出了——**看不到的地方，现象会假装在移动**。
+  加仪器之前先问："我现在能看见哪几层／哪几个量？"
+- **每轮只改一个变量**：被否证的改动不是白做（LN 精度那次排除了一整个方向），
+  但同时改多个变量会让读数无法归因。
 
 ---
 
 ## 3. 已完成的部分
 
-### 3.0.5 Phase 3 交付（GPT-2 ONNX 路径，2026-09-25）
-
-| 文件 / 模块 | 说明 |
-|---|---|
-| `core/builder.{hpp,cpp}` | `BuildFromOnnx(model_dir, onnx_path, engine_path, subgraph_names)`：复用方案 A 的 profile/精度语义、I/O 契约校验、parse 错误逐条打印、只挂 prefill 一组 profile |
-| `tools/inspect_onnx.py` | 图结构探针：基线比对 + `absent_ops` 护栏 + 三类子图识别断言（**人工执行，未接入 ctest**） |
-| `tests/test_gpt2_onnx.cpp` | 三方对拍（ONNX/原生/HF）、FP16 对照、`seq ∈ {1,64,512}` 覆盖；`RunEngine` 按引擎**声明的** I/O 与精度读取（不假定） |
-| `tests/test_gpt2_onnx_error_paths.cpp` | 失败路径：4 条沙箱可跑（子图名/缺 config/缺 architecture/ONNX 不可读）+ 1 条真机（外来 I/O 名，复用 `resnet18.onnx` 当夹具） |
-| `requirements.txt` | 补 `onnx>=1.16` |
-
-**真机实测**：ONNX vs 原生相对偏差 `5.66e-07`（阈值 `1e-5`）；ONNX/原生各自对 HF 参考
-`7.6e-05 ~ 9.9e-05`（随构建的 tactic 变化，相对量级稳定在 1e-6）；FP16 与
-`seq ∈ {1,64,512}` 对照均通过（实测值未采集，阈值维持 D6/D2 冻结口径）。
-
-**口径与残余缺口**：见 `docs/phase3_test_plan.md`（G1c / G4b / G5 / G6）。
-**性能结论未定**：两次测量的方向相反（±25%，小于构建间噪声），不能据此判断 ONNX 路径
-是否更优，更不能据此决定是否做子图替换——见 `docs/future_iterations.md` §10.2。
-
-### 3.0 Phase 2 交付（GPT-2 原生构建，2026-09-25）
+### 3.0a Phase 2 交付（GPT-2 原生构建，2026-09-25）
 
 | 文件 / 模块 | 说明 |
 |---|---|
@@ -231,6 +223,24 @@
 **过程中修掉的 4 个真缺陷**（详见 `docs/TROUBLESHOOTING.md`）：
 #13 粘性 CUDA 错误被误读、#14 KV Cache 写入路径两处、#15 decode 各层共用同一 cache 张量、
 #16 追加按层推进语境长度。
+
+### 3.0b Phase 3 交付（GPT-2 ONNX 路径，2026-09-25）
+
+| 文件 / 模块 | 说明 |
+|---|---|
+| `core/builder.{hpp,cpp}` | `BuildFromOnnx(model_dir, onnx_path, engine_path, subgraph_names)`：复用方案 A 的 profile/精度语义、I/O 契约校验、parse 错误逐条打印、只挂 prefill 一组 profile |
+| `tools/inspect_onnx.py` | 图结构探针：基线比对 + `absent_ops` 护栏 + 三类子图识别断言（**人工执行，未接入 ctest**） |
+| `tests/test_gpt2_onnx.cpp` | 三方对拍（ONNX/原生/HF）、FP16 对照、`seq ∈ {1,64,512}` 覆盖；`RunEngine` 按引擎**声明的** I/O 与精度读取（不假定） |
+| `tests/test_gpt2_onnx_error_paths.cpp` | 失败路径：4 条沙箱可跑（子图名/缺 config/缺 architecture/ONNX 不可读）+ 1 条真机（外来 I/O 名，复用 `resnet18.onnx` 当夹具） |
+| `requirements.txt` | 补 `onnx>=1.16` |
+
+**真机实测**：ONNX vs 原生相对偏差 `5.66e-07`（阈值 `1e-5`）；ONNX/原生各自对 HF 参考
+`7.6e-05 ~ 9.9e-05`（随构建的 tactic 变化，相对量级稳定在 1e-6）；FP16 与
+`seq ∈ {1,64,512}` 对照均通过（实测值未采集，阈值维持 D6/D2 冻结口径）。
+
+**口径与残余缺口**：见 `docs/phase3_test_plan.md`（G1c / G4b / G5 / G6）。
+**性能结论未定**：两次测量的方向相反（±25%，小于构建间噪声），不能据此判断 ONNX 路径
+是否更优，更不能据此决定是否做子图替换——见 `docs/future_iterations.md` §10.2。
 
 ### 3.1 目录与构建
 
@@ -289,6 +299,10 @@
   Phase 1.5 的 E1 / E2 以更强的形式覆盖；**T2（ONNX → Engine）仍未实施**。
 - `docs/phase1_development_plan.md`：Phase 1 开发方案 + 关键决策确认清单（含合并后的 15 项决策）。
 - `docs/phase1_test_plan.md`：Phase 1 全流程测试计划（模型加载 → builder 分发 → Plugin 挂载 → engine 构建/反序列化 → 推理 → 采样），含前置改造清单（G1/G2/G3）与实施顺序。
+  **Phase 1.5 的测试口径也在这里**（E1–E4 的设计与链路图；执行结果与验收见 `phase1_5_development_plan.md` §0）。
+  该阶段**没有独立测试计划文件**（有意，避免两处来源）。
+- `docs/phase2_test_plan.md`：Phase 2 测试计划（补记）——分层（L0 host 契约 / L1 建网 / L2 数值 / L3 端到端）、用例清单、判据出处与缺口（G2-1 ~ G2-4）。
+- `docs/phase3_test_plan.md`：Phase 3 测试计划——分层（L0 图结构 / L1a 参数校验 / L1b 图契约 / L2 数值 / L3 性能）、用例清单、判据出处与缺口（G1c 已关闭，余 G5/G6）。
 - `docs/phase1_5_development_plan.md`：Phase 1.5 开发计划（P1.5-0 ~ P1.5-7 的任务、依赖、验收）。
 - `docs/TROUBLESHOOTING.md`：问题排查记录（现象 / 定位路径 / 根因 / 修复 / 回归防护）。
 - `docs/future_iterations.md`：后续迭代计划。
@@ -436,14 +450,6 @@ Phase 1 明确不在本次范围内、留待后续的项：
 
 ## 5. 已知问题与坑
 
-### 5.-1 Phase 2 修掉的缺陷（结论索引）
-
-Phase 2 的 4 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用 cache / 按层推进长度）
-全部已修复并有回归用例，经过与推导见 `docs/TROUBLESHOOTING.md` #13 ~ #16。
-其中 **#16 的教训影响接口设计**：`PagedKVCache` 的追加接口已拆成
-`AppendDecodeKV`（只写）+ `AppendDecodeStep`（一次写全部层、只推进一次长度），
-后续会话不要按"每层调用一次并各自推进"的直觉改回去。
-
 ### 5.0 `LLMRunner` 无法在解码循环内早停 EOS（有意为之的 workaround）
 
 - **问题**：AGENTS.md §3.A.3 要求解码循环内不得有 H2D/D2H 拷贝，而"一见 EOS 就停"
@@ -521,11 +527,37 @@ Phase 2 的 4 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 
 ---
 
+### 5.11 GPT-2 的 FP16 端到端不可用（已知限制，按政策不修）
+
+- **问题**：真实 GPT-2 在本项目的**弱类型 FP16** 引擎下端到端产生 NaN（贪心输出恒为 0）。
+  出现 NaN 的层随构建变化（实测 0/1/2），而激活幅值远未触及 FP16 上限 65504。
+- **影响**：**GPT-2 的推荐精度是 FP32**。FP16 只能用于算子/网络层验证（Phase 1.5 已覆盖），
+  不能用于 GPT-2 的端到端推理。
+- **已排除**：LayerNorm 计算精度（显式设 FP32 后仍 NaN）、`c_fc`/`gelu_new`
+  （两处切点均干净）、"残差膨胀到范围溢出"（幅值全在几十以内）。
+- **Workaround**：用 FP32（已端到端验证：8/8 贪心 token 命中、logits 相对偏差 `1e-6`）。
+- **后续路径**：`docs/future_iterations.md` §1.4（关键算子保 FP32 → 逐算子二分 → 激活缩放）。
+- **完整定位过程（5 轮真机往返）**：`docs/TROUBLESHOOTING.md` §18.1。
+
+### 5.12 Phase 2 修掉的缺陷（结论索引）
+
+Phase 2 的 4 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用 cache / 按层推进长度）
+全部已修复并有回归用例，经过与推导见 `docs/TROUBLESHOOTING.md` #13 ~ #16。
+其中 **#16 的教训影响接口设计**：`PagedKVCache` 的追加接口已拆成
+`AppendDecodeKV`（只写）+ `AppendDecodeStep`（一次写全部层、只推进一次长度），
+后续会话不要按"每层调用一次并各自推进"的直觉改回去。
+
 ## 6. 下一步计划
 
-**Phase 3：GPT-2 ONNX + Plugin（方案 B）** —— 实现 `OnnxBuilder` + 子图替换，
-与 Phase 2 的原生构建结果对齐（两者用的是同一份权重，ONNX initializer 与 safetensors
-已核对逐比特一致，见 `docs/phase2_development_plan.md` §0.1）。
+**Phase 4：ResNet18 替换** —— 实现 `ResNet18ModelBuilder`（FP32 / FP16，INT8 延后）与
+`CVRunner`，与 `0_resnet18_onnx` 对齐。
+
+**开工前必做**（AGENTS.md §5 第 0 步）：先产出 `docs/phase4_development_plan.md` 并对账；
+计划里必须含"先读 `0_resnet18_onnx` 历史工程"这一步（它的 `src/builder.cpp` 与 `calib_data/`
+记录了当年的 profile 与 INT8 路线——Phase 3 用同样的动作省掉了一轮返工）。
+
+Phase 3 的任务/结果/缺口见 `docs/phase3_development_plan.md` 与 `docs/phase3_test_plan.md`
+（含 §0.2 的实测修正与"性能结论未定"的记录）。
 
 <details><summary>Phase 2 原始开工顺序（已完成，保留备查）</summary>
 
@@ -581,6 +613,26 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 > </details>
 
 ---
+
+## 6.5 工作区与本地产物状态（新会话先看这一节）
+
+**代码与文档的提交状态**：Phase 2 + Phase 3 的全部产物（源码、用例、工具、9 份文档）
+**尚未提交**，`git status` 是"脏"的——**这是预期状态，不是别人未完成的 WIP，不要 revert**。
+提交与 push 由用户决定（AGENTS.md §0.2）。
+
+**不在版本控制里、但跑测试需要的产物**：
+
+| 产物 | 位置 | 说明 |
+|---|---|---|
+| GPT-2 模型目录 | `models/gpt2/` | 由 `tools/convert/hf_to_mini_trt_llm.py` 生成（548 MB safetensors 被 .gitignore 忽略；`config.json` 入库） |
+| 测试用引擎缓存 | `/tmp/mini_trt_llm_gpt2_*.engine` | 首次运行自动构建（分钟级），之后复用；**删掉会强制重建**（测构建耗时时需要） |
+| 引擎 I/O 探针 | **`mini_trt_llm/tools/inspect_engine.cpp`**（已入库，手动编译） | 反序列化任意 `.engine` 并打印其 I/O 契约（名字 / 方向 / **声明精度** / 维数）——**不建 context、不推理、不写数据**。用途见 `docs/TROUBLESHOOTING.md` #18：它是把"TRT 在弱类型 FP16 网络里把 K/V 与 logits 的输出定成 FP32"这件事**读出来**的工具（在此之前只能靠推断，而推断被证伪过两次）。编译命令写在文件头（工具不进构建流程，故无 CMake 目标）。**限制**：反序列化需要 CUDA 初始化，只能在真机跑（沙箱报 `error 35`）；实测无 GPU 时它会干净报错退出而不是崩溃 |
+
+**已知会失败/跳过的测试**（避免新会话误判为回归）：
+
+- 真机：1 条**预期失败**——`RealGpt2Fp16GreedyMatchesReferenceTokens`（见上方"接手必读"第 4 条）；
+- 沙箱：全部 GPU 用例 `GTEST_SKIP`（无 GPU，见 §5.10）；`onnx_graph_probe` 在缺 `onnx` 包或
+  缺 `1_gpt2_onnx/gpt2.onnx` 时返回 77 → `Skipped`（**设计如此**，缺环境 ≠ 图有问题）。
 
 ## 7. 重要环境信息
 

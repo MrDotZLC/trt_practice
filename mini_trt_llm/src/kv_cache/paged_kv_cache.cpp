@@ -219,6 +219,7 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
     args.block_size = config_.block_size;
     args.max_blocks_per_seq = config_.max_blocks_per_seq;
     args.is_half = config_.is_half;
+    args.source_is_half = config_.source_is_half;
     args.append = false;
 
     const cudaError_t err = LaunchWriteKV(args, stream);
@@ -267,6 +268,7 @@ cudaError_t PagedKVCache::AppendDecodeKV(int32_t layer, const void* key, const v
     args.block_size = config_.block_size;
     args.max_blocks_per_seq = config_.max_blocks_per_seq;
     args.is_half = config_.is_half;
+    args.source_is_half = config_.source_is_half;
     args.append = true;
 
     return LaunchWriteKV(args, stream);

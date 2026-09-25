@@ -223,9 +223,14 @@ nvinfer1::ITensor* AddLinear(nvinfer1::INetworkDefinition* network,
 
 // LayerNorm（归一化最后一维）。
 //
-// axesMask 的 bit i 对应第 i 个显式维度、LSB 是 dim 0，所以 [B,S,H] 上归一化 H
-// 是 bit 2。这里**不**调用 setComputePrecision：TRT 该层的计算精度默认就是 FP32，
-// 正是 FP16 引擎下我们想要的（var + 1e-5 的加法在 FP16 里会被舍掉）。
+// axesMask 的 bit i 对应第 i 个显式维度、LSB 是 dim 0，所以 [B,S,H] 上归一化 H 是 bit 2。
+//
+// **显式把该层的计算精度设为 FP32，不依赖默认值**：早先版本靠"TRT 默认就是 FP32"这个
+// 假定，而 FP16 引擎的实测结果（第 0 层 K/V 干净、第 1 层起 NaN）把范围指到了包含 LN 的
+// 那一段。TRT 头文件里 setComputePrecision 的说明正是为这种场景写的
+// （"avoid overflow errors by controlling the normalization computation in mixed
+// precision mode"）——既然它存在，就不该赌默认值。
+// 排查过程见 docs/TROUBLESHOOTING.md #18。
 nvinfer1::ITensor* AddLayerNorm(nvinfer1::INetworkDefinition* network,
                                 nvinfer1::ITensor* input, nvinfer1::ITensor* scale,
                                 nvinfer1::ITensor* bias, float eps,
@@ -242,6 +247,8 @@ nvinfer1::ITensor* AddLayerNorm(nvinfer1::INetworkDefinition* network,
         return nullptr;
     }
     layer->setEpsilon(eps);
+    // 见函数头注释：显式声明 FP32 计算，避免 FP16 下归一化的数值问题
+    layer->setComputePrecision(nvinfer1::DataType::kFLOAT);
     layer->setName(name.c_str());
     return layer->getOutput(0);
 }
@@ -651,11 +658,22 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
         }
         nvinfer1::IActivationLayer* gelu =
             network->addActivation(*mlp, nvinfer1::ActivationType::kGELU_TANH);
+        // 数值定位：第 0 层 MLP 的两个切点（gelu 前 / gelu 后）。
+        // "NaN 是 c_fc 造出来的、还是 gelu 造出来的"是这次排查的关键分界，
+        // 在图上留两个输出比逐次猜算子便宜（见 TROUBLESHOOTING #18）。
+        if (export_kv && layer == 0) {
+            mlp->setName("mlp_fc_0");
+            network->markOutput(*mlp);
+        }
         if (gelu == nullptr) {
             return false;
         }
         // gelu_new 就是 tanh 近似，与 kGELU_TANH 是同一个公式。
         gelu->setName(LayerName(scope + "gelu_new").c_str());
+        if (export_kv && layer == 0) {
+            gelu->getOutput(0)->setName("mlp_gelu_0");
+            network->markOutput(*gelu->getOutput(0));
+        }
         nvinfer1::ITensor* mlp_out =
             AddLinear(network, gelu->getOutput(0), c_mlp_w, c_mlp_b,
                       LayerName(scope + "mlp_c_proj"));
@@ -669,12 +687,29 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
             return false;
         }
 
+        // 数值定位用的中途输出（仅第 0 层，且只在导出 K/V 的 stage）：
+        // "某层的 K/V 出现 NaN 时，NaN 是来自本层的注意力还是 MLP" 是排查中反复要回答的问题，
+        // 而在图上留两个输出就能直接读出来（成本：每层两份 [B,S,H]，第 0 层可忽略）。
+        // 见 docs/TROUBLESHOOTING.md #18 的定位过程。
+        if (export_kv && layer == 0) {
+            after_attn->setName("attn_res_0");
+            hidden_state->setName("mlp_res_0");
+            network->markOutput(*after_attn);
+            network->markOutput(*hidden_state);
+        }
+
         // 把每层的 K/V 暴露成网络输出：
         //   prefill → 写进分页 cache；
         //   decode  → 下一轮追加进 cache。
         if (export_kv) {
             const std::string k_name = "k_layer" + std::to_string(layer);
             const std::string v_name = "v_layer" + std::to_string(layer);
+            // **注意（实测结论，勿照直觉改）**：弱类型网络（`createNetworkV2(0U)`）里
+            // 导出的 K/V 与 logits 的实际类型**由 TRT 决定，而非 `weight_dtype`**——
+            // FP16 引擎里它们都是 FP32。曾经试过在 markOutput 前插 `addCast` 去"钉死"
+            // 类型，**实测无效**（重建后仍是 FP32）：弱类型网络下 Cast 只是精度提示，
+            // 锁不住 I/O 类型。消费方必须**查询**引擎声明的类型，不能假定。
+            // 排查与证据见 docs/TROUBLESHOOTING.md #18。
             q_kv[1]->setName(k_name.c_str());
             q_kv[2]->setName(v_name.c_str());
             network->markOutput(*q_kv[1]);
@@ -722,6 +757,7 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
         return false;
     }
     logits_mm->setName(LayerName("logits").c_str());
+    // 同 K/V：输出类型由 TRT 决定（FP16 引擎下实测为 FP32），不在图上钉（见上方说明）
     logits_mm->getOutput(0)->setName("logits");
     network->markOutput(*logits_mm->getOutput(0));
     return true;
