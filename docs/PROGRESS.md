@@ -1,6 +1,7 @@
 # mini_trt_llm 项目进度交接文档
 
-> 最后更新：2026-09-26（**Phase 4 收口**：CV 路径打通 + INT8 落地）  
+> 最后更新：2026-09-26（**Phase 4 收口**：CV 路径打通 + INT8 落地；
+> 同日二次校正：§6.5 的提交状态与真机计数对齐 `4fe0b98`，理由见该节更正记录）  
 > 当前阶段：**Phase 4 已完成**（ResNet18：ONNX 路径 / 原生路径 / `CVRunner` / 转换工具 / FP16 / INT8）；
 > **没有下一阶段**——**Phase 5（清理旧模块）已永久取消**，旧模块由作者自行处理（见 §6.6）。
 >
@@ -775,22 +776,29 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 ## 6.5 工作区与本地产物状态（新会话先看这一节）
 
-**代码与文档的提交状态**：**除下一条列出的 3 份文档外，全部已提交**（提交基线 `61718b6`；
-不要去找"未提交的 WIP"——那批产物已经落盘，见下）。
-最近一次提交 `61718b6`（"complate Phase 4"，2026-09-26）——Phase 4 的全部产物落盘。
-再往前 `625939c`（"test for supplementary Phase 2"，2026-09-25）一笔记下了三件事：
+**代码与文档的提交状态**：**全部已提交，工作区干净**（提交基线 `4fe0b98`；
+不要去找"未提交的 WIP"——任何一批产物都已落盘，判断依据永远以 `git log` / `git status` 为准）。
+提交序列（新 → 旧）及各自内容：
 
-1. Phase 2 的 **FP16 边界精度修复**——`src/core/llm_runner.cpp`（查询引擎声明的精度）、
-   `src/kv_cache/paged_kv_cache_kernels.cu`（`WriteKVKernel` 双模板）、
-   `src/core/gpt2_model_builder.cpp`（LayerNorm 显式 FP32 + 第 0 层诊断输出）；
-2. **复现器与仪器**——`tests/test_gpt2_generate.cpp`、`tools/inspect_engine.cpp`；
-3. 9 份文档的同步更新。
+1. `4fe0b98`（"update docs"，2026-09-26）——只动文档，共 3 份：
+   本节、`future_iterations.md`（新增 §1.5 / §1.6 两条立项条目 `P4-INT8-a` / `P4-INT8-b`）、
+   `phase4_int8_plan.md` §7 的立项说明。**无代码改动**。
+2. `61718b6`（"complate Phase 4"，2026-09-26）——Phase 4 的全部产物落盘。
+3. `625939c`（"test for supplementary Phase 2"，2026-09-25）一笔记下了三件事：
 
-> **本次会话的未提交改动（2026-09-26）**：只有 3 份文档——本节、`future_iterations.md`
-> （新增 §1.5 / §1.6 两条立项条目，`P4-INT8-a` / `P4-INT8-b`）、`phase4_int8_plan.md` §7
-> 的立项说明。**没有代码改动**。是否提交由用户决定（AGENTS.md §0.2）。
-> 上一版这里写的是"最近一次提交 `625939c`、工作区干净"——那在 `61718b6` 落盘后就已经过期，
-> 2026-09-26 一并更正（同 §5 第 4 条：文档与现状矛盾要当场修，并把原因写进去）。
+   - Phase 2 的 **FP16 边界精度修复**——`src/core/llm_runner.cpp`（查询引擎声明的精度）、
+     `src/kv_cache/paged_kv_cache_kernels.cu`（`WriteKVKernel` 双模板）、
+     `src/core/gpt2_model_builder.cpp`（LayerNorm 显式 FP32 + 第 0 层诊断输出）；
+   - **复现器与仪器**——`tests/test_gpt2_generate.cpp`、`tools/inspect_engine.cpp`；
+   - 9 份文档的同步更新。
+
+> **更正记录（2026-09-26，第二次）**：本节曾写"除下条列出的 3 份文档外全部已提交、
+> 那 3 份是否提交由用户决定"——那 3 份文档已由用户提交为 `4fe0b98`，工作区随之变干净。
+> **为什么必须改**：这句话与"工作区干净"直接冲突，正是本节末尾那条更正记录警告过的同一种坑
+> ——照它去找未提交的 WIP，轻则白跑一趟，重则把已落盘的文档当成别人的半成品而
+> `revert` / `stash`（AGENTS.md §5 第 4 条要求把这类"文档与现状矛盾"当场修掉并写明原因）。
+> 教训固化：**本节只写"提交基线 + `git status` 事实"，不写"是否已提交"的判断句**——
+> 判断句会随下一次提交立刻过期，而事实不会。
 
 > **更正记录（2026-09-25）**：本节原先写"Phase 2 + Phase 3 全部产物**尚未提交**、
 > `git status` 是'脏'的、这是预期状态"——那是同一笔提交落盘前的状态，提交后没有回改。
@@ -811,10 +819,12 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 **已知会失败/跳过的测试**（避免新会话误判为回归）：
 
-- 真机（`MINI_TRT_REQUIRE_GPU=1`，2026-09-25 全量实测 146 条 / 0 跳过 / **1 红**）：
+- 真机（`MINI_TRT_REQUIRE_GPU=1`，**当前口径 182 条 / 0 跳过 / 1 红**，2026-09-26 实测，
+  见 §3.0d；Phase 2 补丁完成时的历史快照是 146 条，当时有 2 条红）：
   - `RealGpt2Fp16GreedyMatchesReferenceTokens`：FP16 已知限制的**按设计红**（NaN → token 不符）。
-  - 原第二条红 `PagedKVCacheTest.AppendCrossesBlockBoundary...`（测试与 `AppendDecodeStep`
-    契约不同步）已修复，见 `docs/TROUBLESHOOTING.md` #20 / 计划 P2S-6。
+  - 146 条快照里的第二条红 `PagedKVCacheTest.AppendCrossesBlockBoundary...`（测试与
+    `AppendDecodeStep` 契约不同步）已修复，见 `docs/TROUBLESHOOTING.md` #20 / 计划 P2S-6；
+    因此当前唯一红就是上面那条 FP16 复现器。
   改动过建图或开关时，**务必先删 `/tmp` 里的引擎缓存**（缓存路径只按名字区分，不随代码失效）。
 - 真机：**跑全量一定要带 `MINI_TRT_REQUIRE_GPU=1`**——否则无设备时用例会静默跳过，等于白跑。
 - 真机：`Fp16PrefillOutputsDiagnostic` **应当通过**——它是**纯打印**的诊断仪器（只输出
