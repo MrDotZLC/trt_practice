@@ -1,16 +1,98 @@
 # 后续迭代计划
 
 > 本文档记录 `mini_trt_llm` 中已明确延后、但未来需要实现的能力，防止遗忘。  
-> 每一项标注预计优先级、大致阶段、关键依赖。
+> 每一项标注预计优先级、大致阶段、关键依赖。**优先级定义与排序见 §0——章节顺序是主题分类，不是优先级。**
 
 ---
+
+## 0. 优先级定义与排序规则（优先级的唯一排序来源）
+
+> **先纠一个容易误读的地方：章节顺序是主题分类，不是优先级。**
+> 章节内部原本**恰好**大致从高到低写（本次重定前：`§2` 是 P1→P2、`§5` 是 P1→P2→P3），
+> 所以整篇读起来像排期表；但跨章节从来不单调——`§1.3`(P3) 排在 `§1.6`(P2) 前面，
+> `§5.1`(P1) 排在 `§4.3`(P3) 后面。也就是说，"标题顺序 = 优先级"**看起来成立、实际不成立**。
+> 排序请查 §0.1 的表。**章节编号保持稳定、不按优先级重排**：全仓有 **40 处**
+> `docs/future_iterations.md §x.y` 形式的引用（2026-09-26 用 `rg` 统计，分布在 `PROGRESS.md`、
+> `phase1_5_*` / `phase2_*` / `phase3_*` / `phase4_*` / `TROUBLESHOOTING.md` 等 10 份文档里），
+> 重排编号会让这些引用全部指向错误章节。
+
+**为什么用"触发驱动"而不是待办队列**：Phase 0~4 已全部完成、没有下一阶段（`docs/PROGRESS.md` §6），
+所以不存在"当前该做哪个"的排期。优先级表达的是**触发条件成立时的相对顺序**，
+不等于"现在就该动手"；判定只采用条目自己写的触发条件，与现状逐条核对。
+
+| 级别 | 定义 |
+|---|---|
+| **P0** | 触发条件已成立，且**阻塞已交付能力** → 立刻做。**当前为空**（核对结果见 §0.1） |
+| **P1** | 无外部前置（不联网 / 不需新硬件 / 不需新需求），且是"让已交付模型真正可用"的门槛 |
+| **P2** | 触发条件明确，但有外部前置：联网 / 新数据 / 新硬件 / 先补测量 / 需求口径未定 |
+| **P3** | 当前硬件（sm_75、单卡、无 Tensor Core）收益有限，或研究性 / 探索性 |
+| **冻结** | 已被别的路线取代，或触发条件已被现状否证。保留备查、不排期；解冻需重新评估 |
+
+### 0.1 优先级总表（按建议优先级排序）
+
+| 建议 | 条目 | 原标签 | 触发条件 vs 现状（依据） | 开工前提 / 备注 |
+|---|---|---|---|---|
+| **P1** | §5.1 BPE Tokenizer | P1 | **触发已成立**（能力门槛）：`LLMRunner` 只收/还 token id，`tokenizer_` 仅在构造时校验 → 目前没有"文本进 / 文本出"的端到端路径 | 纯 host 代码、可离线、可进 CI。**但有一个前置**：`vocab.json` + `merges.txt` 本地没有（`models/gpt2/` 只有 `config.json` + `model.safetensors`，而转换工具只产出这两样）→ 需你留存的 HF gpt2 原始目录，或联网取（联网须先获批）。缺这两个文件时本条降为 P2 |
+| **P1** | §1.6 的**离线子项**（只做口径定义：验收集规格 / meta 字段 / 分层统计脚本） | P2（整条） | **触发已成立**：判据"无可核对真值标签、有判别力样本仅 11~12 张"的弱点已经写实 | 不下载数据即可开工；条目原文已允许先做这一半。**下载验收集那一半仍是 P2** |
+| **P2** | §1.2 LLM INT8 / INT4 | P2 | 触发 = 需要 LLM 低精度吞吐；未触发 | 前置依赖已核实：`PagedAttentionPlugin` 目前只接受 `kFLOAT` / `kHALF`（`paged_attention_plugin.cu:265`）→ 先要 INT8 KV cache；INT4 需先评估 sm_75 kernel 可行性 |
+| **P2** | §1.6 验收集与绝对误差判据（整条） | P2 | 同上 | **联网下载**带真值标签的验收集，按 `AGENTS.md` §0.2 须先获批；采样须排除与 `calib_data` 重叠的图 |
+| **P2** | §2.1 显存池替换 | **P1 → P2** | 触发 = "频繁分配有性能开销"；**没有量过**，且现行设计已避开 decode 循环内分配（`AGENTS.md` §3.A.3 本来就不允许） | 先量一次分配开销再动手，否则优化对象都没确定；`DeviceBuffer` 仍是直接 `cudaMalloc`（`memory_pool.cpp:46`） |
+| **P2** | §2.3 Continuous Batching | P2 | 触发 = 服务化需求；未触发 | 与缺口 **G2-3**（`LLMRunner` 有意限定 `batch = 1`）耦合，要先扩 batch |
+| **P2** | §2.4 CV 动态分辨率 | P2 | 触发 = CV 需要变分辨率输入；未触发（`AddCvOptimizationProfile` 目前显式拒绝） | 主体是 shape 配置，但会牵动 CV profile 与引擎缓存路径 |
+| **P2** | §3.1 Encoder-Decoder | P2 | 触发 = 接 seq2seq 模型；未触发 | 架构接口已预留（`architecture = "encoder_decoder"`） |
+| **P2** | §3.2 Vision Transformer | P2 | 触发 = 接 ViT；未触发 | 可复用现有 Transformer block 建图逻辑 |
+| **P2** | §4.1 归一化 Plugin（**范围已缩小**） | **P1 → P2** | `LayerNormPlugin` 这一半**已被现状取代**：GPT-2 用 TRT 原生 `addNormalizationV2`（`gpt2_model_builder.cpp:245`），不需要自研 | 只剩 `GroupNorm` / `InstanceNorm`（CV 模型需要），等真接这类模型时再做 |
+| **P2** | §4.2 激活函数 Plugin | P1 → P2 | 触发 = 接 LLaMA / GLM 系列；未触发 | `SiLU` / `SwiGLU` 是那些 FFN 的必需件；`GELU` 只在原生实现性能不足时才考虑 |
+| **P2** | §6.1 转换工具增强 | P1 → P2 | 触发 = 出现新的权重来源 / 需要 ONNX 导出；未触发 | 按需扩，避免为不存在的来源先写代码 |
+| **P2** | §6.2 ONNX 导出与 custom op | P2 | 触发 = 真做子图替换（§10.2）；未触发 | 是 §10.2 的前置件 |
+| **P2** | §6.3 Nsight 一键 Profile Target | P2 | 触发 = 要按 **G6** 口径做可复现测量时；未触发 | 属测量基建：没有它，性能类结论只能靠单次点值（`phase3_test_plan.md` §3.1 已吃过一次） |
+| **P2** | §6.4 CI / 自动化测试 | P2 | 触发 = 需要自动化回归；未触发 | **GitHub Actions 属联网操作，须先获批**；本地脚本部分不受限 |
+| **P2** | §9.2 Sampler 高性能 kernel | P1 → P2 | 触发 = "`nsys` / `ncu` 定位到 sampler 占比显著"；**该 profile 至今没做过**（`PROGRESS.md` §3.0d 只记录了 `CVRunner` 的 benchmark）→ 触发条件未被验证 | 先做一次 decode 性能 profile，再决定要不要重写 sampler |
+| **P2** | §9.3 采样器参考数据固化 | P2 | 触发 = 需要采样统计正确性回归；未触发 | 顺带覆盖 `p` 接近 1 的边界 |
+| **P2** | §10.1 ONNX / 原生 I/O 契约统一 | P2 | 触发 = 要让 ONNX 路径接进 `LLMRunner`；未触发（Phase 3 D3 明确本阶段不做） | 先加 `Cast` 即可统一 dtype；`position_ids` 提升为输入是更大的改动 |
+| **P3** | §1.5 per-channel 整网退化（P4-INT8-a） | P3 | 触发 = "需要更高 INT8 精度"；未触发（per-tensor 余量子集已 100%） | **触发即升 P1**；它是唯一**无外部前置**的立项条目（做法 / 验收 / 成本校准都已写好，前 3 步不联网）→ 若你想在无新需求时推进一件实事，它是首选 |
+| **P3** | §1.3 BF16 原生计算 | P3 | 触发 = 迁到 Ampere+；硬件不支持 | 保持 P3，无需行动 |
+| **P3** | §1.4 GPT-2 FP16 端到端 | **补标签** | 触发 = 真要 GPT-2 低精度推理；未触发 | sm_75 无 Tensor Core，收益有限；成本已按低→高列了三条路线 |
+| **P3** | §2.2 FlashAttention / FlashDecoding | P2 → P3 | 触发 = 量出 attention 占比显著；未量过 | sm_75 **无官方 FlashAttention**，属 hand-tune 研究性工作，先要有基线 |
+| **P3** | §3.3 多模态（CLIP / LLaVA） | P3 | 未触发 | 成本高，且依赖 §3.1 / §3.2 打底 |
+| **P3** | §3.4 Audio（Whisper） | P3 | 未触发 | 依赖 §3.1 |
+| **P3** | §4.3 MoE | P3 | 未触发 | 研究性 |
+| **P3** | §5.2 Tiktoken Tokenizer | P2 → P3 | 触发 = 接 GPT-4 类模型；未触发 | 与 §5.1 相比，它没有当前模型支撑 |
+| **P3** | §5.3 多模态 Prompt Template | P3 | 未触发 | 依赖 §3.3 |
+| **P3** | §7.1 HTTP / gRPC 服务 | P3 | 未触发 | 依赖 §2.3（调度）与 `G2-3`（batch） |
+| **P3** | §7.2 多 GPU / Tensor Parallel | P3 | 未触发 | 开发机为单卡，无验证环境 |
+| **P3** | §10.2 ONNX 子图替换 | P3 | 触发 = 有明确性能目标；**前提取决于 G6** | 两次测量方向相反（±25% < 构建间噪声）→ 先建可复现测量方法，再谈收益 |
+| **冻结** | §1.1 ResNet18 INT8 校准 | **P1 → 冻结** | **触发已消失**：ResNet18 的 INT8 已由 **Q/DQ 显式量化**交付（`PROGRESS.md` §3.0d）；且 TRT 10.12 起 `kINT8` / `IInt8Calibrator` 路线弃用 | `mini_trt_llm` 内**没有任何 calibrator 代码**（已核实），现行路线是 `tools/convert/quantize_resnet18.py`。保留备查：若将来要重拾 implicit calibration，须先重审（`TROUBLESHOOTING.md` #27） |
+| **冻结** | §9.1 PagedAttention 的 Prefill 阶段 | **P1 → 冻结** | **触发条件已被现状否证**：原文说"Phase 2 若走单引擎就必须先补"，而 Phase 2 之后的 `LLMRunner` 构造收 **prefill + decode 两个引擎**（`llm_runner.hpp:56`），双引擎路径一直成立 | 保留备查：只有将来要合成单引擎时才需要补 Prefill kernel |
+
+### 0.2 与旧标签的差异（本次重定，2026-09-26）
+
+| 条目 | 旧 | 新 | 理由 |
+|---|---|---|---|
+| §1.1 ResNet18 INT8 校准 | P1 | **冻结** | 已被 Q/DQ 路线取代，且该 API 路线在 TRT 10.12 起弃用（详见 §0.1 行） |
+| §1.4 GPT-2 FP16 端到端 | **（缺标签）** | P3 | 文档头声明"每一项标注优先级"，但它漏了 → 补齐；P3 依据是 sm_75 无 Tensor Core |
+| §2.1 显存池 | P1 | P2 | P1 应留给"能力门槛"；本条是性能优化且收益未测 |
+| §2.2 FlashAttention / FlashDecoding | P2 | P3 | 未量基线、无官方支持，属探索性 |
+| §4.1 归一化 Plugin | P1 | P2（范围缩小） | `LayerNormPlugin` 被 TRT 原生层取代；只剩 CV 侧的 `GroupNorm` / `InstanceNorm` |
+| §4.2 激活函数 Plugin / §6.1 转换工具 | P1 | P2 | 均为"接新模型时才需要"的按需件，不阻塞现行能力 |
+| §9.1 PagedAttention Prefill | P1 | **冻结** | 触发条件已被双引擎现状否证 |
+| §9.2 Sampler 高性能 kernel | P1 | P2 | 触发条件（profile 结果）从未被验证过，不能算"已触发" |
+| §5.2 Tiktoken | P2 | P3 | 没有任何现行模型需要它 |
+| §1.5 / §1.6 | P3 / P2 | 不变 | 分别保留"触发即升 P1" 与"离线子项升 P1"的口径，见 §0.1 |
+
+**结论**：当前**没有 P0**；真正的"能力门槛"只有 §5.1（且有数据前置），其余全在等触发条件。
+**每个条目内部的「优先级」行必须与 §0.1 一致**；不一致时以 §0.1 为准并当场改回一致。
 
 ## 1. 量化与精度优化
 
 ### 1.1 ResNet18 INT8 校准
 
-- **优先级**：P1
+- **优先级**：**冻结**（原 P1，2026-09-26 重定为冻结，理由见 §0.1）
 - **背景**：现有 `0_resnet18_onnx` 已支持 INT8，含 `calib_data/` 与 `Int8Calibrator`。`mini_trt_llm` 替换后需补齐该能力。
+- **现状更新（2026-09-26）**：本条的"实现 `nvinfer1::IInt8Calibrator` 封装"路线**已被取代**——
+  Phase 4 用 **Q/DQ 显式量化**（`tools/convert/quantize_resnet18.py`）交付了 ResNet18 INT8，
+  且 TRT 10.12 起 `kINT8` / implicit calibration 路线弃用（`docs/TROUBLESHOOTING.md` #27）。
+  下面"工作内容"保留原文仅作备查；`mini_trt_llm` 内当前没有任何 calibrator 代码。
 - **工作内容**：
   - 实现 `core/int8_calibrator.hpp/.cpp`，封装 `nvinfer1::IInt8Calibrator`。
   - 支持 `CalibrationDataReader` 读取 `calib_data/*.bin`。
@@ -36,6 +118,9 @@
 ---
 
 ### 1.4 GPT-2 的 FP16 端到端（需要激活缩放 / 关键算子保 FP32）
+
+- **优先级**：P3（2026-09-26 补标签：本条原先漏标；依据 = sm_75 无 Tensor Core，收益有限，
+  且触发条件是"真要推进低精度推理"——见 §0.1）
 
 **现状（已实测）**：真实 GPT-2 在本项目的**弱类型 FP16** 引擎下端到端产生 NaN，
 且出现 NaN 的层随构建变化（0/1/2），而激活幅值远未触及 FP16 上限。FP32 端到端完全正确。
@@ -137,8 +222,10 @@
 
 ### 2.1 显存池替换简单封装
 
-- **优先级**：P1
+- **优先级**：P2（原 P1，2026-09-26 下调：收益未测，且现行设计已避开 decode 循环内分配）
 - **背景**：Phase 0 的 `DeviceBuffer` 仅封装 `cudaMalloc/cudaFree`，频繁分配有性能开销。
+- **触发条件**：先量出"分配开销确实显著"。当前 `DeviceBuffer` 仍是直接 `cudaMalloc`
+  （`src/utils/memory_pool.cpp`），但热点路径上没有循环内分配 → 没有测量就没有依据。
 - **工作内容**：
   - 实现基于 freelist 或 arena 的 `MemoryPool`。
   - 支持按大小分桶、按 stream 隔离。
@@ -146,7 +233,7 @@
 
 ### 2.2 FlashAttention / FlashDecoding
 
-- **优先级**：P2
+- **优先级**：P3（原 P2，2026-09-26 下调：未量基线、sm_75 无官方支持，属探索性）
 - **背景**：Turing sm_75 无官方 FlashAttention 优化，但可 hand-tune 基础 attention kernel。
 - **工作内容**：
   - 在 `PagedAttentionPlugin` 中实现针对 sm_75 的分块 attention。
@@ -214,14 +301,16 @@
 
 ### 4.1 更多归一化 Plugin
 
-- **优先级**：P1
+- **优先级**：P2（原 P1，2026-09-26 下调并**缩小范围**：`LayerNormPlugin` 已被 TRT 原生层取代）
 - **内容**：
-  - `LayerNormPlugin`（当前已有 RMSNorm，部分模型用 LayerNorm）。
+  - ~~`LayerNormPlugin`~~：**已作废**——GPT-2 用 TRT 原生 `addNormalizationV2`
+    （`src/core/gpt2_model_builder.cpp`），不需要自研；将来若原生层有性能问题再重开。
+  - 当前已有 `RMSNormPlugin`（Phase 1 交付）。
   - `GroupNormPlugin`、`InstanceNormPlugin`（CV 模型需要）。
 
 ### 4.2 更多激活函数 Plugin
 
-- **优先级**：P1
+- **优先级**：P2（原 P1，2026-09-26 下调：属于"接 LLaMA 系列时才需要"的按需件）
 - **内容**：
   - `SiLUPlugin`、`SwiGLUPlugin`（LLaMA/GLM 系列 FFN 需要）。
   - `GELUPlugin` 若 TRT 原生实现性能不足时自定义。
@@ -248,7 +337,7 @@
 
 ### 5.2 Tiktoken Tokenizer
 
-- **优先级**：P2
+- **优先级**：P3（原 P2，2026-09-26 下调：没有任何现行模型需要它）
 - **背景**：GPT-4 / ChatGLM 等模型使用 tiktoken。
 - **工作内容**：
   - 接入 `tiktoken` C++ 实现或自研。
@@ -266,7 +355,7 @@
 
 ### 6.1 Python 转换工具增强
 
-- **优先级**：P1
+- **优先级**：P2（原 P1，2026-09-26 下调：按需扩，不阻塞现行能力）
 - **内容**：
   - 支持更多来源：PyTorch `.pt`、HuggingFace、Meta 原始 checkpoint。
   - 支持 INT8 校准数据自动生成。
@@ -318,12 +407,15 @@
 
 ## 8. 已知问题记录
 
+> **本节只是索引**：事实与处置口径以 §1 / §2 / §5 / §9 / §10 与 `docs/TROUBLESHOOTING.md` 为准，
+> 本表不新增口径（两处维护必然漂移）。
+
 | 问题 | 影响 | 状态 | 计划解决阶段 |
 |---|---|---|---|
 | BF16 在 sm_75 下需转换 | 无功能影响，有轻微构建时开销 | 已知 | Phase 0 已处理 |
 | SentencePiece 与 GPT-2 BPE 不完全一致 | 可能导致 tokenizer 结果偏差 | 已知 | 后续实现 BpeTokenizer |
 | PagedAttention 无 FlashAttention 优化 | Decode 延迟较高 | 已知 | 后续 hand-tune |
-| INT8 校准未实现 | ResNet18 INT8 能力缺失 | 已知 | 后续迭代 |
+| INT8 的 implicit 校准（`IInt8Calibrator`）未实现 | **不影响现行能力**——ResNet18 的 INT8 已由 Q/DQ 显式量化交付（`docs/PROGRESS.md` §3.0d） | **冻结**（TRT 10.12 起该路线弃用） | 见 §0.1 / §1.1 |
 | CV 动态分辨率未实现 | 输入尺寸固定 | 已知 | 后续迭代 |
 
 ---
@@ -335,21 +427,28 @@
 
 ### 9.1 PagedAttention 的 Prefill 阶段
 
-- **优先级**：P1
+- **优先级**：**冻结**（原 P1，2026-09-26 重定，理由见 §0.1 与下方"现状更新"）
 - **背景**：Phase 1 只实现了 Decoding 阶段（query 序列长度为 1，决策 D1）。
   Prefill 需要对 query 序列做因果 mask 与按位置分块，kernel 结构与 Decode 路径差异较大，
   混在一起会同时拖慢两条路径。
 - **工作内容**：新增 Prefill kernel（因果 mask + 分块 softmax），Plugin 侧按 `seq_len` 分派；
   去掉 `configurePlugin` 中"拒绝 `seq_len > 1`"的校验。
 - **触发时机**：Phase 2 的 GPT-2 若走单引擎（不分 Prefill/Decode 两个 engine），就必须先补。
+- **现状更新（2026-09-26）**：**上述触发条件已被现状否证**——`LLMRunner` 的构造签名收
+  **prefill + decode 两个引擎**（`include/mini_trt_llm/core/llm_runner.hpp:56`），
+  Phase 2 / Phase 3 / Phase 4 全程都是双引擎路径。本条转为冻结备查，
+  只有将来真要做"单引擎含 Prefill"时才需要重新评估。
 
 ### 9.2 Sampler 的手写高性能 kernel
 
-- **优先级**：P1
+- **优先级**：P2（原 P1，2026-09-26 下调：触发条件从未被验证过，见下）
 - **背景**：Phase 1 用 CUB 分段排序保证正确性（决策 Q15），Top-K / Top-P 目前每步都要对整行
   `vocab_size` 做一次降序排序，是明显的性能瓶颈（`vocab_size` 可达 128K）。
 - **工作内容**：warp-level Top-K 选择（无需全排序）、bitonic sort、以及与后续 continuous batching 的配合。
 - **触发时机**：Phase 2 跑通端到端吞吐后，用 `nsys` / `ncu` 定位到 sampler 占比显著时。
+- **触发条件现状（2026-09-26 核实）**：**这个 profile 至今没做过**——
+  `docs/PROGRESS.md` §3.0d 记录的性能数字只有 `CVRunner` 的 benchmark（`mean≈8.4 ms`），
+  没有任何 decode 阶段的 sampler 占比。触发条件"未验证"不等于"已成立"，故不能按 P1 对待。
 
 ### 9.3 采样器参考数据固化为数据文件
 
@@ -367,6 +466,8 @@
 ## 10. Phase 3 明确延后的能力
 
 ### 10.1 ONNX 路径与原生路径的 I/O 契约统一
+
+- **优先级**：P2（2026-09-26 补标签：原文漏标；触发条件 = ONNX 路径要接进 `LLMRunner`，见 §0.1）
 
 **现状**（`docs/TROUBLESHOOTING.md` #17）：两条路的输入契约不一致——
 
@@ -386,6 +487,8 @@
 ONNX 路径接进 `LLMRunner`（`docs/phase3_development_plan.md` D3 已明确本阶段不做）。
 
 ### 10.2 ONNX 图的子图替换（D1=B）
+
+- **优先级**：P3（2026-09-26 补标签：原文漏标；前提取决于缺口 G6 的可复现测量方法，见 §0.1）
 
 **为什么现在还不能判断**（**已修正**：本条原先写的是"ONNX 慢约 22%、故替换无收益"，
 那是从**单次测量**里读出的结论，已被后续运行推翻）：
@@ -412,7 +515,7 @@ Phase 3 的两次测量方向相反（`docs/phase3_test_plan.md` §3.1）：
 
 **说明**：本节**只做索引**，不复制细节——缺口的事实与背景在各阶段的测试计划 / 故障记录里
 （`docs/PROGRESS.md` §2.13「唯一来源」原则）。放在这里的原因：缺口若只留在已过阶段的文档里，
-换阶段后必然失传。
+换阶段后必然失传。**各条目的优先级与排序见 §0.1**（本节只写"是什么 / 触发条件"）。
 
 **索引里已经"立项"的条目**（§1 / §2 有正式排期条目 = 目标 / 做法 / 验收判据 / 前置依赖）：
 **P4-INT8-a → §1.5**、**P4-INT8-b → §1.6**。其余仍是"记着但没排"。
