@@ -2234,3 +2234,217 @@ Phase 3 的绿与今天的红，可以同时成立且都不指向缺陷；变的
   （与 `LaunchTopPSamplerLegacy` 同模式，下次怀疑这项时跑一次 `*SamplerPerf*` 即可复现 A/B，
   不必改代码）。**P9_2-5c 不做**。若将来要"最小实现"，把子块层退回两级是一次**独立的代码改动**，
   需要单独确认（连同 S-24 的三条用例与 16 KB shared 一起撤）。
+
+---
+
+## 39. 第一次真机跑 `profile_gpt2`：target 失败 + "假 CSV" + WSL2 拿不到 GPU kernel 时间线
+
+- **日期**：2026-09-27
+- **现象**（作者执行 `cmake --build build --target profile_gpt2`）：
+  1. 终端刷出大量日志，"日志太多显示不出来"；
+  2. 末尾 `ninja: build stopped: subcommand failed.`，但 `nsys` 已打印
+     `Generated: .../gpt2_decode_20260927_045403.nsys-rep`；
+  3. 同目录只留下 `.nsys-rep` / `.sqlite`，**没有** `.kern_sum.csv` / `.api_sum.csv`；
+     而更早的 `resnet18_20260927_045114` 那次两份 CSV 都在。
+- **定位路径（命令 + 观察）**：
+  1. `ls -la /tmp/mini_trt_llm_profiles/` → gpt2 那次缺两份摘要，**说明脚本在 `nsys profile`
+     之后就退出了**（后面几步都带护栏，不会中止）。`run_profile.sh` 当时是 `set -e`，
+     `nsys profile` 非 0 即中止 → **nsys 把被 profile 应用的退出码透传了出来**：
+     即 `Gpt2DecodePerf.StepLatencyByPhase` **自己失败了**（不是 nsys 的问题）。
+  2. `nsys stats --report cuda_api_sum ... > api.csv`（纯后处理，无需 GPU）→
+     gpt2 那次报告里有 **30921 次 `cudaLaunchKernel`、63 次 `cudaMalloc`**。
+     **说明用例把引擎建好、采样循环也跑完了**，失败发生在**测量之后的断言**，
+     不是"提前崩/提前跳过"。
+  3. 对照该用例里测量之后的断言：只有我新加的两条
+     `EXPECT_LT(|Δmedian|, 0.6 ms)`（"同 session 复现性"）。**根因即在它**。
+  4. `nsys stats --report cuda_gpu_kern_sum ...` → `SKIPPED: ... does not contain CUDA kernel data`
+     （resnet18 那次同样如此）。**WSL2 上 nsys 采得到 CUDA API，采不到 GPU kernel 时间线。**
+- **两个根因（都是我这边的错，不是环境"坏"）**：
+  1. **阈值跨场景复用**：`0.6 ms` 是**采样器类**比较的判别下限（#37 / #38），
+     却被我写成**整步 decode** 测量里的硬断言。整步 32-token decode 的量级比采样器大
+     一到两个数量级，漂移自然远大于 0.6 ms → 断言几乎必然失败。
+     **这正是 `AGENTS.md` §7 禁止的"阈值来路不明 / 跨精度跨场景复用"**；
+     也违反我自己在测试计划 §10.1 写的"P 层用例只打印、不设阈值"。
+     处置：**改成只打印**绝对 + 相对漂移，由读者判断"漂移是否远小于待判信号"；
+     用例里只保留"跑起来了"这一类失败信号（`runner.ok()`、`Generate` 非空）。
+  2. **`nsys stats` 的消息与 CSV 混流**：`Generating SQLite...` / `Processing [...]` 走 **stdout**，
+     被 `> file` 一起写进"CSV"。resnet18 那两份所谓摘要里其实**混着这几行消息**
+     （这就是为什么 `kern_sum.csv` 只有 415 B）。处置：先写临时文件，
+     确认里面有 `Total Time` 表头才落正式名；否则删掉并显式报警。
+- **顺带修掉的两个可用性问题**：
+  - 被 profile 进程的输出（gtest + TRT + nsys）**一律落 `${base}.app.log`**，
+    终端只回摘要（`[ PASSED ]` / `[ FAILED ]` / 错误行，最多 20 行）→ 不再"满屏看不到原因"；
+  - 去掉 `nsys profile --stats=true`（那是最长的输出之一），摘要我们自己导出。
+- **第三次真机（修完重跑）又抓到一条**：摘要过滤器最初只挑 gtest 行，**把测量结果刷没了**
+  ——`profile_*` 存在的意义就是那些数字。加入"我们的报告行"后又反向踩坑：宽模式
+  `^\[[A-Za-z]...\]` 把 `[INFO]` 业务日志全选进来（诊断信息一屏几十行），测量行再次被挤出
+  末尾窗口。最终模式要求 **tag 里至少含一个小写字母**：`[Gpt2DecodePerf]` / `[SamplerPerf]`
+  进来，`[INFO]` / `[WARN]` 不进。**教训**：摘要过滤器和被摘要的对象要一起验，
+  "有输出"不等于"输出有信息"。
+- **环境事实（不是缺陷，写进计划）**：**WSL2 上 `nsys` 拿不到 GPU kernel 时间线**。
+  **CUDA API 摘要（`cuda_api_sum`）在 WSL2 上是好的**，PF-5（分配开销）据此可做。
+  **更正（同日，见 #41）**：我在这里写过"把 `.nsys-rep` 拷到 Windows 宿主机 GUI 就能看 kernel
+  时间线"——**那是错的**。报告里不含 kernel 数据（`cuda_gpu_kern_sum` 无表头，已复核），
+  换查看器不会变出没采到的数据。可行的绕法见 #41。
+- **教训**：
+  1. **"我没量过的东西不要写成断言"**——观测量（漂移、占比）打印；只有"运行失败"才判红。
+  2. **工具的输出流也要先验证**：`nsys stats` 的报告与消息同走 stdout，
+     "文件非空"不等于"文件是报告"（与 §2.14 C 的"仪器必须自证"同一条）。
+  3. **退出码会传播**：`nsys profile` 的退出码 = 被 profile 程序的退出码，
+    所以 ninja 的失败**指向被测用例**，排查要先看应用日志而不是怀疑 profiler。
+
+---
+
+## 40. `PROGRESS.md` §3.0f 说"16 处存在性门全部去掉"，实际还剩 3 处（已补齐）
+
+- **日期**：2026-09-27
+- **发现方式**：做 §6.3 的 profile 计划时顺手反向查（`AGENTS.md` §5 第 4 条），
+  `rg -n "if \(!std::filesystem::exists\((prefill|decode)_path" mini_trt_llm/tests/`
+  → 命中 `tests/test_gpt2_generate.cpp` 的 **3 处**。
+- **是什么**：`RealGpt2Fp16GreedyMatchesReferenceTokens` 里的 prefill / decode 两处、
+  以及 `Fp16PrefillOutputsDiagnostic` 里的 `_fp16_diag` 一处，当时都是
+
+  ```cpp
+  if (!std::filesystem::exists(engine_path)) {
+      ASSERT_TRUE(builder.BuildFromConfig(dir, engine_path, stage));
+  }
+  ```
+
+- **为什么是坑（不是风格问题）**：`BuildFromConfig` 的**入口就是指纹比对**
+  （`engine_cache.cpp`：一致 → `Engine cache hit`，不一致或缺指纹 → `stale` + 重建）。
+  外面套一层"文件存在就不调用"，等于**绕过指纹**：引擎文件在、但代码或建图参数已经变了时，
+  用例会安静地拿**旧引擎**跑，于是精度/性能结论全部建立在一个不再是当前代码产物的引擎上。
+  这正是 `PROGRESS.md` §3.0f / TROUBLESHOOTING #34.10 上线指纹时要堵的那个坑，
+  所以文档才写"16 处全部去掉"——**代码没跟上文档**（文档是对的，代码漏改了 3 处）。
+- **处置（2026-09-27）**：三处 `if` 全部去掉，改成无条件调用 `BuildFromConfig`，
+  并在原处留注释说明"复用与否交给指纹，`文件存在 ≠ 引擎还新鲜`"。
+  改动面：`tests/test_gpt2_generate.cpp`，2 处 `ASSERT_TRUE` 变直接调用（共删 6 行、加注释）。
+- **影响 / 代价**：正常情况无变化——引擎新鲜时入口打 `Engine cache hit` 直接返回，耗时不变；
+  只有在引擎**过期**时才多出一次重建（分钟级），而那正是期望行为。
+  **例外**：若某个旧引擎没有 `.fingerprint` sidecar（指纹功能上线前建的），
+  这次会判定"不可信 → 重建"——属于一次性成本。
+- **验证边界**：这三条都是 GPU 用例，Agent 沙箱跑不了；**必须在下次真机全量里确认**
+  （确认点：FP16 那两条仍按设计因 NaN 红、没有多出别的红；日志里能看到它俩的建引擎行）。
+
+---
+
+## 41. `profile_gpt2_ncu` 也失败：WSL2 上两条 CLI profiling 路径都拿不到 kernel 时间线
+
+- **日期**：2026-09-27
+- **现象**（作者执行 `cmake --build build --target profile_gpt2_ncu`）：
+  `ncu 退出码=1`、**没有生成 `.ncu-rep`**；`app.log` 里只有一行关键错误：
+  `==ERROR== Unknown Error on device 0.`；而被 profile 的用例本身是
+  `[ PASSED ] ... (29786 ms)`。
+- **判读：这不是我们的 bug，也不是用例的问题**：
+  - `Unknown Error on device 0` 是 ncu 在 WSL2 上拿不到 GPU performance counter 的典型报错；
+  - 用例 PASSED 说明程序本身跑得好好的；
+  - **日志里的耗时（decode 每步 25.77 ms、T(32) 822 ms）不可用**：那是 ncu 的
+    "每个 kernel 停一次、收集计数器、重放"造成的。**判别特征**：派生出的
+    `prefill≈-2.246 ms` 是**负数**——真实 prefill 不可能为负，说明 T(1) 被 ncu 的
+    固定开销（首次 attach/replay）污染了。**看到 dev 用例在 profiler 下跑出负的派生量，
+    第一反应应该是"instrumentation 开销"，不是"模型很快"**。
+- **这推翻了我上一条建议**：我在 #39 里写"把 `.nsys-rep` 拷到 Windows 宿主机用 Nsight
+  Systems GUI 打开"就能拿到 kernel 时间线——**错的**。那份报告本身不含 GPU kernel 数据
+  （`nsys stats --report cuda_gpu_kern_sum` 连表头都没有，已复核），
+  **换查看器不会变出没采到的数据**。`AGENTS.md` §1 的"无头导出 + 宿主机 GUI"策略
+  有个前提：**报告里得先有那份数据**。
+- **现在能走的绕法（按成本从低到高）**：
+  1. **不用 profiler 拿 sampler 占比**：`SamplerPerf.ThroughputByShape`（采样器净成本）
+     与 `Gpt2DecodePerf.StepLatencyByPhase`（整步 decode）在**同一个二进制、同一次运行**里跑
+     （`--gtest_filter='Gpt2DecodePerf.*:SamplerPerf.*'`），用**同一 session** 的两个数取比值。
+     这避开了 #38 的"跨 session 不能比"，代价是它给的是**比值**、不是逐 kernel 分解。
+  2. **在 Windows 宿主侧做采集**：WSL2 里采集不到 GPU kernel 数据，得有 Windows 侧的
+     Nsight 安装与驱动支持才能采（属环境配置，未验证；不要在文档里当成已成立的前提）。
+  3. **自己插桩**：给 `LLMRunner` 加一个**默认关闭**的 debug 计时开关，用 CUDA event 分别量
+     `decode_engine_->Enqueue` / `AppendDecodeStep` / `SampleInto` / `FillPositionIds`。
+     这能精确回答"sampler 占比"与"KV 写入占比"，但**要改产品代码**（本轮定的是零改动）→
+     属新立项，须单独批准。
+- **处置（2026-09-27）**：
+  - `run_profile.sh`：ncu 分支识别 `Unknown Error on device` / `ERR_NVGPUCTRPERM` 一类错误后，
+    打印"WSL2 上 ncu 不可用（已知限制）"，与"别的失败"区分开，避免被误读成脚本/用例的问题；
+    nsys 分支的提示也改成"拷到 Windows 也没用"（同 #39 的更正）。
+  - 计划与进度：PF-2 / PF-4 的状态改回"受阻"并写明原因；
+    **§10.2 的收益判断继续挂着**；**§2.2 不必再等**——它的触发条件已由"上下文长度扫描"
+    回答（长上下文 attention ≈ 每步 80%，见开发计划 §11.4.1 / 测试计划 PF-9），已从 P3 升 P2。
+- **绕法 1 已落地（2026-09-27，同日）**：`Gpt2DecodePerf.StepLatencyByPhase` 里加了**同 session**
+  的 sampler 净成本测量（greedy / top-k(k=64) / top-p(p=0.9)，斜率 `(T4−T1)/3` + 正反交替 + n=9），
+  直接打印**占本次 decode 每步的比例**，登记为测试计划 **PF-8**。
+  **为什么这样就够**：decode 步与 sampler 净成本出自**同一个进程、同一段温度/时钟**，
+  不存在 #38 的"跨 session 不可比"；代价是它给比值而非分解。
+- **追加核实（同日）：profiler 这条路判死。** 又试了两条便宜的可能性——
+  ① `sudo nsys profile --trace=cuda ...`；② 不加 sudo 但显式 `--trace=cuda`——
+  **两次都还是 `SKIPPED: does not contain CUDA kernel data`**。
+  即：WSL2 内的 nsys 无论加不加权限、无论是否显式指定 trace，都拿不到 GPU 活动记录
+  （CUDA API / OSRT / NVTX 都有，只缺 GPU）。**Agent 侧无法代跑**（我这边
+  `nvidia-smi` 报 `GPU access blocked by the operating system`、`sudo` 被
+  `no new privileges` 拦、`nsys` 报 `open: Operation not permitted`）。
+  → **整步 decode 的"逐 kernel 分解"在本机不可得**，`future_iterations` §2.2 的判据改走
+  开发计划 §11.4 新增的**上下文长度扫描**（不依赖 profiler）。
+- **教训**：
+  1. **"换个工具看"不等于"能拿到数据"**——先确认数据在不在，再谈怎么展示
+     （与 §2.14 C"仪器必须自证"、#39 的"假 CSV"同一条）。
+  2. **profiler 下的耗时不能当性能数据**：判别特征（如负的派生量、比正常慢一个数量级）
+    必须在报告里显式标注，否则会被当真。
+
+---
+
+## 42. 同一个 kernel、同一组参数，两套量法差 2.5 倍（**已定位：全等输入让排序路径"变快"**）
+
+- **日期**：2026-09-27
+- **结论（同日复核）**：**根因是输入数据**。第一版 PF-8 用**全零** logits（所有键相等），
+  `SamplerPerf` 用 `sin(0.29·i)·1.2`。把 PF-8 的输入换成同一模式后，**同一个 session** 里两套
+  harness 对同一组参数给出几乎相同的数（单位 ms/次）：
+
+  | 量 | PF-8（同 session） | `SamplerPerf`（同 session） | 差 |
+  |---|---|---|---|
+  | greedy | 0.0308 | 0.0336 | −8% |
+  | top-k(k=64) | **0.4360** | **0.4281** | **+1.9%** |
+  | top-p(p=0.9) | **0.4938** | **0.4916** | **+0.4%** |
+  | `top-p − top-k` | 57.7 µs | 63.6 µs | −9% |
+
+  → **不是**跨 session 漂移，也不是量法差异；是"全等键"这个**退化输入**让排序路径快了约 2.7 倍。
+  **教训**：给性能测量造输入时，"能跑出数"不等于"负载有代表性"——全零/全等是最容易踩的退化样本。
+  过程与备选假设（下面保留，供以后遇到同类差异时复用）。
+- **现象**：vocab = 50257、batch = 1、k = 64、p = 0.9，**同一台机器**上两套测量给出的
+  sampler 净成本差约 2.5 倍（单位 ms/次）：
+
+  | 量法 | 出处 | greedy | top-k(k=64) | top-p(p=0.9) |
+  |---|---|---|---|---|
+  | `SamplerPerf`（sin logits，warmup 3 + n=15，配对） | §9.2 / `PROGRESS.md` §3.0g | 0.035 | **0.438** | **0.499** |
+  | `Gpt2DecodePerf` 同 session 段（**全零** logits，n=9） | 本轮 PF-8，2026-09-27 真机 | 0.031 | **0.160** | **0.214** |
+
+- **对得上的两项**（说明不是"整体时钟差异"那么简单）：
+  - greedy：0.031 vs 0.035（−12%）——它是"裸读一行"，对时钟不敏感；
+  - `top-p − top-k`：54 µs vs 60.1 µs（−10%）——两个排序路径**之差**一致。
+- **对不上的两项**：top-k 差 **2.7×**、top-p 差 **2.3×**。差在**排序那一大块**（`top-p − top-k`
+  只占几十 µs，排序占了几百 µs），不在采样 kernel 本身。
+- **候选原因（都**未**验证，按可检验性排）**：
+  1. **输入数据**：`SamplerPerf` 用 `sin(0.29·i)·1.2`，我第一版用**全零**——全等键在排序路径上
+     的负载不具代表性（真实 logits 行不会全等）。**已改**：PF-8 现在用同一套 sin 模式，
+     下次真机可直接对照（这是最可疑的一条，因为它恰好只影响排序路径）。
+  2. **跨 session 漂移**：两次测量不在同一 session。但 greedy 对得上，且 #38 记录的同变体
+     跨 session 漂移是 ~23%——**不足以解释 2.5 倍**。不过"漂移只影响带宽/计算敏感的排序、
+     不影响 launch 敏感的 greedy"这条**没有被排除**（测试计划 §9.1 的 P 层协议就是为此存在的）。
+  3. **量法差异**：我 n=9、无显式 warmup、正反交替取平均；`SamplerPerf` warmup 3 + n=15 + 配对。
+     **方向不对**：没有 warmup 只会让我的数**偏大**，而我偏小 → 这条**不能**解释。
+- **判定实验（下次真机，一条命令，不许先改结论）**：
+
+  ```bash
+  MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
+      --gtest_filter='Gpt2DecodePerf.*:SamplerPerf.*'
+  ```
+
+  两套 harness 在**同一个进程**里跑（同 session、同一段温度/时钟），输入模式现在也一样，
+  差异只剩量法细节：
+  - 若两者接近 → §9.2 的 0.438 属跨 session 漂移，PF-8 的数可用；
+  - 若 `SamplerPerf` 仍约 0.44 而 PF-8 约 0.16 → 差异在量法/实现细节上，**继续查**。
+- **影响（已定，取代上面那张表）**：以复核后的绝对成本为准，"sampler 占整步 decode" =
+  **greedy ~1.25%**、**top-k(64) ~17.7%**、**top-p(0.9) ~20.1%**（同一 session，decode 步 2.458 ms）。
+  **全零输入那一版的 0.92% / 4.75% / 6.35% 作废**。
+  另注意：**decode 步本身跨 session 漂 ±27%**（已见 2.458 / 2.847 / 3.365 ms）→
+  占比**只在同一 session 内可比**，跨 session 比百分比同样会犯 #38 的错。
+- **教训（两条）**：
+  1. **造输入时"能跑出数"不等于"负载有代表性"**：全零/全等是最容易踩的退化样本，
+     它会让排序路径快 2.7 倍而没人察觉。
+  2. **同一个量、两套尺子对不上时，先查输入与量法，不要挑一个顺眼的当结论**
+     （`AGENTS.md` §7 的"继续查 / 证明期望错 / 标已知失败"三选一，这里选第一种，且当场查清了）。

@@ -1,9 +1,25 @@
 # mini_trt_llm 项目进度交接文档
 
-> 最后更新：2026-09-27（**§9.2 采样器迭代收口并关闭**：Top-P 改成"保留 CUB 排序 + 行内并行
+> 最后更新：2026-09-27（**decode 性能画像基建落地**：profile target ×4（`profile_gpt2` /
+> `profile_resnet18` 与各自的 `_ncu`）、`tools/profile/run_profile.sh`（一键 nsys/ncu + 温度时钟 +
+> 自动导出摘要）、`tools/profile/summarize_nsys.py`（三层分桶 + `--api` 分配统计）、
+> `tests/test_decode_perf.cpp`（`Gpt2DecodePerf` 计时入口）；计划 = 开发计划 **§11** / 测试计划 **§10**，
+> 落点见 **§3.0h**。沙箱 **242 条 / 0 失败**；**`profile_gpt2` 真机已跑通并出数**
+> （decode **2.847 ms/步**、prefill≈2.100 ms；同 session 漂移 10~18%），
+> 但 **两条 CLI profiling 路径都拿不到 kernel 时间线**（nsys 无 kernel 数据、ncu 报
+> `Unknown Error on device 0`；"拷到 Windows"救不了——数据没被采集，见 **#41**）→
+> **sampler 占比已用"同 session 比值法"（PF-8）出数并与 `SamplerPerf` 互校一致**
+> （greedy **1.25%** / top-k **17.7%** / top-p **20.1%**；首版全零输入导致的 2.5× 偏差
+> 已定位为退化输入，见 **#42**）；
+> **attention 的占比已由"上下文扫描"回答**（长上下文下 ≈ 每步 80% → `§2.2` 触发成立、升 P2）；
+> **逐 kernel 分解**仍缺（profiler 不可用），但它**不再挡 §2.2**；`§10.2`（ONNX 子图替换）仍挂着。
+> 同轮还补齐了 §3.0f 漏改的 **3 处"存在性门"**（`test_gpt2_generate.cpp`，见 `TROUBLESHOOTING.md` #40））。
+>
+> 同日：**§9.2 采样器迭代收口并关闭**：Top-P 改成"保留 CUB 排序 + 行内并行
 > 三级定位"、判据缺口 S-12/S-14 补齐；**P9_2-5b 经同二进制 A/B 判定"效果无显著差异"、P9_2-5c 不做**；
-> 真机 **235 条 / 1 红**（唯一红 = 按设计的 GPT-2 FP16 NaN；**该全量是 P9_2-5b 之前的**），
-> 沙箱 **234 条 / 0 失败**；**P9_2-5b 之后真机只跑过 `Sampler*:Fp16PathTest*` 过滤集与
+> 真机 **235 条 / 1 红**（唯一红 = 按设计的 GPT-2 FP16 NaN；**该全量是 P9_2-5b 之前、
+> 也是 §3.0h 新增 7 项之前**），
+> 沙箱 **242 条 / 0 失败**（§3.0h 之后）；**P9_2-5b 之后真机只跑过 `Sampler*:Fp16PathTest*` 过滤集与
 > `*SamplerPerf*`（均通过）→ 全量待下一次真机顺带复跑**；
 > 推荐的下一条工作 = **decode 端到端性能画像 + `§6.3` 的 profile target**，见 §6）。
 > 2026-09-26：**Phase 4 收口**（CV 路径打通 + INT8 落地）。
@@ -15,11 +31,12 @@
 >    按政策不修，见 §5.11 与 `docs/TROUBLESHOOTING.md` §18.1；
 > 2. Phase 2 的残余缺口（含已定位的已知限制）见 §5.12 与 `docs/phase2_test_plan.md` §5；
 > 3. Phase 3 仅剩 G5/G6 两项按触发条件处理的缺口，见 `docs/future_iterations.md` §11。
-> 4. **真机：235 条 / 1 红**（2026-09-27，**P9_2-5b 之前**的全量；跳过项只有 `int8_crosscheck`——
+> 4. **真机：235 条 / 1 红**（2026-09-27，**P9_2-5b 之前、且本轮新增 7 项之前**的全量；
+>    跳过项只有 `int8_crosscheck`——
 >    ctest 级的"缺报告 → 77"，设计如此）：
 >    **唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`**（GPT-2 FP16 NaN 的**按设计红**，§5.11）；
 >    本轮新增的 6 条 GPU 用例（S-12/S-13/S-14/S-15/S-16/S-21）**全部真机通过**。
->    沙箱侧 **234 条 / 0 失败**（99 跳过 / 135 执行）；ResNet18 侧没有红。
+>    沙箱侧 **242 条 / 0 失败**（**§3.0h 新增 8 项之后**；此前是 234）；ResNet18 侧没有红。
 >    **P9_2-5b（改的是 Top-P kernel 内部）之后**真机只跑过 `--gtest_filter='Sampler*:Fp16PathTest*'`
 >    与 `'*SamplerPerf*'`（都通过）→ **全量建议在下一次真机时顺带复跑**（与 decode profile 同批最省）。
 >    过程红两条都已结案且**都不是产品缺陷**：`Gpt2OnnxTest.MatchesAcrossProfileShapes`
@@ -465,7 +482,7 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
 | `tests/test_argmax_criterion.cpp`（新，6 条 host） | 锁语义与边界（含严格 `>` 的边界、混合多行的计数与行号），并用实测数字复现 #34 的 `IncidentRow118IsClassifiedUndecidable` |
 | `core/engine_cache.{hpp,cpp}`（新） | 构建指纹：stage / 精度 / 来源 / 源文件身份（size+mtime）/ 建图数值参数 / 开关 / TRT·CUDA 版本 / 手工 `kEngineGraphVersion`；落 `<engine>.fingerprint` |
 | `core/builder.cpp` | `BuildFromConfig` / `BuildFromOnnx` **入口比指纹**：一致 → `Engine cache hit`；不一致或缺指纹 → `Engine cache stale` 并重建 |
-| 8 个测试文件里的 16 处"存在性门" | 全部去掉——复用与否**只由 builder 决定**，否则会绕过指纹检查（老坑的来源） |
+| 8 个测试文件里的 16 处"存在性门" | 全部去掉——复用与否**只由 builder 决定**，否则会绕过指纹检查（老坑的来源）。**2026-09-27 复核补齐**：`test_gpt2_generate.cpp` 里当时还剩 3 处（FP16 复现器 ×2、FP16 诊断仪器 ×1），当日去掉，见 `TROUBLESHOOTING.md` #40 |
 | `tests/test_engine_cache.cpp`（新，5 条 host） | 确定性 / 每个字段都会改变指纹 / 缺指纹不可信 / 往返与规范化文本 / 源文件身份随内容变化 |
 
 **真机实测（单测复跑，2026-09-26）**：`Gpt2OnnxTest.MatchesAcrossProfileShapes` **PASSED（4.58 s）**；
@@ -531,6 +548,118 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
   ② 跨协议 / 跨 session 的差值**不能直接比**（#38）；③ 判"改动有没有用"要**同二进制、同轮交替测**，
   并用**斜率** `(T4−T1)/3` 扣掉每窗口固定开销；④ 这台机器对这类问题的**判别下限约 ±400 µs**。
 
+### 3.0h decode 性能画像基建（2026-09-27，**已出首份数据；kernel 时间线待宿主机**）
+
+**计划落点**：`future_iterations.md` §6.3 与 §11 的 **G6**；开发计划 **§11**（P6_3-0 ~ P6_3-7）、
+测试计划 **§10**（PF-1 ~ PF-7）。本节只记"落点 + 状态"，口径与判据在开发计划 §11.3 / §11.4。
+
+| 落点 | 说明 |
+|---|---|
+| `tests/CMakeLists.txt` | 四个**显式** target：`profile_gpt2` / `profile_resnet18` / `profile_gpt2_ncu` / `profile_resnet18_ncu`；**不进默认构建、不进 ctest**；报告默认落 `/tmp/mini_trt_llm_profiles/`（**不入库**） |
+| `tools/profile/run_profile.sh`（新） | 一键 nsys / ncu：时间戳命名、采样前后记录温度 / 时钟、nsys 跑完自动导出 `cuda_gpu_kern_sum` 与 `cuda_api_sum` 摘要并分桶；工具缺失 / 缺文件给可读错误 |
+| `tools/profile/summarize_nsys.py`（新） | **三层分桶**（① 我们的 kernel / ② CUB / ③ TRT 内部）+ sampler / attention / KV 占比；`--api` 模式报 `cudaMalloc` / `cudaFree` 的次数与总耗时（§2.1 的供数）。`--self-test` 已注册 ctest 项 `profile_summary_selftest` |
+| `tests/test_decode_perf.cpp`（新） | `Gpt2DecodePerf.StepLatencyByPhase`（P 层：只打印；用斜率 `(T32−T1)/31` 分离 prefill 与 decode；**唯一 assert** 是"同 session 两次测量的中位数漂移 < 判别下限"）+ `PerfStatsTest.*`（5 条 host） |
+| `tests/perf_stats.hpp`（新） | 中位数 / **最近秩分位（不插值）** / 极差 / 斜率 的**唯一实现**，被上面那个用例自证 |
+
+**沙箱实测（2026-09-27）**：`ctest --test-dir build` → **242 条 / 0 失败**。
+新增 8 项 = 5 条 `PerfStatsTest.*`（实跑通过）+ 2 条 `Gpt2DecodePerf.*`（无 GPU 显式跳过）
++ 1 条 `profile_summary_selftest`（通过）。
+
+**事实边界（写在这一轮开工时；真机结果已见本节后面的"真机首跑 / 第一次成功出数 / 第 5 条"）**：
+
+- **真机一次都没跑过**：Agent 沙箱里 `nsys` 启动即报 `open: Operation not permitted`（无 perf 权限），
+  所以 P6_3-0（仪器自证）与 P6_3-4 ~ P6_3-6（出数）**只能由作者在 WSL2 真机执行**（命令见开发计划 §11.9）；
+- **后续进展（同日）**：`profile_gpt2` 真机跑通并出数；**sampler 占比**（PF-8）与
+  **attention 占比**（PF-9 上下文扫描）都有了；`§2.1`（显存池）的触发条件**未获支持**；
+  `§2.2` 触发成立 → 升 P2；只有 **`§10.2`（ONNX 子图替换）仍缺可复现性能对照（PF-7 未跑）**；
+- **逐 kernel 分解仍未拿到**（WSL2 的 nsys 采不到 GPU 活动、ncu 不可用、加 sudo 与显式 trace 都无效，见 #41），
+  但它已不再阻塞 §2.2（改用上下文扫描回答）。
+- 引擎缓存：`Gpt2DecodePerf` 与 `RealGpt2Greedy...` **共用** engine 路径与形状参数，
+  目的是命中缓存；换形状参数会让指纹失效并触发分钟级重建。
+
+**真机首跑（2026-09-27，作者）：三个发现，两个当场修、一个记为环境限制**（全过程见
+`docs/TROUBLESHOOTING.md` **#39**；开发计划 §11.5.1 有同样的记录）：
+
+1. **`profile_gpt2` target 失败 = 被测用例红了，不是 nsys 坏了**。`nsys` 会**透传被 profile
+   程序的退出码**；后用 `nsys stats --report cuda_api_sum` 后处理那份已生成的报告（**无需 GPU**）
+   看到 30921 次 `cudaLaunchKernel` → 用例其实跑完了全部测量。红在我加的
+   `EXPECT_LT(|Δmedian|, 0.6 ms)`：**那是采样器类的判别下限，被我套到量级大一到两个数量级的
+   整步 decode 上**（`AGENTS.md` §7 禁止的阈值跨场景复用）。**已改成只打印绝对 + 相对漂移**。
+2. **"假 CSV"**：`nsys stats` 自己的 `Generating SQLite...` / `Processing [...]` 走 stdout，与
+   CSV 混流；resnet18 那份所谓 `kern_sum.csv` 只有 415 B 的消息。**已改成**"确认有 `Total Time`
+   表头才落盘，否则报警并删除"。
+3. **本机两条 CLI profiling 路径都拿不到 kernel 时间线**：nsys 报告不含 GPU kernel 数据
+   （`cuda_gpu_kern_sum` 连表头都没有），`profile_gpt2_ncu` 也失败
+   （`==ERROR== Unknown Error on device 0.`、无 `.ncu-rep`）；**"拷到 Windows 看"没用**
+   ——数据压根没被采集（#41 更正了 #39 的说法）。**CUDA API 摘要是好的** → §11.4 的
+   "三层 kernel 分解"仍未拿到；绕法见 #41。**PF-5（分配开销）不受影响**，已拿到初步数据
+   （GPT-2：`cudaMalloc` 63 次 / 3.335 ms、`cudaFree` 69 次 / 249.7 ms；
+   **`cudaFree` 含隐式同步，不等于纯分配器成本**）。
+
+另修两个可用性问题：被 profile 进程的输出一律落 `<报告>.app.log`、终端只回 ≤20 行摘要
+（不再"满屏看不到原因"）；去掉 `nsys profile --stats=true`。
+
+**第一次成功出数（2026-09-27，重跑；引擎 `cache hit` ×2）**——`Gpt2DecodePerf`（batch=1、
+FP32、greedy、prompt 4 token、生成 32、n=15 + warmup 3、每轮 ABBA）：
+
+| 量 | median | p25 / p75 |
+|---|---|---|
+| T(1)（prefill 4 token + 1 decode 步） | **4.947 ms** | 4.730 / 6.298 |
+| T(32) | **93.190 ms** | 90.109 / 103.367 |
+| 派生 decode 每步（斜率 `(T32−T1)/31`） | **2.847 ms** | —— |
+| 派生 prefill（4 token） | ≈ **2.100 ms** | —— |
+
+读法（细节在开发计划 §11.5.1 / 测试计划 §10.5）：
+
+1. **同 session 漂移 10~18%**（T(1) 0.917 ms / 18.5%，T(32) 9.478 ms / 10.2%），
+   同期 GPU 72→78 °C、44.5→65.7 W → **机器未进稳态**；decode 量级的比较**必须**同轮交替，
+   且**不能**套用 §9.2 的 ±400~600 µs 下限（#39 的教训）。
+2. **batch=1 的 decode 是每步固定开销主导**：prefill 4 个 token 约 2.10 ms，decode 每个 token
+  却要 2.85 ms，全程 ~30921 次 `cudaLaunchKernel`（~26 次/步）→ 假设是 launch/固定开销占大头，
+  **待 kernel 时间线定论**。**（同日修正：这只在短上下文成立——第 5 条的上下文扫描显示，
+  上下文一长 attention 就变成主导项；两条不矛盾，是"谁主导"随上下文长度切换。）**
+3. **§2.1（显存池）的触发条件未获支持**：全程 `cudaMalloc` 63 次 / 3.335 ms，
+   `cudaFree` 69 次 / 249.7 ms（含隐式同步，是拆除期成本）。
+4. **sampler 占比已出数并完成互校（#41 绕法 1，测试计划 PF-8；#42 已定位）**：
+   decode 步 **2.458 ms**；greedy **0.0308 ms（1.25%）**、top-k(64) **0.4360 ms（17.7%）**、
+   top-p(0.9) **0.4938 ms（20.1%）**。与 `SamplerPerf` **同 session** 互校差 ≤2%
+   （0.0336 / 0.4281 / 0.4916）。首版全零输入给出的 0.92% / 4.75% / 6.35% **已作废**
+   ——**退化输入让排序路径快了 2.7 倍**，根因见 `TROUBLESHOOTING.md` **#42**。
+   **读法**：① greedy 下采样可忽略（~1%）；② top-k/top-p 的 15~20% 里**绝大部分是 CUB 排序**，
+   而两次"绕开整段排序"的尝试（fast top-k）都更慢 → **暂无已知的优化抓手**，不必据此排期；
+   ③ decode 步本身跨 session 漂 ±27%（2.458 / 2.847 / 3.365）→ 占比只在同一 session 内可比。
+   **逐 kernel 分解**（attention vs MLP）仍拿不到；但**attention 的占比已由第 5 条的
+   上下文扫描回答**（长上下文 ≈80%）→ §2.2 的触发条件成立；`§10.2` 仍挂着。
+
+5. **上下文扫描（PF-9，2026-09-27 真机）：attention 在长上下文下占每步 ≈80% —— §2.2 的触发条件由此成立。**
+   既然 profiler 拿不到 kernel 时间线（#41），改用"attention 随上下文增长、其余每步固定"这个
+   性质做**上下文长度扫描**（开发计划 §11.4.1）。三档实测（GPT-2 原生引擎、batch=1、FP32、greedy）：
+
+   | prompt | 平均上下文 | 每步 decode |
+   |---|---|---|
+   | 4 | 20.5 | **3.055 ms** |
+   | 256 | 272.5 | **6.062 ms** |
+   | 960 | 976.5 | **14.705 ms** |
+
+   两段斜率 **11.93 / 12.28 ms per 1000 位置**（差 3% → **线性**，外推 1024 = +12.2 ms）→
+   **长上下文下 attention 约占每步 80%**。**机制已定位**：`LaunchPagedAttention` 的
+   `grid=(num_heads, batch)`（`paged_attention_plugin.cu:141`）→ 每层只有 **12 个 block**，
+   而本机 **24 个 SM**（一半闲置），每块 64 线程**串行**走完 976 个位置 → **延迟受限**，
+   有效带宽仅 ≈ **6 GB/s（约峰值 192 GB/s 的 3%）**。→ **要做的是把上下文维切开并行**
+   （FlashDecoding 式 split-K），不是笼统 tile。**§2.2 已据此从 P3 升 P2**
+   （`future_iterations.md` §0.1 / §0.2 / §0.3 第 14 项）；实现属产品代码改动，须先产计划再批准。
+   
+   **一个副产品**：上面那条"sampler 占 17~20%"是**短上下文**（每步 2.46 ms）下的比例；
+   上下文一长分母就变大，长上下文下同样的 sampler 只占 ≈3%（0.49 ÷ 14.7）。**占比随上下文变**，
+   引用时必须带上上下文长度。
+
+**收口（2026-09-27）：§11 关闭。** 目标（"把 decode 的时间花在哪从不知道变成知道 + 留下可复现的尺子"）
+已达成；尺子还自己抓到过一次测量错误（#42）。两条记账方式变更：
+
+- **逐 kernel 分解（P6_3-4）记为"能力边界"，不是"未完成"**——工具写好、自检过、报告能生成，
+  缺的只是有 GPU 跟踪能力的机器（#41）。**别在下一轮把它当欠账去补**。
+- **PF-7 移交 §10.2**（ONNX 子图替换的前置），不再算 §11 的尾巴。
+
 ### 3.1 目录与构建
 
 - `mini_trt_llm/CMakeLists.txt`：C++17 + CUDA C++17、`sm_75`、static library、第三方依赖接入。
@@ -572,12 +701,15 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
 
 - `mini_trt_llm/tests/test_*.cpp`：Utils / Core 骨架（cuda_check、logger、timer、memory_pool、io、
   model_config、model_registry、safetensors_loader、engine）+ Phase 1 算子 + Phase 1.5 端到端。
-- 当前状态（2026-09-27 实测，含 Phase 4 + 批次 A/B/C + §9.2 的采样器迭代）：沙箱内 `ctest` **234 个用例，0 失败**
-  （**99 条跳过、135 条实际执行**，含 `onnx_graph_probe`、`GpuEnvProbe`、
+- 当前状态（2026-09-27 实测，含 Phase 4 + 批次 A/B/C + §9.2 的采样器迭代 + §3.0h 的性能画像基建）：
+  沙箱内 `ctest` **242 个用例，0 失败**
+  （**100 条跳过、141 条实际执行**，含 `onnx_graph_probe`、`GpuEnvProbe`、
   `int8_eval_selftest`、`tokenizer_golden_check`、`int8_crosscheck_selftest`、`ArgmaxCriterion*`（6 条）、
   `EngineCacheTest*`（5 条）、批次 A 的 16 条 host 用例、P9_2-5/5b 的 4 条 `NucleusCutoffTest.*`
-  与 5 条 `SamplerReferenceTest.*`、以及 P9_2-5b 的 3 条 `NucleusCutoffTest.ThreeLevel*`）。
+  与 5 条 `SamplerReferenceTest.*`、P9_2-5b 的 3 条 `NucleusCutoffTest.ThreeLevel*`、
+  以及 §3.0h 的 5 条 `PerfStatsTest.*` 与 `profile_summary_selftest`）。
   真机（`MINI_TRT_REQUIRE_GPU=1`）**最近一次全量：2026-09-27，235 条 / 1 红**（含 S-12/S-14；
+  **注意这是 §3.0h 新增 8 项之前的数**，复跑应为 243；
   **唯一的红 = GPT-2 FP16 NaN 复现器，按设计**）。**注意**：该全量在 **P9_2-5b 之前**；
   P9_2-5b（Top-P kernel 内部改动）之后只跑过 `Sampler*:Fp16PathTest*` 与 `*SamplerPerf*`（均通过），
   **全量待复跑**。
@@ -964,7 +1096,18 @@ B 触发即做 / C 需外部前置 / D 冻结；含文件级改动面、步序�
 1. **decode 端到端性能画像（`nsys`，按 G6 口径）+ 落地 §6.3 的 profile target** —— 一次性解锁
    §2.2（attention 分块值不值得）、§10.2/§6.2（子图替换要的可复现测量方法）、§2.1（显存分配开销
    该不该动），并补上 §9.2 留下的那一问（**sampler 在整步 decode 里占多少**）。
-   需作者在真机执行（单测外的测试任务，`AGENTS.md` §0.3 须先获批）；Agent 侧可先出计划/target/判据。
+   **计划与基建已就位（2026-09-27，见 §3.0h；开发计划 §11 / 测试计划 §10）**：
+   `cmake --build build --target profile_gpt2`（nsys 一键；报告 + 三层分桶落
+   `/tmp/mini_trt_llm_profiles/`，**不入库**）；`profile_resnet18` / `*_ncu` 同理。
+   **进度（2026-09-27）**：`profile_gpt2` **已跑通并出数**（decode 2.847 ms/步、
+   prefill≈2.100 ms、同 session 漂移 10~18%），已回填 §3.0h / 开发计划 §11.5.1 / 测试计划 §10.5。
+   **这一步已经做完，§11 已于 2026-09-27 关闭**（开发计划 §11.5.2）：四个 target + 协议 + 工具链
+   都跑通并被实际使用；**三个问题都有了答案**——sampler 占比（PF-8）、attention 占比（PF-9
+   上下文扫描）、显存分配（§2.1 触发**未获支持**）。
+   **两条遗留**：① **逐 kernel 分解**在本机做不到（nsys 采不到 GPU 活动、ncu 报错、加 sudo 与
+   显式 trace 都无效，#41）→ 记为**能力边界**（工具与自检都在，换机器即可用），不阻塞任何判断；
+   ② **PF-7**（ONNX vs 原生 prefill 的跨构建对照）**已移交 §10.2**——它回答的是"要不要做子图替换"，
+   不属于"decode 时间花在哪"。
 2. **§9.3 采样器参考数据固化**（`scripts/ref_sampler.py` 输出落成 `.bin`）—— 纯 host、无外部前置，
    是 §9.2 的自然收尾。
 3. **§10.1 ONNX / 原生 I/O 契约统一**（ONNX 侧加 `Cast` 把 `input_ids` 降到 INT32）—— 无外部前置，
@@ -1100,11 +1243,12 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 **已知会失败/跳过的测试**（避免新会话误判为回归）：
 
-- 真机（`MINI_TRT_REQUIRE_GPU=1`，**2026-09-27 最近一次全量：235 条 / 1 红（P9_2-5b 之前）**；
+- 真机（`MINI_TRT_REQUIRE_GPU=1`，**2026-09-27 最近一次全量：235 条 / 1 红
+  （P9_2-5b 之前、且 §3.0h 新增 7 项之前）**；
   唯一跳过 = `int8_crosscheck`（缺报告 → ctest 级 77，设计如此）；
-  沙箱 **234 条 / 0 失败，其中 99 条跳过**——含全部 GPU 用例；
-  **P9_2-5b 只改 kernel 内部、未新增 GPU 用例，所以真机要复跑的仍是那 235 条
-  （P9_2-5b 之后只跑过过滤集）**）：
+  沙箱 **242 条 / 0 失败**——含全部 GPU 用例；
+  **P9_2-5b 只改 kernel 内部；§3.0h 新增 7 项（其中 `Gpt2DecodePerf` 是真机用例）→
+  真机复跑应为 243 条**（P9_2-5b 之后真机只跑过过滤集，全量一直没复跑））：
   - `RealGpt2Fp16GreedyMatchesReferenceTokens`：FP16 已知限制的**按设计红**（NaN → token 不符）。
     这是**当前唯一的红**；P9_2-5~7 的 6 条新 GPU 用例（S-12 / S-13 / S-14 / S-15 / S-16 / S-21）
     与其余全部用例都通过。

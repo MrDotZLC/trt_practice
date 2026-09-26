@@ -125,3 +125,64 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/validate/crosscheck_reports.py --self-test)
 endif()
+
+# ---------------------------------------------------------------------------
+# 性能画像 target（`future_iterations.md` §6.3 与 §11 的 G6）
+#
+# 为什么不进默认构建：profile 要独占 GPU、产出体积大的报告，且只有真机才有意义。
+# 所以做成一堆**显式** target（`cmake --build build --target profile_gpt2`）：
+# 不挂在 all 上，也不进 ctest。
+#
+# 报告默认落 /tmp（**不入库**，作者 2026-09-27 决定）：体积大、且与机器态强相关。
+# 完整口径（同轮 ABBA、跨构建报极差、判别下限 ±400~600 µs）见开发计划 §11.3。
+# nsys 跑完会自动导出 kernel / API 摘要并交给 `summarize_nsys.py` 分桶——那张三层表
+# 就是"sampler 在整步 decode 里占多少"的答案（P6_3-4 / PF-4）。
+# ---------------------------------------------------------------------------
+set(MINI_TRT_PROFILE_OUTPUT_DIR "/tmp/mini_trt_llm_profiles" CACHE PATH
+    "profile_* target 的报告输出目录（默认 /tmp，不入库）")
+
+# 分桶脚本的护栏自检：合成 CSV → 已知分桶；名单写错 / 坏输入必须报错。
+# 不需要 GPU，也不依赖任何外部产物 → 沙箱即可跑，因此不用 SKIP_RETURN_CODE。
+if(Python3_Interpreter_FOUND)
+    add_test(NAME profile_summary_selftest
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/profile/summarize_nsys.py --self-test)
+endif()
+
+if(UNIX)
+    set(MINI_TRT_PROFILE_RUNNER
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/profile/run_profile.sh")
+
+    # GPT-2 decode：端到端计时 + kernel 分桶 + 分配开销（开发计划 §11.5 的 P6_3-3~5）。
+    add_custom_target(profile_gpt2
+        COMMAND bash "${MINI_TRT_PROFILE_RUNNER}" nsys gpt2_decode "Gpt2DecodePerf.*"
+                $<TARGET_FILE:mini_trt_llm_tests> "${MINI_TRT_PROFILE_OUTPUT_DIR}"
+        DEPENDS mini_trt_llm_tests
+        COMMENT "nsys: GPT-2 decode 画像（报告落 ${MINI_TRT_PROFILE_OUTPUT_DIR}，不入库）"
+        VERBATIM)
+
+    # ResNet18 / CV：复用既有的 CVRunner benchmark 用例。
+    add_custom_target(profile_resnet18
+        COMMAND bash "${MINI_TRT_PROFILE_RUNNER}" nsys resnet18 "CvRunnerTest.BenchmarkReportsFiniteStats"
+                $<TARGET_FILE:mini_trt_llm_tests> "${MINI_TRT_PROFILE_OUTPUT_DIR}"
+        DEPENDS mini_trt_llm_tests
+        COMMENT "nsys: ResNet18 画像（报告落 ${MINI_TRT_PROFILE_OUTPUT_DIR}，不入库）"
+        VERBATIM)
+
+    # ncu 变体：默认只采 20 个 kernel（整网采集过久）；用 MINI_TRT_NCU_KERNEL_FILTER
+    # 可以只盯我们自己的 kernel（如 "regex:PagedAttention|WriteKV"）。
+    # WSL2 上若报 performance counter 权限错，按 AGENTS.md §1 无头导出后拷 Windows 看。
+    add_custom_target(profile_gpt2_ncu
+        COMMAND bash "${MINI_TRT_PROFILE_RUNNER}" ncu gpt2_decode_ncu "Gpt2DecodePerf.*"
+                $<TARGET_FILE:mini_trt_llm_tests> "${MINI_TRT_PROFILE_OUTPUT_DIR}"
+        DEPENDS mini_trt_llm_tests
+        COMMENT "ncu: GPT-2 decode（报告落 ${MINI_TRT_PROFILE_OUTPUT_DIR}，不入库）"
+        VERBATIM)
+
+    add_custom_target(profile_resnet18_ncu
+        COMMAND bash "${MINI_TRT_PROFILE_RUNNER}" ncu resnet18_ncu "CvRunnerTest.BenchmarkReportsFiniteStats"
+                $<TARGET_FILE:mini_trt_llm_tests> "${MINI_TRT_PROFILE_OUTPUT_DIR}"
+        DEPENDS mini_trt_llm_tests
+        COMMENT "ncu: ResNet18（报告落 ${MINI_TRT_PROFILE_OUTPUT_DIR}，不入库）"
+        VERBATIM)
+endif()

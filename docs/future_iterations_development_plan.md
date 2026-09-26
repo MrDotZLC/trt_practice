@@ -267,9 +267,10 @@
    `file(GLOB ...)`，GLOB 只在 configure 时求值；漏跑的症状是链接期 `undefined reference to vtable`。
 3. **产物或建图变了先删引擎缓存**：`/tmp/mini_trt_llm_*.engine` 只按路径名区分，不随代码失效。
 4. **真机口径固定**：`MINI_TRT_REQUIRE_GPU=1`（否则 GPU 用例静默跳过，等于白跑）。
-   当前基线：**沙箱 215 条 / 0 失败**（**89 条跳过、126 条实际执行**，含新增的脚本项与 host 用例）；
-   真机上次实测 182 条 / 0 跳过 / 1 红（FP16 NaN 复现器，按设计红），加入新用例后应为 204，
-   **待真机复验**（`AGENTS.md` §7：未跑过的不写"通过"）。
+   当前基线：**沙箱 242 条 / 0 失败**（2026-09-27 实测；含 §11 新增的 6 项 host 用例
+   与脚本自检，GPU / P 层用例显式跳过）。真机最近一次全量是 **235 条 / 1 红**
+   （2026-09-27，**在本轮新增 8 项之前**）→ 复跑应为 **243**，**待作者确认**
+   （`AGENTS.md` §7：未跑过的不写"通过"）。
 5. **跳过或失败都要显式**：`MINI_TRT_SKIP_IF_NO_CUDA` / ctest 的 77；缺资产 → 跳过并打印探测结果。
 6. **不擅自删旧模块**：`0_resnet18_onnx/`、`1_gpt2_onnx/` 归作者（Phase 5 已永久取消）。
 7. **阈值纪律**：每个阈值旁写出处；不跨精度复用；放宽前先量"与正确性无关的差异"。
@@ -961,6 +962,374 @@ O(块数 + 一个块)，量级差 100 倍以上，而省掉了一整套 block sc
   缺口归因与可选优化见 §10.9.1。
 
 ---
+
+## 11. decode 端到端性能画像 + G6 可复现测量方法（开发计划）
+
+> **本文档是它唯一的正式计划落点**（沿用 §10 开头记的规则：后续迭代的每个事项都并入
+> `future_iterations*_plan.md` 家族，不新建 per-item 文件）。
+> 配套测试计划见 `future_iterations_test_plan.md` §10。
+> 条目事实来源：`docs/future_iterations.md` **§6.3**（Nsight 一键 profile target）与 **§11 的 G6**
+> （性能无可复现测量方法）；同时收口 §9.2 留下的"sampler 在整步 decode 里占多少"。
+
+### 11.1 计划对账（AGENTS.md §5 第 0 步）
+
+#### 11.1.1 有没有计划文档
+
+**有（就是本节）。** `future_iterations.md` §6.3 与 §11 的 G6 是条目的**唯一事实来源**
+（是什么 / 为什么 / 触发条件）；本节只回答"改哪些文件、分几步、每步怎么自检、哪一步要你批"。
+
+#### 11.1.2 逐条对照：任务 / 接口 / 验收 vs 现状
+
+| 本次要做的 | 文档原文 | 现状（已核实） | 是否一致 |
+|---|---|---|---|
+| 加 profile target | §6.3："CMake 增加 `profile_gpt2`、`profile_resnet18` 自定义 target；支持 `nsys profile` 与 `ncu` 导出 `.ncu-rep`" | **立项时**（2026-09-27 上午）核实：`rg "profile\|nsys\|ncu"` 在两个 CMakeLists 里**零命中**（现已落地，见 §11.5.1） | 一致；本节补文件级改动面与步序 |
+| 建可复现测量方法 | §11 G6："固定机器状态 + 同一 session 内 ≥3 次构建 / ≥20 次推理，报中位数与极差" | 协议未落成文档、无脚本、无 target | **有偏差**：G6 那一行写在 §9.2 之前，**弱于** §9.2 沉淀的协议（见 11.1.3） |
+| 回答"sampler 在整步 decode 占比" | §0.1 / §0.3 第 1 项："§9.2 的 sampler 侧测量已完成，缺的是它在整步 decode 里的占比" | `PROGRESS.md` §3.0d 的性能数字只有 `CVRunner` benchmark（`mean≈8.4 ms`），**没有任何 decode 画像** | 一致（缺口真实存在） |
+
+#### 11.1.3 偏差怎么处理：**先改文档，再写代码**
+
+G6 原文只要求"≥3 次构建 / ≥20 次推理 + 中位数与极差"。§9.2 的四次真机实测证明这还不够：
+
+- **分段 / 单点测量**对"差百分之几"没有判别力（`TROUBLESHOOTING.md` **#37**）；
+- **跨协议 / 跨 session 的差值不能直接比**（#38：同一变体跨 session 漂移 −23.2%）；
+- 判"改动有没有用"必须**同二进制、同轮交替（ABBA）**，并用**斜率** `(T4−T1)/3` 扣掉每窗口固定开销；
+- 本平台这类测量的**判别下限约 ±400~600 µs**。
+
+→ 本轮把 **11.3** 定为 G6 的落地口径，并把 `future_iterations.md` §11 的 G6 行**改指本节**
+（只改"做法"，触发条件与判据不变）。"先改文档"的含义是：**本节写完、且那条引用改完之后才动 CMake / 脚本**。
+
+#### 11.1.4 反向查：文档与现状矛盾之处（当场记）
+
+- **`ncu` 在 WSL2 上的导出策略，现状比 §6.3 的原文更明确。** §6.3 只写"支持 `ncu` 导出 `.ncu-rep`"，
+  而 `AGENTS.md` §1 已定：WSL2 上 `ncu` 可能因 performance counter 权限 / 驱动拿不到，
+  **无头导出（`-o`）再拷到 Windows 宿主机 GUI 看是主路径**。本节按 `AGENTS.md` §1 写，不按 §6.3 的字面。
+- **`detailed_profiling` 会改变引擎指纹 → 触发重建。** `builder.hpp:83` 的 `detailed_profiling`
+  控制 `IEngineInspector` 逐层信息，而它进指纹（`engine_cache.hpp:34`）。
+  → profile 轮次要读逐层信息时，**必须单独一份 engine 路径**，别和生产路径共用
+  （与 `export_diagnostics` 是同一类"改 I/O = 改契约"的纪律，见 `PROGRESS.md` §2.15）。
+
+### 11.2 目标与范围
+
+**目标（一句话）**：建立"同一 session 内可复现"的性能测量方法（G6）+ 一键 profile target（§6.3），
+并用它把 decode 阶段的时间**分解到可归因的粒度**，回答三个待决问题：
+
+1. **sampler 在整步 decode 里占多少**（补 §9.2 的遗留）；
+2. **attention kernel / KV 写入 / 其余 TRT 算子**各占多少（是 §2.2"attention 分块值不值得"的前置）；
+3. `LLMRunner::Generate` 一次调用里有多少 **host 侧分配**（是 §2.1"显存池值不值得动"的前置）。
+
+**范围内**：
+
+- `profile_gpt2` / `profile_resnet18` 两个 CMake custom target（`nsys` + `ncu` 无头导出）；
+- 一份 G6 测量协议（11.3）与一个可重复执行的 decode 计时入口；
+- **首次采集**：GPT-2 FP32、batch = 1 的 decode 分解；ONNX vs 原生 prefill 的可复现对照（G6 的正例）。
+
+**范围外（明确不做）**：
+
+- 不实现 attention / MLP 优化（§2.2）、不实现子图替换（§10.2）——本轮只建"尺子"；
+- 不做 continuous batching / 多请求（§2.3）；
+- 不做 `ncu` 的深层 kernel 调优，只保证"能导出、能打开、能读出 kernel 名与耗时"；
+- **不 profile FP16 路径**——GPT-2 FP16 端到端产 NaN（`PROGRESS.md` §5.11），尺子必须架在可用路径上。
+
+### 11.3 测量协议（G6 的落地口径，**本节是判据出处**）
+
+#### A. 机器状态固定（能固定的部分）
+
+- 一组对照**在同一 session 内**跑完；记录
+  `nvidia-smi --query-gpu=temperature.gpu,clocks.sm,clocks.mem,power.draw --format=csv` 的**前后**读数；
+- WSL2 通常**不能**锁时钟（`nvidia-smi -lgc` 常失败）→ 不假装能锁，改用"同轮交替 + 报极差"抵消漂移；
+- 关掉其它占 GPU 的进程（浏览器硬件加速、其它推理），并记进报告。
+
+#### B. 两类问题、两种测法（不要混用）
+
+| 问题类型 | 例子 | 测法 | 报什么 |
+|---|---|---|---|
+| **同二进制内的 A/B**（"改动 X 有没有用"） | `LaunchTopPSamplerTwoLevel` vs 生产版 | 两个变体**编进同一个二进制**，同一轮里正反交替（ABBA）；每个变体每轮测"发射 1 次"与"发射 4 次"两个窗口 | `(T4−T1)/3` = **净成本（斜率）** 的中位数 + p25/p75；现成对照见 §9.2 / `TROUBLESHOOTING.md` #38 |
+| **跨构建对照**（"两条路谁快"） | ONNX vs 原生 prefill | 同一 session 内**各自 ≥3 次独立构建**，每次构建 **≥20 次推理** | 每次构建的中位数 + 全部中位数的**极差**；极差 > 中位数之差 → 判"**未定**" |
+
+#### C. 判别下限（写死，避免事后改口）
+
+- 本平台这类"整步 decode / 采样"测量的**判别下限约 ±400~600 µs**（`TROUBLESHOOTING.md` #37 / #38 实测）；
+- 观测到的效应若低于该下限 → 结论写"**无显著差异**"，**不许**写成"更快 / 更慢 X%"；
+- 若"隔离计时"与"nsys 时间线"两口径方向相反 → 以**隔离计时**为准（nsys 有采样开销），并在报告里标注两口径。
+
+#### D. 报告格式（缺一项就不算完成）
+
+每次测完必须写出：① 引擎 / 形状 / 精度（batch、seq、vocab、FP32/FP16）；
+② 构建态（`Engine cache hit` 还是 `stale` + 重建）；③ n 与 warmup；
+④ 中位数 + p25/p75（或 min/max）；⑤ 温度 / 时钟前后值；⑥ 命令原文。
+
+#### E. 引擎缓存纪律
+
+profile 前先跑一遍让缓存热起来（确认日志是 `Engine cache hit`）；若要 `detailed_profiling`，
+**新开一条 engine 路径**，不要覆盖生产引擎（它进指纹，会触发重建）。
+
+### 11.4 分解口径（怎么把 kernel 时间归因，避免"看起来像真故障"的数字）
+
+TRT 内部 kernel 名（`genericNode_*` / tactic 名）**不携带语义**，硬贴"attention / MLP"标签就是
+`PROGRESS.md` §2.14 C 警告过的"诊断比错对象更危险"。所以本轮只做**能自证的三层**：
+
+| 层 | 成员 | 怎么识别（自证方式） |
+|---|---|---|
+| **① 我们的 kernel** | `PagedAttentionDecodeKernel`（attention）、`WriteKVKernel`（KV 写入）、`AdvanceContextLensKernel`、`FillPositionIdsKernel`、采样器 kernel（`GreedyKernel` / `TopPParallelSampleKernel` / `TopKSampleKernel` / `PrepareSortInputKernel`） | 全部来自 `rg "__global__ void" mini_trt_llm/src/`，每个都对应一行我们自己的代码 |
+| **② CUB** | `cub::DeviceSegmentedSortKernel*` / `DeviceSegmentedRadixSort*` 等 | 符号名带 `cub::`；这是 Top-K / Top-P 保留的排序 |
+| **③ TRT 内部** | 其余全部（matmul / LN / GELU / embedding gather / softmax …） | 只按**耗时排序**列出前 N 条，**不**做语义归因；要语义就读 `IEngineInspector` 逐层信息（需 `detailed_profiling`，见 11.1.4） |
+
+**回答三个待决问题的方法**：
+
+- "sampler 占比" =（①里采样器 kernel 时间之和）/（decode 一步的总 GPU 时间）；
+- "attention / KV 占比" = ①里对应 kernel 之和 / 总时间；
+- "分配开销" = 在 `Generate` 入口 / 出口各插一个 host 侧计时点，统计 `cudaMalloc` / `cudaFree` 的
+  **次数与总耗时**（**不**从 nsys 里猜）。
+
+#### 11.4.1 逐 kernel 分解不可得时的替代：**上下文长度扫描**（2026-09-27 新增）
+
+**背景**：① ~ ③ 的表依赖 profiler 的 kernel 时间线；而本例已证实在本机拿不到
+（nsys 无 GPU 活动、ncu 报错、加 sudo 与显式 `--trace=cuda` 都无效，见 `TROUBLESHOOTING.md` #41）。
+**§2.2 要的那个数（attention 占多少）换一个只靠计时的办法拿：**
+
+- **原理**：attention 的开销随**已缓存的位置数**增长；而每步的 matmul / LayerNorm / GELU /
+  KV 写入 / 位置填充 / 采样都与上下文无关。于是
+  `每步耗时(长上下文) − 每步耗时(短上下文)` 的差值 ≈ **attention 的边际成本**，
+  再除以上下文差就是"每 1000 个位置涨多少毫秒"。
+- **为什么可信**：`LLMRunner::Generate` 每次调用开头都 `FreeSequence` + 重新 `AllocateSequence`
+  （`src/core/llm_runner.cpp`），所以**每次调用的上下文都是从 prompt 长度重新开始**的，
+  prompt 长度直接决定上下文区间——不需要额外改 runner。
+- **实现要点**：prompt ∈ {4, 256, 960}；每个长度按 `(T(32)−T(1))/31` 取每步耗时
+  （与 §9.2 同一套斜率口径）；**只打印，不设阈值**。
+  prefill 引擎需要 `max_prefill_seq_len ≥ 992` → **单独一条引擎路径**（不动主用例缓存的两个）；
+  decode 引擎与上下文无关，可复用主用例那份（命中缓存）。
+- **边界（必须一起读）**：
+  1. 它给的是 **attention 随上下文增长的部分**，不是"attention 的绝对时间"；两者在
+     短上下文下差异不大，但要写清楚；
+  2. prefill 的 `opt` 形状对 kernel 选择有影响，三个 prompt 用**同一个引擎**，
+     所以横向比较自洽，但绝对值不能与其它用例的引擎直接比；
+  3. 仍然只在**同一 session** 内可比（decode 步跨 session 已见 ±27%）。
+
+### 11.5 任务分解（P6_3-0 ~ P6_3-7）
+
+| 编号 | 任务 | 层 | 自检点 |
+|---|---|---|---|
+| **P6_3-0** | **仪器先行**：确认 WSL2 上 `nsys` / `ncu` 可用，且无头导出能产出可读报告（拿一个平凡进程试，别拿 GPT-2 试） | G | 报告文件存在、能在宿主机打开；`ncu` 若报 counter 权限则记进报告（按 `AGENTS.md` §1 走无头导出） |
+| **P6_3-1** | 协议定稿：把 11.3 / 11.4 写进本节 + 测试计划 §10 | —— | 判据旁能回答"凭什么"（出处 = #37 / #38） |
+| **P6_3-2** | CMake custom target：`profile_gpt2` / `profile_resnet18`（nsys + ncu 无头导出到 `/tmp/mini_trt_llm_profiles/`） | G | target 能跑、输出名带时间戳；**不进默认构建** |
+| **P6_3-3** | decode 计时入口：复用 `SamplerPerf` 的 harness 形态（warmup 3 + n ≥ 15 + 中位数 / p25 / p75）做端到端 decode 计时（prompt = 文本用例的固定提示，生成 N = 32 token） | G | 与 profile target 用同一个二进制 / 过滤器；"循环内零 H2D/D2H"这条不动 |
+| **P6_3-4** | 首次 decode 分解（nsys）：GPT-2 FP32 / batch = 1，输出 11.4 的三层分解 + TRT 前 N 条 kernel | G | 三层时间之和 vs 总时间的偏差写出；两口径都给 |
+| **P6_3-5** | §2.1 的分配开销测量（与 P6_3-4 **同一次真机**顺带）：统计 `Generate` 的分配次数与耗时 | G | 为"要不要做显存池"供数；**本轮不改实现** |
+| **P6_3-6** | G6 正例：ONNX vs 原生 prefill 的可复现对照（≥3 次构建 / ≥20 次推理，报中位数与极差），回答 §10.2 的前提 | G | 极差 > 差值 → 写"未定"（这正是 G6 存在的目的） |
+| **P6_3-7** | 回填：`future_iterations.md` §6.3 / §11、`PROGRESS.md` §3、`TROUBLESHOOTING.md`（若有坑） | —— | 只写"状态 + 实测值 + 出处" |
+
+#### 11.5.1 实施记录（2026-09-27，Agent 侧）
+
+> **分工**：Agent 侧无 GPU，只能做"代码 / 脚本 / host 用例 + 构建验证"；
+> 真机执行（P6_3-0、P6_3-4 ~ P6_3-6）由作者完成。**未跑过的一律不写"通过"**。
+>
+> **状态列已作废（2026-09-27）**：本表只回答"落点在哪"，**状态以 §11.5.2 为唯一来源**——
+> 这里原先写的"真机未跑"等字样在真机执行后没有回改，两处并存会互相矛盾（本项目已经吃过
+> "文档与现状不符"的亏）。所以下面每行只留一个 ⬜/✅ 摘要，**细节一律看 §11.5.2**。
+
+| 任务 | 状态 | 落点 |
+|---|---|---|
+| P6_3-1 协议定稿 | ✅（详见 §11.5.2） | 本节 11.3 / 11.4 + 测试计划 §10（`future_iterations.md` §11 的 G6 行已改指此处） |
+| P6_3-2 profile target | ✅（详见 §11.5.2） | `tools/profile/run_profile.sh`（nsys / ncu 一键：时间戳、温度 / 时钟、自动导出 kernel 与 API 摘要）；`tests/CMakeLists.txt` 的 `profile_gpt2` / `profile_resnet18` / `profile_gpt2_ncu` / `profile_resnet18_ncu`（**不进默认构建**） |
+| P6_3-3 decode 计时入口 | ✅（详见 §11.5.2） | `tests/test_decode_perf.cpp` 的 `Gpt2DecodePerf.StepLatencyByPhase`（P 层：只打印；用斜率 `(T32−T1)/31` 分离 prefill 与 decode） |
+| P6_3-4 kernel 分解 | ⬜ 本机不可达（详见 §11.5.2） | `tools/profile/summarize_nsys.py`：三层分桶（我们的 kernel / CUB / TRT）+ sampler / attention / KV 占比；`--self-test` 已注册 ctest 项 `profile_summary_selftest`。**本机两条 CLI 路径都拿不到 kernel 时间线** → `TROUBLESHOOTING.md` #41 |
+| P6_3-5 分配开销 | ✅（详见 §11.5.2） | 同一脚本的 `--api` 模式：`cudaMalloc` / `cudaFree` 的次数与总耗时（为 §2.1 供数） |
+| P6_3-6 G6 跨构建对照 | ➡️ **已移交 §10.2**（详见 §11.5.2） | 协议见 11.3 B；无新代码。这项服务的是"要不要做 ONNX 子图替换"，**不属于 §11 的收口范围** |
+| P6_3-7 回填 | ✅（详见 §11.5.2） | —— |
+| P6_3-0 仪器自证 | ✅（详见 §11.5.2） | 结论：**本机采不到 GPU kernel 时间线**（#41）；脚本 / target 本身可用。Agent 沙箱里 `nsys` 一跑即报 `open: Operation not permitted` |
+
+**沙箱实测（2026-09-27）**：`ctest --test-dir build` → **242 条 / 0 失败**
+（新增 5 条 `PerfStatsTest.*` 实跑通过、1 条 `Gpt2DecodePerf.StepLatencyByPhase` 无 GPU 显式跳过、
+1 条 `profile_summary_selftest` 通过）。
+
+**落地时与上文计划的两处偏差（先记，原因写清）**：
+
+1. **分配开销改为读 nsys 的 `cuda_api_sum`**，不在 `Generate` 里插桩。**为什么**：插桩要改产品代码，
+   而本轮定的是"零产品代码改动"；CUDA API 计数是 nsys 的**精确拦截**，与 11.4 禁止的
+   "从 kernel 名猜语义"不是一回事。
+2. **`profile_*_ncu` 默认只采 20 个 kernel**（`MINI_TRT_NCU_LAUNCH_COUNT` /
+   `MINI_TRT_NCU_KERNEL_FILTER` 可覆盖）。**为什么**：整网 ncu 采集过久，本轮只要
+   "导出路径打通、能读出 kernel 名与耗时"，不做深层调优。
+
+**真机第一次执行（2026-09-27，作者；三个发现、两个当场修）**：
+
+1. **`profile_gpt2` 失败，原因在被测用例而不在 nsys**：`nsys` 会**透传被 profile 程序的退出码**，
+   ninja 的失败即等于 `Gpt2DecodePerf` 红了。用 `nsys stats --report cuda_api_sum` 后处理那份
+   已生成的报告（**无需 GPU**）看到 30921 次 `cudaLaunchKernel` → 用例其实跑完了全部测量，
+   红在我新加的 `EXPECT_LT(|Δmedian|, 0.6 ms)`。
+   **这是我自己的错**：`0.6 ms` 是**采样器类**比较的判别下限（#37 / #38），被我套到量级大
+   一到两个数量级的**整步 decode** 上——`AGENTS.md` §7 明令禁止的"阈值跨场景复用"，
+   也违反本节"P 层只打印、不设阈值"。**已改为只打印**绝对 + 相对漂移。
+2. **"假 CSV"**：`nsys stats` 自身的 `Generating SQLite...` / `Processing [...]` 走 **stdout**，
+   和 CSV 混在一起；resnet18 那两份摘要其实只有这几行消息（`kern_sum.csv` 仅 415 B）。
+   **已改为**"先写临时文件、确认有 `Total Time` 表头才落正式名"。
+3. **WSL2 拿不到 GPU kernel 时间线**：`cuda_gpu_kern_sum` 直接 `SKIPPED: ... does not contain
+   CUDA kernel data.`（两次运行都一样）；**CUDA API 摘要是好的**。
+   → **P6_3-4（三层分解）在本平台受阻**：`profile_gpt2_ncu` 也失败
+   （`==ERROR== Unknown Error on device 0.`，无 `.ncu-rep`），**且把 `.nsys-rep` 拷到 Windows
+   也看不到 kernel 时间线**——报告里压根没有那份数据（#41 更正了 #39 的说法）。可行绕法见 #41
+   （推荐先用"同 session 的 `SamplerPerf` + 本用例取比值"）。**P6_3-5（分配开销）不受影响**。
+
+另外两处可用性已修：被 profile 进程的输出（gtest + TRT + nsys）一律落 `${base}.app.log`，
+终端只回 ≤20 行摘要（不再"满屏看不到原因"）；去掉 `nsys profile --stats=true`。
+完整定位路径与教训见 `docs/TROUBLESHOOTING.md` **#39**。
+
+**第一次成功出数（2026-09-27，修完重跑；引擎 `cache hit` ×2、无重建）**：
+
+| 量 | 值（n=15，warmup=3，每轮 ABBA；取自 `gpt2_decode_20260927_050355`） |
+|---|---|
+| T(1)（prefill 4 token + 1 个 decode 步） | median **4.947 ms**（p25 4.730 / p75 6.298，max 8.372） |
+| T(32) | median **93.190 ms**（p25 90.109 / p75 103.367，max 134.839） |
+| 派生 decode 每步（斜率 `(T32−T1)/31`） | **2.847 ms** |
+| 派生 prefill（4 token） | ≈ **2.100 ms** |
+
+**四个结论（含一个仍缺的）**：
+
+1. **这台机器在一次测量内就有 10~18% 的漂移**：同 session 两组测量的 `|Δmedian|` =
+   **0.917 ms (18.5%)** / T(1)、**9.478 ms (10.2%)** / T(32)；同期 GPU 从 72 °C / 44.5 W
+   升到 78 °C / 65.7 W（时钟 1875→1860 MHz）。→ **机器没进稳态**；整步 decode 的比较
+   **必须**同轮交替 + 报告漂移；§11.3 C 的 ±400~600 µs 下限**绝不能**套到这一量级
+   （这正是 #39 的教训）。
+2. **batch=1 的 decode 是"每步固定开销主导"，不是 token 数学主导**：prefill 一次算 4 个 token
+   约 2.10 ms，而 decode 每 token 要 2.85 ms；本次运行 ~30921 次 `cudaLaunchKernel`（~26 次/步）。
+   **假设**是 launch / 固定开销占大头，但**要等 kernel 时间线才能定论**。
+3. **§2.1（显存池）的触发条件未获支持**：`cudaMalloc` 全程 63 次 / 3.335 ms、`cudaFree`
+   69 次 / 249.7 ms（**含隐式同步，是拆除期成本，不是分配器成本**）→ 没有"频繁分配拖慢
+   decode"的证据；要定论还需把 `api_sum` 按"建引擎期 / `Generate` 期"拆开。
+4. **逐 kernel 分解仍缺，但"sampler 占多少"这一问已用绕法补上**：nsys 报告不含 GPU kernel 数据、
+   `profile_gpt2_ncu` 同样失败（`Unknown Error on device 0`），且**拷到 Windows 也救不了**
+   （数据没被采集）→ 逐 kernel 时间线仍拿不到（#41）。
+   已按 #41 的**绕法 1 实现**：`Gpt2DecodePerf` 在**同一次运行**里再量 greedy / top-k(k=64) /
+   top-p(p=0.9) 的净成本（斜率 `(T4−T1)/3`、正反交替、n=9），直接打印**占 decode 每步的比例**
+   （测试计划 **PF-8**）。**边界**：这是比值、不是分解，attention / MLP 仍包在"decode 一步"里，
+   且 sampler 在静态 logits 缓冲上量（cache 状态与真实循环不同）。
+   **真机结果（2026-09-27，已复核）**：decode 步 **2.458 ms**；greedy **0.0308 ms（1.25%）**、
+   top-k(64) **0.4360 ms（17.7%）**、top-p(0.9) **0.4938 ms（20.1%）**。
+   与 `SamplerPerf` 在**同一 session** 内互校一致（0.4281 / 0.4916，差 ≤2%）。
+   **首版用全零 logits 曾给出 0.92% / 4.75% / 6.35%（差 2.5×）——那是退化输入，已作废；
+   根因与推理见 `TROUBLESHOOTING.md` #42。**
+   **注意量级边界**：decode 步本身跨 session 已见 2.458 / 2.847 / 3.365 ms（±27%）→
+   占比**只在同一 session 内可比**。
+
+**§11.4.1 上下文扫描的执行结果（2026-09-27 真机，测试计划 PF-9）**：
+
+| prompt | 平均上下文 | 每步 decode |
+|---|---|---|
+| 4 | 20.5 | **3.055 ms** |
+| 256 | 272.5 | **6.062 ms** |
+| 960 | 976.5 | **14.705 ms** |
+
+- 两段斜率 **11.93 / 12.28 ms per 1000 位置**（差 3%）→ **线性**，外推 1024 = +12.2 ms
+  → **长上下文下 attention ≈ 每步 80%**；**§2.2 的触发条件据此成立，已从 P3 升 P2**
+  （`future_iterations.md` §0.1 / §0.2 / §0.3 第 14 项）。
+- **机制**：`LaunchPagedAttention` 的 `grid=(num_heads, batch)` → 每层 12 个 block，
+  本机 24 个 SM（一半闲置）；每块 64 线程串行走完上下文 → 延迟受限，有效带宽 ≈6 GB/s
+  （约峰值的 3%）。方向 = **把上下文维切开并行**（FlashDecoding 式 split-K）。
+- **踩到并修掉的一个自伤**：最初这条用例只给 prefill 换了引擎路径、decode 复用主用例那条，
+  但**指纹覆盖整个 `EngineBuilder::Config`**（含 prefill 的 seq 参数）→ 真机日志直接出现
+  `Engine cache stale: gpt2_real_decode.engine → 重建`，两个用例会**交替**判对方过期、
+  每次来回都重建一次（分钟级）。已改成两条都用自己的路径
+  （`..._ctxsweep_{prefill,decode}.engine`）——这正是 `PROGRESS.md` §2.15
+  "缓存路径不得在不同配置间共用"那条规矩，这次是**自己踩给自己看**。
+- **两条边界**（写给引用这些数的人）：① 这是 attention **随上下文增长的部分**，
+  不是它的绝对时间；② 这些比值**只在同一 session 内可比**，且 sampler 那个 17~20%
+  是**短上下文**下的比例——长上下文下分母变成 14.7 ms，同样的 sampler 只占 ≈3%。
+
+#### 11.5.2 §11 收口状态（2026-09-27）
+
+> 有人问过"§11.5 算完成了吗"——**答案是"目标达成，但有一项没跑"**。逐条列清楚，免得下个会话重推。
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| P6_3-0 仪器自证 | ✅ 完成 | 结论：**WSL2 采不到 GPU kernel 时间线**（nsys 无 GPU 活动、ncu 报错、sudo 与显式 `--trace=cuda` 都无效）→ `TROUBLESHOOTING.md` #41 |
+| P6_3-1 协议定稿 | ✅ 完成 | §11.3 / §11.4 |
+| P6_3-2 profile target | ✅ 完成 | 四个 target 跑通，摘要导出与"假 CSV"问题已修（#39） |
+| P6_3-3 decode 计时入口 | ✅ 完成并出数 | PF-3：T(1)/T(32)/每步/漂移都打印 |
+| P6_3-4 nsys 三层分解 | ❌ **本机不可达** | 但**目的已达成**：sampler 占比 → PF-8（真机出数并互校）；attention 占比 → PF-9（上下文扫描） |
+| P6_3-5 分配开销 | ✅ 有数据 | `cuda_api_sum`（精确拦截）；结论：**§2.1 的触发条件未获支持** |
+| P6_3-6 G6 跨构建对照 | ➡️ **已移交 §10.2** | PF-7（ONNX vs 原生 prefill，≥3 构建 / ≥20 推理）**没跑，但它回答的是"要不要做 ONNX 子图替换"**，与本节的"decode 时间花在哪"无关 → 移交到 §10.2 的前置条件（`future_iterations.md` §0.1 / §10.2） |
+| P6_3-7 回填 | ✅ 完成 | 除 P6_3-6 无数据可填 |
+
+**结论**：`future_iterations.md` §6.3（profile target）与 G6（可复现测量方法）**目标已达成**——
+测量方法建立、被 PF-8/PF-9 两次实际使用并给出结论（含一次纠错 #42）。
+
+**收口决定（2026-09-27）：§11 关闭。** 理由与边界如下——
+
+1. **目标达成**：§11 存在的理由是"把 decode 的时间花在哪从'不知道'变成'知道'，并留下可复现的尺子"。
+   两件都做到了；**尺子自己抓到过一次测量错误（#42）**，这是它可用的最硬证据。
+2. **P6_3-4 记为"能力边界"而非"未完成"**：工具写好、自检过、报告能生成，缺的只是
+   "有 GPU 跟踪能力的机器"（#41 已证本机做不到）。换一台能采 GPU 时间线的机器即可直接用。
+3. **P6_3-6 / PF-7 移交 §10.2**：它回答的是"要不要做 ONNX 子图替换"，与"decode 时间花在哪"无关；
+   挂在 §11 里会让一个已完成的章节永远收不了尾。**移交后 §10.2 的前置 = 先跑 PF-7**。
+4. **引用这些数时的三条纪律**（写给下一个人）：① 占比**只在同一 session 内可比**
+   （decode 步跨 session 已见 ±27%）；② sampler 的 17~20% 是**短上下文**下的比例，
+   长上下文下分母变大、它只占 ≈3%；③ "attention ≈80%" 是**随上下文增长的边际部分**。
+
+### 11.6 验收判据（每条都要能回答"凭什么"）
+
+| 判据 | 值 / 形式 | 凭什么 |
+|---|---|---|
+| nsys 无头导出可用 | `.nsys-rep` 存在且非空；`--stats=true` 能在无 GUI 下打出 kernel 摘要 | `AGENTS.md` §1 的无头导出策略 |
+| ncu 无头导出可用 | `.ncu-rep` 存在；**本机实测不可用**（`Unknown Error on device 0`）→ 记为已知限制而非通过 | `TROUBLESHOOTING.md` #41 |
+| 同二进制 A/B 可判 | 两次 ABBA 的中位数之差 **> ±400~600 µs** 才算"有差异" | `TROUBLESHOOTING.md` #37 / #38 的真机实测下限 |
+| 跨构建对照可判 | 同一 session 内 ≥3 次构建的中位数**极差** < 两组中位数之差 → 可判；否则"未定" | G6 原文（`future_iterations.md` §11）；这是 G6 存在的理由 |
+| 分解可复核 | 三层时间之和 vs 总时间的偏差写出来；命令、引擎指纹状态、形状、n 全给 | `PROGRESS.md` §2.14 C"诊断必须自证" |
+| sampler 占比有结论 | 给出中位数与区间（**观测值，不设阈值**） | 这是"回答一问"，不是"达标判据"；设阈值会退化成 §7 禁止的判据 |
+| 生产路径不受影响 | profile target 不进默认构建；`detailed_profiling` 用独立 engine 路径 | `PROGRESS.md` §2.15（改 I/O / 指纹 = 改契约） |
+
+### 11.7 风险与回退
+
+| 风险 | 影响 | 缓解 / 回退 |
+|---|---|---|
+| WSL2 上 `ncu` 拿不到 performance counter | **kernel 级时间线整体缺失**（nsys 同病） | 走 #41 的绕法：同 session 的 `SamplerPerf` + 本用例取比值（不改产品代码）；或在 Windows 宿主侧采集；或改产品代码插桩（须单独立项） |
+| nsys 采样开销改变读数 | 与隔离计时口径不符 | 两口径都报、以隔离计时为准（11.3 C） |
+| TRT kernel 名无语义 | 分解被硬贴标签 | 只做 11.4 的三层；要语义就读 `IEngineInspector`（独立 engine） |
+| 首次构建分钟级 + tactic 随机器状态变 | 跨构建结论不可复现 | 先 warm cache；跨构建必须报极差，极差大就判"未定" |
+| 温度 / 功耗漂移被当成改动效果 | 假结论 | 同轮 ABBA + 记录温度 / 时钟（11.3 A / D） |
+| profile 轮次顺手改了实现 | 尺子与对象混在一起 | 本轮**零产品代码改动**；发现真瓶颈只登记，留给 §2.2 / §10.2 |
+
+### 11.8 破坏性动作清单（**动手前一次性确认**）
+
+按 `AGENTS.md` §0.5：下面每条都要单独获批，**不**因为"计划里写了"就自动生效。
+
+1. **改构建脚本**：修改 `mini_trt_llm/CMakeLists.txt`（和 / 或 `tests/CMakeLists.txt`）新增 profile target；
+2. **新增 profile 输出目录**（默认 `/tmp/mini_trt_llm_profiles/`，**不入库**）；
+3. **可能新增计时入口**：若放在 `tests/` 下（新文件或改 `test_gpt2_generate.cpp`）→ 新增源文件**必须重跑 configure**；
+4. **删除 / 重建引擎缓存**：`/tmp/mini_trt_llm_gpt2_*.engine`（只在需要固定构建态时；单列获批）；
+5. **真机执行 profiling / ncu**：属"单测外的测试任务"，按 `AGENTS.md` §0.3 **须先获批**；
+6. **是否把报告入库**：默认**不入库**（体积大）；若要入库，`.gitignore` 也要改 → 单独确认。
+
+> **执行结果（2026-09-27，作者批准 1~5、明确"报告不入库"）**：
+> 1 / 2 / 3 已落地（见 §11.5.1 的落点表）；4 与 5 属真机动作，**尚未执行**；
+> 6 按"不入库"执行——报告与摘要一律落 `/tmp/mini_trt_llm_profiles/`，`.gitignore` 未改。
+
+### 11.9 真机执行清单（**待作者执行**；Agent 侧无 GPU）
+
+```bash
+# 0) 构建（不改产品代码时先跑一遍让引擎缓存热起来）
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=75 -DBUILD_TESTS=ON
+cmake --build build -j$(nproc)
+
+# 1) 仪器自证（P6_3-0）：先拿平凡进程确认 nsys / ncu 能无头导出
+nsys profile -o /tmp/mini_trt_llm_profiles/smoke_nsys true
+# ncu 在本机不可用（`Unknown Error on device 0`，见 TROUBLESHOOTING #41）——
+# 别指望"拷到 Windows 看"：报告根本没生成，nsys 那份也没采到 kernel 数据
+
+# 2) decode 分解（P6_3-4）：profile 固定过滤器下的用例
+nsys profile --stats=true -o /tmp/mini_trt_llm_profiles/gpt2_decode \
+    ./build/mini_trt_llm/tests/mini_trt_llm_tests \
+    --gtest_filter='<P6_3-3 的过滤器>'
+
+# 3) G6 跨构建对照（P6_3-6）：同一 session 内各构建 3 次、每次推理 ≥20 次
+#    每次都记录：Engine cache hit/stale、中位数、极差、温度 / 时钟
+
+# 4) 回填（把 11.3 D 的六项 + 11.4 的三层分解贴回来）
+```
+
+- **每轮只改一个变量**（`PROGRESS.md` §2.14 C）；
+- **真机跑全量仍要带 `MINI_TRT_REQUIRE_GPU=1`**；
+- 报告先落 `/tmp`，确认无敏感信息再谈是否入库。
+
 ---
 
-*本计划只含执行安排与纪律；条目目标与触发条件的唯一来源仍是 `docs/future_iterations.md` §9.2。*
+*本计划只含执行安排与纪律；各条目目标与触发条件的唯一来源仍是 `docs/future_iterations.md`。*

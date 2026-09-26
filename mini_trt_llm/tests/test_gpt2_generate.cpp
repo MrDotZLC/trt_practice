@@ -394,14 +394,15 @@ TEST(Gpt2GenerateTest, RealGpt2Fp16GreedyMatchesReferenceTokens) {
 
     const std::string prefill_path = "/tmp/mini_trt_llm_gpt2_real_prefill_fp16.engine";
     const std::string decode_path = "/tmp/mini_trt_llm_gpt2_real_decode_fp16.engine";
-    if (!std::filesystem::exists(prefill_path)) {
-        ASSERT_TRUE(builder.BuildFromConfig(dir, prefill_path, BuildStage::kPrefill))
-            << "FP16 prefill 引擎构建失败";
-    }
-    if (!std::filesystem::exists(decode_path)) {
-        ASSERT_TRUE(builder.BuildFromConfig(dir, decode_path, BuildStage::kDecode))
-            << "FP16 decode 引擎构建失败";
-    }
+    // **无条件调用 BuildFromConfig**：判断"能不能复用"是引擎缓存指纹的职责
+    // （入口自己比指纹 → `Engine cache hit` 或 `stale`+重建），"文件存在"不等于
+    // "引擎还新鲜"。曾经这里有 `if (!exists) {...}` 的门：引擎文件在、但代码或配置
+    // 已变时，用例会**安静地拿旧引擎跑**，结论全部作废——那正是指纹要堵的坑。
+    // 见 `docs/TROUBLESHOOTING.md` #40 与 `PROGRESS.md` §3.0f。
+    ASSERT_TRUE(builder.BuildFromConfig(dir, prefill_path, BuildStage::kPrefill))
+        << "FP16 prefill 引擎构建失败";
+    ASSERT_TRUE(builder.BuildFromConfig(dir, decode_path, BuildStage::kDecode))
+        << "FP16 decode 引擎构建失败";
 
     LLMRunner::Config runner_config;
     runner_config.num_layers = kRealLayers;
@@ -467,9 +468,8 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
     // 引擎路径必须与 `RealGpt2Fp16Greedy...` 用的那个分开：引擎缓存只按路径名区分、
     // 不随代码或开关失效，共用一条路径会让"要诊断输出"与"不要诊断输出"互相踩成假结果。
     const std::string prefill_path = "/tmp/mini_trt_llm_gpt2_real_prefill_fp16_diag.engine";
-    if (!std::filesystem::exists(prefill_path)) {
-        ASSERT_TRUE(builder.BuildFromConfig(dir, prefill_path, BuildStage::kPrefill));
-    }
+    // 同 `RealGpt2Fp16Greedy...`：复用与否交给指纹，不做"文件存在就跳过"（#40）。
+    ASSERT_TRUE(builder.BuildFromConfig(dir, prefill_path, BuildStage::kPrefill));
     Engine engine(prefill_path, logger);
     nvinfer1::ICudaEngine* cuda = engine.GetCudaEngine();
     ASSERT_NE(cuda, nullptr);
