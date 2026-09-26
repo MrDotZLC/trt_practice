@@ -3,6 +3,7 @@
 #include "mini_trt_llm/sampler/sampler_common.hpp"
 #include "mini_trt_llm/utils/cuda_check.hpp"
 #include "mini_trt_llm/utils/memory_pool.hpp"
+#include "sampler_test_support.hpp"
 #include "test_gpu_guard.hpp"
 #include "test_reference.hpp"
 
@@ -47,6 +48,84 @@ void RequireAllocate(DeviceBuffer& buffer, size_t bytes) {
 
 float DeterministicValue(int64_t index, float phase) {
     return std::sin(0.41f * static_cast<float>(index) + phase) * 0.6f;
+}
+
+// 采样用例的固定 seed：Q12 要求参考结果可复现（与 test_sampler.cpp 的 kSeed 同值）。
+constexpr uint64_t kSamplerSeed = 42;
+
+// 在同一份 logits 上按指定精度连续抽 draws 次（offset 递增 = 同一随机流的连续抽样），
+// 返回词表计数。比 test_sampler.cpp 的 CollectTokenCounts 多一个 is_half 维度，
+// 其余口径（每次一 draw、固定 seed）保持一致。
+std::vector<int32_t> CollectTopPTokenCounts(const void* device_logits, bool is_half, int32_t vocab,
+                                            float p, int32_t draws) {
+    const size_t workspace_bytes = TopPSamplerWorkspaceBytes(1, vocab);
+    DeviceBuffer d_p(sizeof(float));
+    DeviceBuffer d_tokens(sizeof(int32_t));
+    DeviceBuffer workspace(workspace_bytes);
+    RequireAllocate(d_p, sizeof(float));
+    RequireAllocate(d_tokens, sizeof(int32_t));
+    RequireAllocate(workspace, workspace_bytes);
+    CUDA_CHECK(cudaMemcpy(d_p.data(), &p, sizeof(float), cudaMemcpyHostToDevice));
+
+    TopPSamplerArgs args;
+    args.logits = device_logits;
+    args.token_ids = static_cast<int32_t*>(d_tokens.data());
+    args.top_p = static_cast<const float*>(d_p.data());
+    args.batch_size = 1;
+    args.vocab_size = vocab;
+    args.is_half = is_half;
+    args.seed = kSamplerSeed;
+
+    std::vector<int32_t> counts(static_cast<size_t>(vocab), 0);
+    for (int32_t draw = 0; draw < draws; ++draw) {
+        args.offset = static_cast<uint64_t>(draw);
+        CUDA_CHECK(LaunchTopPSampler(args, nullptr, workspace.data(), workspace_bytes));
+        CUDA_CHECK(cudaDeviceSynchronize());
+        int32_t token = -1;
+        CUDA_CHECK(cudaMemcpy(&token, d_tokens.data(), sizeof(int32_t), cudaMemcpyDeviceToHost));
+        if (token < 0 || token >= vocab) {
+            throw std::runtime_error("fp16 top-p: sampled token out of range");
+        }
+        ++counts[static_cast<size_t>(token)];
+    }
+    return counts;
+}
+
+// Top-K 版（同上，多一个 per-batch 的 k）。走生产入口 `LaunchTopKSampler`（CUB 分段排序
+// + 逐行采样），即 `LLMRunner` 实际使用的那条路。
+std::vector<int32_t> CollectTopKTokenCounts(const void* device_logits, bool is_half, int32_t vocab,
+                                            int32_t k, int32_t draws) {
+    const size_t workspace_bytes = TopKSamplerWorkspaceBytes(1, vocab);
+    DeviceBuffer d_k(sizeof(int32_t));
+    DeviceBuffer d_tokens(sizeof(int32_t));
+    DeviceBuffer workspace(workspace_bytes);
+    RequireAllocate(d_k, sizeof(int32_t));
+    RequireAllocate(d_tokens, sizeof(int32_t));
+    RequireAllocate(workspace, workspace_bytes);
+    CUDA_CHECK(cudaMemcpy(d_k.data(), &k, sizeof(int32_t), cudaMemcpyHostToDevice));
+
+    TopKSamplerArgs args;
+    args.logits = device_logits;
+    args.token_ids = static_cast<int32_t*>(d_tokens.data());
+    args.top_k = static_cast<const int32_t*>(d_k.data());
+    args.batch_size = 1;
+    args.vocab_size = vocab;
+    args.is_half = is_half;
+    args.seed = kSamplerSeed;
+
+    std::vector<int32_t> counts(static_cast<size_t>(vocab), 0);
+    for (int32_t draw = 0; draw < draws; ++draw) {
+        args.offset = static_cast<uint64_t>(draw);
+        CUDA_CHECK(LaunchTopKSampler(args, nullptr, workspace.data(), workspace_bytes));
+        CUDA_CHECK(cudaDeviceSynchronize());
+        int32_t token = -1;
+        CUDA_CHECK(cudaMemcpy(&token, d_tokens.data(), sizeof(int32_t), cudaMemcpyDeviceToHost));
+        if (token < 0 || token >= vocab) {
+            throw std::runtime_error("fp16 top-k: sampled token out of range");
+        }
+        ++counts[static_cast<size_t>(token)];
+    }
+    return counts;
 }
 
 }  // namespace
@@ -278,6 +357,113 @@ TEST(Fp16PathTest, GreedySamplerMatchesArgmaxOnFp16Logits) {
     CUDA_CHECK(cudaMemcpy(actual.data(), d_tokens.data(), kBatch * sizeof(int32_t),
                           cudaMemcpyDeviceToHost));
     EXPECT_EQ(actual, expected);
+}
+
+// S-12：Top-K 的 FP16 支路（补 future_iterations.md §11 的 P1.5-a 的另一半）。
+//
+// 判据沿用 S-8 的分布口径（3σ + 1e-3）：k = 3 / 6（vocab = 8）下**真的发生截断**，
+// 参考是"限制在 top-k 内后重新归一化"的解析分布（`TopKSoftmaxProbabilities`）。
+// 两条精度各自对参考，且互相在 3√2·σ 内（两个独立样本之差）。
+// 为什么 k 不能取 vocab：那样退化成全词表 softmax，**截断路径根本没被走到**。
+TEST(Fp16PathTest, TopKSamplingDistributionMatchesAnalyticProbabilitiesInFp16) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    constexpr int32_t kVocab = 8;
+    constexpr int32_t kDraws = 8000;
+
+    const std::vector<float> logits{2.0f, 1.0f, 0.5f, 0.0f, -0.5f, -1.0f, -1.2f, -2.0f};
+    const std::vector<__half> logits_h = ToHalf(logits);
+    const std::vector<float> logits_as_half = ToFloat(logits_h);
+
+    DeviceBuffer d_logits_fp32(logits.size() * sizeof(float));
+    DeviceBuffer d_logits_fp16(logits_h.size() * sizeof(__half));
+    RequireAllocate(d_logits_fp32, logits.size() * sizeof(float));
+    RequireAllocate(d_logits_fp16, logits_h.size() * sizeof(__half));
+    CUDA_CHECK(cudaMemcpy(d_logits_fp32.data(), logits.data(), logits.size() * sizeof(float),
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_logits_fp16.data(), logits_h.data(), logits_h.size() * sizeof(__half),
+                          cudaMemcpyHostToDevice));
+
+    for (int32_t k : {3, 6}) {
+        const std::vector<double> expected_fp32 =
+            test_support::TopKSoftmaxProbabilities(logits, k);
+        const std::vector<double> expected_fp16 =
+            test_support::TopKSoftmaxProbabilities(logits_as_half, k);
+        const std::vector<int32_t> counts_fp32 =
+            CollectTopKTokenCounts(d_logits_fp32.data(), /*is_half=*/false, kVocab, k, kDraws);
+        const std::vector<int32_t> counts_fp16 =
+            CollectTopKTokenCounts(d_logits_fp16.data(), /*is_half=*/true, kVocab, k, kDraws);
+
+        for (int32_t v = 0; v < kVocab; ++v) {
+            const double observed_fp32 = static_cast<double>(counts_fp32[v]) / kDraws;
+            const double observed_fp16 = static_cast<double>(counts_fp16[v]) / kDraws;
+            const double sigma_fp32 =
+                std::sqrt(expected_fp32[v] * (1.0 - expected_fp32[v]) / kDraws);
+            const double sigma_fp16 =
+                std::sqrt(expected_fp16[v] * (1.0 - expected_fp16[v]) / kDraws);
+            EXPECT_NEAR(observed_fp32, expected_fp32[v], 3.0 * sigma_fp32 + 1e-3)
+                << "k=" << k << " fp32 token " << v;
+            EXPECT_NEAR(observed_fp16, expected_fp16[v], 3.0 * sigma_fp16 + 1e-3)
+                << "k=" << k << " fp16 token " << v;
+            EXPECT_NEAR(observed_fp16, observed_fp32, 3.0 * std::sqrt(2.0) * sigma_fp16 + 1e-3)
+                << "k=" << k << " fp16 vs fp32 token " << v;
+        }
+    }
+}
+
+// S-13：Top-P 的 FP16 支路（补 future_iterations.md §11 的 P1.5-a）。
+//
+// 判据沿用 S-8 的分布口径（3σ + 1e-3，出处见 test_sampler.cpp 的
+// `TopKDistributionMatchesSoftmaxProbabilities` 注释）：FP16 分支的采样词频必须收敛到
+// "截断 + 前缀内重新归一化"的解析分布，并且与 FP32 分支的词频也要互相落在 3σ 内。
+// 参考实现用**各自精度下**的 logits（FP16 那份取舍入后的值），避免把输入量化误差算成
+// kernel 误差——与本文件其它 FP16 用例同一纪律。
+TEST(Fp16PathTest, TopPSamplingDistributionMatchesAnalyticProbabilitiesInFp16) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    constexpr int32_t kVocab = 8;
+    constexpr int32_t kDraws = 8000;
+    constexpr float kP = 0.9f;
+
+    const std::vector<float> logits{2.0f, 1.0f, 0.5f, 0.0f, -0.5f, -1.0f, -1.2f, -2.0f};
+    const std::vector<__half> logits_h = ToHalf(logits);
+    const std::vector<float> logits_as_half = ToFloat(logits_h);
+
+    const std::vector<double> expected_fp32 =
+        test_support::TruncatedSoftmaxProbabilities(logits, kP);
+    const std::vector<double> expected_fp16 =
+        test_support::TruncatedSoftmaxProbabilities(logits_as_half, kP);
+
+    DeviceBuffer d_logits_fp32(logits.size() * sizeof(float));
+    DeviceBuffer d_logits_fp16(logits_h.size() * sizeof(__half));
+    RequireAllocate(d_logits_fp32, logits.size() * sizeof(float));
+    RequireAllocate(d_logits_fp16, logits_h.size() * sizeof(__half));
+    CUDA_CHECK(cudaMemcpy(d_logits_fp32.data(), logits.data(), logits.size() * sizeof(float),
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_logits_fp16.data(), logits_h.data(), logits_h.size() * sizeof(__half),
+                          cudaMemcpyHostToDevice));
+
+    const std::vector<int32_t> counts_fp32 =
+        CollectTopPTokenCounts(d_logits_fp32.data(), /*is_half=*/false, kVocab, kP, kDraws);
+    const std::vector<int32_t> counts_fp16 =
+        CollectTopPTokenCounts(d_logits_fp16.data(), /*is_half=*/true, kVocab, kP, kDraws);
+
+    for (int32_t v = 0; v < kVocab; ++v) {
+        const double observed_fp32 = static_cast<double>(counts_fp32[v]) / kDraws;
+        const double observed_fp16 = static_cast<double>(counts_fp16[v]) / kDraws;
+        // 二项分布标准差 sqrt(p(1-p)/N)，取 3 sigma 作为容差（与 S-8 同一把尺子）
+        const double sigma_fp32 =
+            std::sqrt(expected_fp32[v] * (1.0 - expected_fp32[v]) / kDraws);
+        const double sigma_fp16 =
+            std::sqrt(expected_fp16[v] * (1.0 - expected_fp16[v]) / kDraws);
+        EXPECT_NEAR(observed_fp32, expected_fp32[v], 3.0 * sigma_fp32 + 1e-3)
+            << "fp32 token " << v;
+        EXPECT_NEAR(observed_fp16, expected_fp16[v], 3.0 * sigma_fp16 + 1e-3)
+            << "fp16 token " << v;
+        // 两个独立样本之差的方差是各自方差之和；两种精度的解析概率本身只差 ~1e-5，
+        // 由 1e-3 的常数项吸收。
+        EXPECT_NEAR(observed_fp16, observed_fp32,
+                    3.0 * std::sqrt(2.0) * sigma_fp16 + 1e-3)
+            << "fp16 vs fp32 token " << v;
+    }
 }
 
 }  // namespace mini_trt_llm

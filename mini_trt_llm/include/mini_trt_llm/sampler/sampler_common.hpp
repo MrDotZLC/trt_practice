@@ -42,8 +42,51 @@ size_t TopKSamplerWorkspaceBytes(int32_t batch_size, int32_t vocab_size);
 cudaError_t LaunchTopKSampler(const TopKSamplerArgs& args, cudaStream_t stream,
                               void* workspace, size_t workspace_bytes);
 
+// 快速路径支持的最大 top-k。理由：快速路径每行只用一个 warp（32 线程），
+// 每线程在线程本地持有"自己那份有序 top-k"；本地候选上限就是它能支持的最大 k。
+constexpr int32_t kTopKFastMaxK = 64;
+
+// Top-K 的**快速路径**：不做整行排序，而是"每行一个 warp：每线程本地 top-k + k 轮 warp 归并"。
+//
+// **调用方契约**：必须保证每个 batch 的 `top_k ≤ kTopKFastMaxK`。越界行会写哨兵 `-1`
+// （而不是静默给错答案），以便用例/调用方立刻发现契约被破坏；生产路径（`LLMRunner`）
+// 在 host 侧就知道自己的 `top_k`，因此就近判断、不需要任何 D2H 同步（符合 §3.A.3）。
+//
+// **语义等价**：元素集合、排序顺序、并列取小下标、以及 Philox 随机数消费方式都与
+// `LaunchTopKSampler` 一致 → 同一 `(seed, offset)` 下两者应给出**逐 token 相同**的结果。
+// 这条由 `SamplerKernelTest.TopKFastMatchesLegacyTokens` 锁住（不一致就是缺陷）。
+//
+// 为什么值得单独一条路径：基线实测（`PROGRESS.md` §3.0g）里 top-k(k=64) 在 50257 词表上是
+// greedy 的 12.8 倍、1.2 ms（128K 词表），而整行降序排序是主要成本。
+cudaError_t LaunchTopKSamplerFast(const TopKSamplerArgs& args, cudaStream_t stream);
+
 size_t TopPSamplerWorkspaceBytes(int32_t batch_size, int32_t vocab_size);
+
+// Top-P 采样：CUB 分段排序 + **行内并行**的采样 kernel（每行一个 block，P9_2-5）。
+//
+// 与旧的逐行串行实现（`LaunchTopPSamplerLegacy`）相比，**唯一的语义差异是浮点累加顺序**：
+// 旧版逐元素累加 `exp/total` 再与 `p` 比，新版累加 `exp` 再与 `p * Σexp` 比。两者在数学上
+// 等价，但极端并列 / 恰好落在阈值边界处 cutoff 可能差一格——这是**允许的差异**，
+// 不是回归（登记在 `future_iterations_test_plan.md` §9.4）。随机数消费
+// （`Uniform01(seed, offset, row)`）、`>=` 比较、稳定项取 top-1、前缀内重新归一化均保持一致。
+//
+// workspace 需求与旧版相同（`TopPSamplerWorkspaceBytes` 未变）：排序仍是 CUB，采样 kernel
+// 不需要额外显存（见 `AGENTS.md` §3.B.3「enqueue 内零分配」）。
 cudaError_t LaunchTopPSampler(const TopPSamplerArgs& args, cudaStream_t stream,
                               void* workspace, size_t workspace_bytes);
+
+// Top-P 的 legacy 逐行串行实现（一行一个线程）。**只用于对照与回归**：A/B 打印、复现
+// §10.5 的基线数字、以及"新实现是否真的改变了结果"的观测；不接生产路径。
+cudaError_t LaunchTopPSamplerLegacy(const TopPSamplerArgs& args, cudaStream_t stream,
+                                    void* workspace, size_t workspace_bytes);
+
+// P9_2-5b（子块级定位）的 **A/B 对照入口**：同一条 CUB 排序 + 相同的第一趟，但采样 kernel
+// 用**两级**定位（块和 → 元素，即改动前的形态）。**只用于性能对照，不接生产路径。**
+//
+// 为什么需要一个专门的入口：这一改动的效果此前一直判不了——分段口径没有判别力
+// （`TROUBLESHOOTING.md` #37），配对口径又跨 session/跨协议（#38）。把两版编进同一个二进制、
+// 在**同一轮里交替测量**，噪声对二者同向、差值可加，结论才干净。
+cudaError_t LaunchTopPSamplerTwoLevel(const TopPSamplerArgs& args, cudaStream_t stream,
+                                      void* workspace, size_t workspace_bytes);
 
 }  // namespace mini_trt_llm

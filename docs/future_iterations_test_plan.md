@@ -1,6 +1,8 @@
 # future_iterations 测试计划
 
-> **状态**：2026-09-26 产出，**未执行**（表内状态列一律为"未开始"）。
+> **状态**：2026-09-26 产出；**批次 A/B/C 与 §9 的 P9_2-0~5 已执行到"沙箱 / 真机"两级，
+> 各自的状态写在对应表格的状态列里**（原先那句"未执行、状态列一律未开始"已被实际执行推翻）。
+> 未跑过的一律写"未开始"，不写"通过"。
 >
 > **定位**：与 `docs/future_iterations_development_plan.md` 配套。**条目内部的目标 / 做法 / 验收**
 > 以 `docs/future_iterations.md` 为唯一来源（§1.5 / §1.6 / §0.1），本文件只负责把它落成
@@ -81,7 +83,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 `utils/json.hpp` 那处前置改动，属于"先看数据再定改动面"这条教训的又一例，见开发计划 §2.1.1）。
 文件面的偏差同样记在开发计划 §2.1.1，不在两处重复。
 
-### 2.3 B / C 两批的用例（2026-09-26 追加，代码就绪、待真机）
+### 2.3 B / C 两批的用例（2026-09-26 追加，**同日真机执行完毕**）
 
 | 用例 ID | 用例名 | 层 | 判据 | 出处 | 前置 | 状态 |
 |---|---|---|---|---|---|---|
@@ -111,7 +113,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 | A2-2 | `Int8EvalSpecTest.RejectsCalibOverlap` | H | 验收集与 `calib_data` 有重叠（按文件名或 SHA256 命中）→ **拒绝** | §1.6 做法第 1 条（标定集污染验证集会让一致率系统性高估） | 合成重叠清单 | ✅ 已实现（`--self-test`）；另用真实 `calib_data`（500 文件）跑过 smoke |
 | A2-3 | `Int8EvalSpecTest.ReportRequiresSampleCount` | H | 只报率、不报 n 的报告 → **拒绝**（"只报率不报 n 的结论不可复核"） | §1.6 做法第 2 条 | 合成报告 | ✅ 已实现（`--self-test` 的"只报率不报 n"/"率与分子分母不自洽"两项） |
 | A2-4 | `Int8EvalSpecTest.StratificationMatchesExpected` | H | 合成 logits（已知 margin 分布）→ 分层统计的分子 / 分母**逐桶可预测** | 与 C++ 现役实现同口径（`tests/test_resnet18_int8.cpp`） | 合成张量 | ✅ 已实现（`--self-test` 的 3 项分层数学断言） |
-| A2-5 | `Int8EvalCrossCheckTest.MatchesCppStratifiedStats` | G | 同一批真实 logits：脚本报出的"余量子集率与样本量"与 C++ 用例**完全一致**（当前应为 12/12 = 100%） | `phase4_int8_plan.md` §4 + `PROGRESS.md` §3.0d | `models/resnet18/` 全产物 | 未开始 |
+| A2-5 | `Int8EvalCrossCheckTest.MatchesCppStratifiedStats`（**计划名**） | G | 同一批真实 logits：脚本报出的"余量子集率与样本量"与 C++ 用例**完全一致**（当前应为 12/12 = 100%） | `phase4_int8_plan.md` §4 + `PROGRESS.md` §3.0d | `models/resnet18/` 全产物 | ✅ **已由 A2-7 + A2-8 落地，并真机通过**（2026-09-26，C-1/C-2/C-3 三步全过）——**更正**：实现时没有建这条同名 gtest，而是拆成"落 artefact"（A2-7）与"两份报告比对"（A2-8）两步；留原名只为追溯 |
 | A2-6 | `int8_eval_selftest`（ctest 脚本项） | H | 脚本对 **7 类**"故意改坏"的输入逐个拒绝：① 缺 `manifest_sha256`；② 验收集与标定集重叠（文件名 / `sha256` 命中）；③ `num_samples` 是字符串；④ 清单被改过（`sha256` 不符）；⑤ logits 大小与 `shape` 不符；⑥ 只报率不报 n；⑦ 率与分子分母不自洽 | `AGENTS.md` §2.13「护栏必须有用例证明它会拦人」 | 无 | ✅ **已注册进 ctest 并通过**（2026-09-26，`ctest -R int8_eval_selftest` → Passed 0.06 s；无 `SKIP_RETURN_CODE`——它不依赖任何外部资产，没跑起来就是真问题。**序号会漂移，不记序号**） |
 | A2-7 | `ResNet18Int8AccuracyTest.DumpsLogitsAndCppReportForCrossCheck` | G | 用两个引擎跑同一批 256 张图 → 落 `fp32.f32.bin` / `int8.f32.bin` / `val_manifest.json` / `meta.json` / `cpp_report.json`，并**断言五个文件都写出来且非空**（静默失败不许伪装成"跑过了"）。正确性判据不在这里（由上一条精度用例负责） | 本计划 A2-5 的设计；口径常量与精度用例共用 `kConfidentMargin` / `kBucketEdges` | `models/resnet18` + `calib_data` + GPU | 🟡 已实现，**沙箱显式跳过**；执行见开发计划 §8.3 |
 | A2-8 | `int8_crosscheck`（ctest 脚本项） | H | 比对 `cpp_report.json` 与 `py_report.json`：整体 / 余量子集的 `n` 与分子、逐桶 `n` 与分子、以及两侧阈值（`confident_margin` / `bucket_edges`）必须一致 | A2-5："两条独立实现对同一批数据必须给出同一组数字；不一致说明口径漂移，**不许改阈值**" | 两份报告（真机产出） | 🟡 已注册；缺报告 → **77 跳过**（跳过不是通过）。执行见开发计划 §8.3 |
@@ -231,7 +233,10 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 | **P** | 真机性能（按 G6 口径：≥3 次构建 / ≥20 次推理，报中位数与极差） | 不能 | 作者真机 |
 
 执行口径：沙箱 `ctest --test-dir build`；真机 `MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure`
-（不带该变量时 GPU 用例会静默跳过，等于白跑）。**当前真机基线：215 条 / 1 红**（唯一红 = FP16 NaN 复现器，按设计）。
+（不带该变量时 GPU 用例会静默跳过，等于白跑）。**当前真机基线（2026-09-27 复跑，含 S-12/S-14）：
+**235 条 / 1 红**——唯一红 = FP16 NaN 复现器（按设计），`int8_crosscheck` 仍按设计跳过；
+**沙箱基线（2026-09-27，加上 P9_2-5b 的 S-24、并删掉 4 条重复用例后）：234 条 / 0 失败**。
+（**P9_2-5b 改的是 kernel 内部，未新增 GPU 用例 → 真机命令与判据不变**，只是同一批用例要复跑。）
 
 ---
 
@@ -248,7 +253,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 | S-3 | `SamplerKernelTest.GreedyMatchesArgmax` / `GreedyPrefersLowestIndexOnTie` | G | greedy 语义（并列取小下标）——本次不改 greedy，作对照 |
 | S-4 | `SamplerKernelTest.TopKWithKEqualsOneBehavesLikeGreedy` | G | **并列语义**的间接锁（k=1 必等于 argmax） |
 | S-5 | `SamplerKernelTest.TopKSamplingIsDeterministicForFixedSeed` / `TopPIsDeterministicForFixedSeed` | G | 同 seed **同实现**可复现（随机数消费方式不变） |
-| S-6 | `SamplerKernelTest.TopKResultAlwaysWithinTopKSet` | G | 采样必落在 top-K 集合内 |
+| S-6 | `SamplerKernelTest.TopKResultAlwaysWithinTopKSet` | G | 采样必落在 top-K 集合内。**2026-09-27 澄清口径**：集合改成**并列安全**的 `TopKSetByValue`（`value ≥ 第 k 大值`）——原来的"排序后前 k 个"在数值并列时不良定义（依据见 `TROUBLESHOOTING.md` #36）。**这不是放宽**：无并列行上两者逐元素等价 |
 | S-7 | `SamplerKernelTest.TopPWithTinyPicksArgmax` | G | p 极小 → 退化为 argmax |
 | S-8 | `SamplerKernelTest.TopKDistributionMatchesSoftmaxProbabilities` | G | **主判据**：词频收敛到解析 softmax 概率（3σ） |
 | S-9 | `SamplerKernelTest.TopPWithFullProbabilityDoesNotOverTruncate` | G | p=1 不得过截断（最小概率 token 也必须能采到） |
@@ -259,13 +264,24 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 
 | 编号 | 用例名（拟） | 层 | 判据 | 出处 | 状态 |
 |---|---|---|---|---|---|
-| **S-12** | `SamplerKernelTest.TopKSamplingDistributionMatchesFp32UnderFp16` | G | FP16 logits 与 FP32 logits 的**同一组**概率的采样词频都收敛到解析值（各 3σ）；两个 dtype 的词频互相也在 3σ 内 | 沿用 S-8 的判据口径；补 `future_iterations.md` §11 的 **P1.5-a** | 未开始 |
-| **S-13** | `SamplerKernelTest.TopPSamplingDistributionMatchesFp32UnderFp16` | G | 同 S-12，改成 Top-P（p=0.9） | 同上 | 未开始 |
-| **S-14** | `SamplerKernelTest.TopKOnLargeVocabStaysWithinTopKSet` | G | vocab = 128000（合成）与 50257（真实形状）下，采样 token ∈ 解析 top-K 集合；k 取 {1, 8, 64} | 集合成员关系判定（**无阈值**，因此无出处问题） | 未开始 |
-| **S-15** | `SamplerKernelTest.TopPNucleusCoversLargeVocabCutoff` | G | p = 0.9 / 0.99 下，采样 token ∈ 解析 nucleus；并**打印**候选覆盖率与回退行数（观测指标，不作判据） | 同上 | 未开始 |
-| **S-16** | `SamplerKernelTest.TopPWithHugeNucleusFallsBackCorrectly` | G | 构造"nucleus 远超 M"的分布（如均匀 logits + p=1.0）→ 走回退；仍满足 S-9 的判据（最小概率 token 可采到） | S-9 的口径；回退是**正确性优先**的设计（开发计划 D2 第 5 条） | 未开始 |
-| **S-17** | `SamplerTest.WorkspaceSizingAfterRewrite` | G | 新实现的 `WorkspaceBytes` > 0、且 `Launch*` 在该大小下成功（含 batch=1/batch=8） | 契约；调用方只查询大小（见开发计划 §0.2） | 未开始 |
-| **S-18** | `SamplerPerf.ThroughputByShape`（**P 层**，已实现） | P | vocab ∈ {50257, 128000} × batch ∈ {1, 8}：warmup 3 + 采样 **21** 次，报**中位数 / 极差 / min-max**，并给 greedy 作"一趟扫描"参照；与改实现后的同一形状对比 | 协议 = `phase3_test_plan.md` §5 的 **G6**（≥3 次构建 / ≥20 次推理、报中位数与极差） | 🟡 **仪器已完成**（`tests/test_sampler.cpp`，2026-09-26）；**基线数据待真机** |
+| **S-12** | `Fp16PathTest.TopKSamplingDistributionMatchesAnalyticProbabilitiesInFp16` | G | k ∈ {3, 6}（vocab = 8，**真的发生截断**）：FP32 / FP16 两条路径的词频都收敛到"截断到 top-k 后重新归一化"的解析分布（各 3σ + 1e-3）；两个 dtype 的词频互相也在 3√2·σ 内 | 沿用 S-8 的 3σ 口径；补 `future_iterations.md` §11 的 **P1.5-a**。**改名理由**：FP16 的 harness 在 `test_fp16_paths.cpp` 的 `Fp16PathTest` suite 里（S-11/S-13 同处），不为它另起一个跨文件 suite | ✅ **真机通过（2026-09-27）** → **P1.5-a 据此关闭** |
+| **S-13** | `Fp16PathTest.TopPSamplingDistributionMatchesAnalyticProbabilitiesInFp16` | G | FP16 / FP32 两条路径的词频都收敛到"截断 + 前缀内重新归一化"的**解析**分布（各 3σ）；两个 dtype 的词频互相也在 3σ 内 | 沿用 S-8 的 3σ 口径；补 `future_iterations.md` §11 的 **P1.5-a** | ✅ **真机通过（2026-09-27 全量）** |
+| **S-14** | `SamplerKernelTest.TopKOnLargeVocabStaysWithinTopKSet` | G | vocab = 128000（合成）与 50257（真实形状）、batch ∈ {1, 2} 下，采样 token ∈ 解析 top-K 集合，k ∈ {1, 8, 64}；k=1 另行复验"采样值 = 全行最大值" | 集合成员关系判定（**无阈值**，因此无出处问题）；集合用**并列安全**的 `TopKSetByValue`。**真机第一版是红的**（2026-09-27）：判据用 `partial_sort` 取前 k 个在并列行上不良定义——128000 的第 64 名有 4 个 token 精确并列，采样到的 45721 被排掉。**修复只动测试参考**，事故已由 `SamplerReferenceTest.IncidentRow64TieIsNotASetMembershipFailure` 固化；完整推导见 `TROUBLESHOOTING.md` #36 | ✅ **真机通过（2026-09-27 复跑）** |
+| **S-15** | `SamplerKernelTest.TopPOnLargeVocabStaysWithinNucleus` | G | vocab ∈ {50257（batch 1/8）, 128000}、p ∈ {0.9, 0.99} 下，新实现与 legacy 的采样 token **都** ∈ 解析 nucleus；两者的一致率只**打印**（观测指标，不作判据） | 集合成员关系判定（**无阈值**，因此无出处问题）。**改写原因**：开发计划 §10.11 保留排序、取消候选容量，"覆盖率 / 回退行数"这两个观测对象已不存在 | ✅ **真机通过（2026-09-27 全量）** |
+| **S-16** | `SamplerKernelTest.TopPWithFullProbabilityCoversHugeNucleus` | G | 均匀 logits（nucleus = 整行）+ p=1.0：200 次抽样里被选下标的 `min < V/10` 且 `max > 0.9V`。若 cutoff 被截到前 m ≤ 0.9V，全落前 10% 的概率是 0.1^200 ≈ 1e-200 | S-9 的口径（p=1 不过截断）。**改写原因**：5 万词表下逐 token 计数几乎全 0，判不出问题；观测范围塌缩才是可判的信号 | ✅ **真机通过（2026-09-27 全量）** |
+| ~~**S-17**~~ | ~~`SamplerTest.WorkspaceSizingAfterRewrite`~~ | — | **取消**：Top-P 新方案保留 CUB 排序、采样 kernel 不用 workspace，`TopPSamplerWorkspaceBytes` 的返回**一个字节都没变**（代码里写明了这一点），没有"改后的尺寸"可测 | 反向查的结论（开发计划 §10.4 的 P9_2-7 行） | ❌ 取消 |
+| **S-18** | `SamplerPerf.ThroughputByShape`（**P 层**，已实现） | P | vocab ∈ {50257, 128000} × batch ∈ {1, 8}：warmup 3 + **15 轮**，每轮**正向 + 反向（ABBA）**；每个被测变体测"发射 1 次"与"发射 4 次"两个窗口，取 `(T4−T1)/3` = **净成本（斜率）**——把每窗口固定开销（事件+同步+首次发射，本环境可达几十 µs）减掉；逐轮算 `legacy/parallel` 与 `(top-p − top-k)` 后报**中位数 + p25/p75 + min/max**；同时保留单发口径供与历史基线对齐 | 协议 = G6（≥20 次推理、报中位数与极差）**+ 配对 + 斜率**：`TROUBLESHOOTING.md` #37（分段测没判别力）→ #38（跨协议不可直接比、**固定开销与信号同量级**）。**斜率口径是这类问题唯一够用的尺子** | ✅ 已采集四次（2026-09-26/27），含**同二进制 A/B**。**判据看配对（净）口径**：`legacy/parallel` median = **12.63 / 22.43 / 15.73 / 17.57×**（4/4 达标）。A/B（同一轮交替测 `LaunchTopPSamplerTwoLevel`）判定 **P9_2-5b 效果无显著差异**：中位数 +4.8 / +27.3 / −330.5 / −81.3 µs，p25/p75 全跨 0；同轮量到 greedy 净 = 35~155 µs、`top-p 净 − top-k 净` @50257×1 = 60.1 µs（p25=56.4 / p75=64.0，很紧）→ 采样内核净开销仅"裸读一遍行"的 ~1.7 倍。结论与上限见 `TROUBLESHOOTING.md` #38 / 开发计划 §10.12.8 |
+
+#### 9.2.3 P9_2-5 新增（Top-P 行内并行，2026-09-26）
+
+| 编号 | 用例名（拟） | 层 | 判据 | 出处 | 状态 |
+|---|---|---|---|---|---|
+| **S-19** | `SamplerKernelTest.TopKFastMatchesLegacyTokens` | G | fast 与 legacy Top-K **逐 token 相同**（4 个形状） | "语义等价"最硬的形态；开发计划 §10.9 | ✅ 真机通过（2026-09-26） |
+| **S-20** | `SamplerKernelTest.TopKFastPoisonsRowsAboveContractLimit` | G | `k > kTopKFastMaxK` → 写哨兵 -1 | 契约护栏；同上 | ✅ 真机通过（2026-09-26） |
+| **S-21** | `SamplerKernelTest.TopPDistributionMatchesTruncatedSoftmaxProbabilities` | G | **分布级主判据**：词频收敛到"截断 + 前缀内重新归一化"的解析分布（3σ + 1e-3），p ∈ {0.6, 0.9, 1.0} 对应 cutoff = 2 / 4 / 8；新实现与 legacy 各跑一遍 | 沿用 S-8 的口径。**为什么要它**：cutoff 多截/少截一个元素会直接改变分布形状，而集合成员关系看不出来 | ✅ **真机通过（2026-09-27 全量）** |
+| **S-22** | `NucleusCutoffTest.*`（4 条，**H 层，沙箱可跑**） | H | 交叉点定位的边界语义，**每条打的是不同分支**：`>=` 含等号（阈值恰好等于某前缀和时截到该元素）、阈值 = 全行和时走到行尾（p=1 不截断）、阈值 > 全行和时走"整行都不够"分支、阈值 ≤ 0 时取首元素 | 被测对象就是产品实现（`sampler/nucleus_cutoff.hpp`，`__host__ __device__`）→ 无"参考漂移"风险。**为什么要它**：内核在沙箱跑不了，而这段最易出 off-by-one。**2026-09-27 去重**：删掉 2 条与 S-24 同断言的用例（`MatchesScalarScanOnGenericData`、二级版退化用例），见开发计划 §10.12.5 | ✅ 沙箱通过（2026-09-27），4/4 |
+| **S-23** | `SamplerReferenceTest.*`（3 条，**H 层，沙箱可跑**） | H | 采样器参考实现的 host 自证：① `TopKSoftmaxProbabilities` 是良定义分布（和为 1）、支持集正好是解析 top-k，且截断后 top-1 概率严格变大；② `TruncatedSoftmaxProbabilities` 与 `AnalyticNucleus` 自洽（支持集 ⊆ nucleus、差额 ≤ 登记的那 1 个边界余量、p→0 退化到 argmax）；③ **事故回归** `IncidentRow64TieIsNotASetMembershipFailure`（真机那条红的数据原样固化：`TopKSetByValue` 必须接受并列组里的 45721） | `PROGRESS.md` §2.13「参考必须自带断言 + host meta-test」；这条纪律当场兑现——第 14 轮真机红就是参考错，而不是 kernel 错（`TROUBLESHOOTING.md` #36）。**2026-09-27 去重**：删掉"并列取小下标"（实质在测 `std::stable_sort`）与 `TopKSetByValue` 的抽象版（与事故回归重合） | ✅ 沙箱通过（2026-09-27），3/3 |
+| **S-24** | `NucleusCutoffTest.ThreeLevel*`（3 条，**H 层，沙箱可跑**） | H | P9_2-5b 的三级定位（块→子块→元素）：① 通用数据上与"整行逐元素串行扫描"给出同一 cutoff（阈值远离前缀和边界）；② 子块级不命中时退化为整块重扫**且不重复计入块和**（重复计入会让阈值提前命中）；③ 第二次调用尊重 `size = cutoff`（子块越过边界时必须截断） | 被测对象 = 内核真正调用的那份实现（`FindCrossingByLevels`，`__host__ __device__`）；**它挡不住的是内核装配**（共享内存布局 / 子块和怎么算），那部分只能真机 | ✅ 沙箱通过（2026-09-27），3/3 |
 
 ---
 
@@ -276,9 +292,13 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 | 分布一致性 | 与解析 softmax 概率比较，容差 `3σ + 1e-3` | `tests/test_sampler.cpp` 的 `TopKDistributionMatchesSoftmaxProbabilities` 注释（本次沿用，不改） |
 | FP16 分布一致性 | 同 3σ 口径（**不另立更松的尺子**） | 同上；`AGENTS.md` §7「阈值不跨精度复用」在这里的意思相反——**同一算子同一 dtype 语义，就该用同一把尺子** |
 | 集合成员关系 | 布尔判定（token ∈ top-K / ∈ nucleus） | 无阈值 → 无出处问题；构造上保证集合可解析 |
-| 性能加速比 | **待 P9_2-0 实测后填写**（连同"哪次实测"） | `future_iterations.md` §9.2 的触发时机 + `phase3_test_plan.md` §5 的 G6 |
-| 回退行数 / 覆盖率 | **观测指标，不作判据** | 避免用"调 M"把回退率刷成 0 从而掩盖覆盖率问题 |
-| 全量基线 | 真机 215 条 / 1 红 | `PROGRESS.md` §3.5 / §3.0f |
+| 性能加速比 | **目标：top-k ≥5×、top-p ≥10×**（出处 = 开发计划 §10.5 第 4 条）。实测：**top-p 对冻结基线 4/4 达标**（13.0 / 18.9 / 13.4 / 15.0 ×）；**同 session 口径 3/4**（50257×1 = 9.99×，差 0.08%）；**top-k fast 不达标**（0.106~0.163×，见 §10.10） | `future_iterations.md` §9.2 的触发时机 + `phase3_test_plan.md` §5 的 G6；两个口径的读法见开发计划 §10.9.1 |
+| 回退行数 / 覆盖率 | **已取消**（Top-P 方案改定后没有候选容量，见开发计划 §10.11） | 原文是"观测指标，不作判据"；保留这句是因为 Top-K 的候选覆盖率仍待做（§10.10 的重做方向） |
+| 新实现 vs legacy 的一致率 | **观测指标，不作判据** | 两者累加顺序不同，边界处允许差一格——设成判据就会把登记的允许差异变成回归 |
+| 全量基线（沙箱） | 234 条 / 0 失败（GPU 用例显式跳过） | `PROGRESS.md` §3.5 |
+| 全量基线（真机） | **235 条 / 1 红**（2026-09-27 复跑，含 S-12/S-14；唯一红 = FP16 NaN 复现器，`int8_crosscheck` 按设计跳过）。演进：228 条 / 1 红 → 233 条 / 2 红 → **235 条 / 1 红** | `PROGRESS.md` §3.5 / §3.0f |
+| 判据红（已修，**非产品缺陷**） | S-14 第一版：参考在数值并列时不良定义（128000 第 64 名有 4 个 token 精确并列）→ 换成 `TopKSetByValue` | `TROUBLESHOOTING.md` #36 |
+| 参考实现自证 | 参考是标尺：每条参考都要有 host meta-test 且**能判别**（改了 k/边界会红） | `PROGRESS.md` §2.13；用例 S-23 |
 
 ---
 
@@ -286,6 +306,11 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 
 - **允许不同**：同一 `(seed, offset)` 下逐 token 输出与**旧实现**可以不同——候选归并顺序可能改变
   逆变换的采样点。**这不是回归**。
+- **允许不同（Top-P 专属，2026-09-26 补）**：Top-P 的并行实现与 legacy 的差异有两处，都在
+  **浮点累加顺序**上：① 分块求和 + 块间串行合并 vs 逐元素串行；② legacy 累加 `exp/total` 再与 `p` 比，
+  新版累加 `exp` 再与 `p * Σexp` 比（先除后加 vs 先加后除）。后果是**极端并列 / 恰好落在阈值边界处
+  cutoff 可能差一格**。这条比 Top-K 那条宽一档（Top-K 是逐 token 相同），因此 Top-P 的判据
+  必须是分布级（S-21）与集合级（S-15/S-16），**不能**写成"逐 token 相同"。
 - **必须相同**：① 同 seed 同实现两次运行逐 token 一致（S-5）；② 分布（S-8/S-12/S-13）；
   ③ `k = 1` 等价于 argmax（S-4）；④ p 极小 → argmax（S-7）、p = 1 不过截断（S-9）；
   ⑤ 并列 → 小下标优先（S-3/S-4 的间接锁 + 实现内显式保证，见开发计划 D3）。
@@ -316,9 +341,21 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 
 | 用例 | 状态 | 实测值 / 出处 |
 |---|---|---|
-| S-1 ~ S-11（既有回归） | 未开始（等实现改动后跑） | —— |
-| S-12 ~ S-17（新增） | 未开始 | —— |
-| S-18（性能基线） | 🟡 仪器已完成，待真机取数 | 沙箱显式跳过；真机命令：`MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests --gtest_filter='*SamplerPerf*'` |
+| S-1 ~ S-11（既有回归） | ✅ **真机通过（2026-09-27 全量）**；沙箱侧 S-1/S-2 通过、S-3~S-11 显式跳过 | 判据一条未改（`git diff` 里测试断言无改动，只多了 `legacy` 开关） |
+| S-12 | ✅ **真机通过（2026-09-27 复跑）** → **P1.5-a 关闭** | `Fp16PathTest.TopKSamplingDistributionMatchesAnalyticProbabilitiesInFp16`（k=3/6，真的发生截断） |
+| S-13 | ✅ **真机通过（2026-09-27 全量）** | `Fp16PathTest.TopPSamplingDistributionMatchesAnalyticProbabilitiesInFp16` |
+| S-14 | ✅ **真机通过（2026-09-27 复跑，判据修正后）** | `SamplerKernelTest.TopKOnLargeVocabStaysWithinTopKSet`（50257/128000，batch 1/2，k ∈ {1,8,64}） |
+| S-15 | ✅ **真机通过（2026-09-27 全量）** | `SamplerKernelTest.TopPOnLargeVocabStaysWithinNucleus` |
+| S-16 | ✅ **真机通过（2026-09-27 全量）** | `SamplerKernelTest.TopPWithFullProbabilityCoversHugeNucleus` |
+| S-17 | ❌ 取消（理由见 §9.2.2） | —— |
+| S-21 | ✅ **真机通过（2026-09-27 全量）** | `SamplerKernelTest.TopPDistributionMatchesTruncatedSoftmaxProbabilities` |
+| S-22（4 条 host） | ✅ **沙箱通过（2026-09-27 去重后，4/4）** | `ctest --test-dir build`：`NucleusCutoffTest.*` 全绿；它们是本次唯一能在无 GPU 环境下裁决新逻辑的用例 |
+| S-23（3 条 host） | ✅ **沙箱通过（2026-09-27 去重后，3/3）** | `SamplerReferenceTest.*`：参考良定义性 / 与 nucleus 自洽 / **第 14 轮真机红的事故回归**；它们是"标尺对不对"的第一道闸，而且这次真的挡住了 |
+| S-24（3 条 host，P9_2-5b） | ✅ **沙箱通过（2026-09-27，3/3）** | `NucleusCutoffTest.ThreeLevel*`：三级定位与整行串行扫描同比 / 退化时不重复计入块和 / 尊重 `size` 边界 |
+| **S-19** `SamplerKernelTest.TopKFastMatchesLegacyTokens`（fast vs legacy 逐 token 相同，4 形状：k==vocab / 1024 / 50257·k64 / 128000·k64） | ✅ **真机通过**（2026-09-26） | 语义等价成立——这是"逐 token 相同"级别的锁，不是分布级 |
+| **S-20** `SamplerKernelTest.TopKFastPoisonsRowsAboveContractLimit`（k > 64 → 哨兵 -1） | ✅ **真机通过**（2026-09-26） | 契约护栏有效 |
+| S-18（性能基线 + 改动后复测） | ✅ 完成（基线 2026-09-26、复测 2026-09-27，均真机） | 基线见开发计划 §10.5；复测见 **§10.9.1**：对冻结基线 4/4 达标（13.0 / 18.9 / 13.4 / 15.0 ×），同 session 口径 50257×1 = 9.99×（差 0.08%，原因 = legacy 跨 session 漂移 −23.2%）。**阈值与判据一个字没动** |
+| S-15 / S-16 / S-21 的"观测项"回填 | ✅ | 逐 token 一致率（观测，非判据）：50257×1 = 2/3、50257×8 = 17/24 与 12/24、128000×1 = 0/3。**词表越大越不一致**符合 §9.4 的机制（命中"下标"对累计和舍入敏感：1e-5·total 的台阶 vs ε·√N 的误差）；n=3 不足以谈差异率，故只打印 |
 
 ---
 

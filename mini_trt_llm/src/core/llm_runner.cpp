@@ -240,6 +240,11 @@ bool LLMRunner::SampleInto(void* token_out, int32_t row, uint64_t offset,
     args.seed = options_seed_;
     args.offset = offset;
     args.top_k = static_cast<const int32_t*>(d_top_k_.data());
+    // **快速路径暂时不接生产路径**：2026-09-26 真机实测它比旧路径慢 6~9 倍
+    // （`legacy/fast` = 0.108~0.156×，见 future_iterations_development_plan.md §10.5 的失败记录），
+    // 根因是 occupancy（一行只有 1 个 warp）与 shared 插入的 bank conflict（lane 步长 256B）。
+    // 在按"寄存器候选 + 多 warp/行 + 阈值二次筛选"重做并通过性能门槛前，
+    // 这里保持走旧路径——**不把未达标的实现留在产品路径上**。
     return LaunchTopKSampler(args, stream, d_sampler_workspace_.data(),
                              d_sampler_workspace_.size()) == cudaSuccess;
 }

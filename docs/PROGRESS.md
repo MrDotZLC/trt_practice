@@ -1,7 +1,12 @@
 # mini_trt_llm 项目进度交接文档
 
-> 最后更新：2026-09-26（**Phase 4 收口**：CV 路径打通 + INT8 落地；
-> 同日二次校正：§6.5 的提交状态与真机计数对齐 `4fe0b98`，理由见该节更正记录）  
+> 最后更新：2026-09-27（**§9.2 采样器迭代收口并关闭**：Top-P 改成"保留 CUB 排序 + 行内并行
+> 三级定位"、判据缺口 S-12/S-14 补齐；**P9_2-5b 经同二进制 A/B 判定"效果无显著差异"、P9_2-5c 不做**；
+> 真机 **235 条 / 1 红**（唯一红 = 按设计的 GPT-2 FP16 NaN；**该全量是 P9_2-5b 之前的**），
+> 沙箱 **234 条 / 0 失败**；**P9_2-5b 之后真机只跑过 `Sampler*:Fp16PathTest*` 过滤集与
+> `*SamplerPerf*`（均通过）→ 全量待下一次真机顺带复跑**；
+> 推荐的下一条工作 = **decode 端到端性能画像 + `§6.3` 的 profile target**，见 §6）。
+> 2026-09-26：**Phase 4 收口**（CV 路径打通 + INT8 落地）。
 > 当前阶段：**Phase 4 已完成**（ResNet18：ONNX 路径 / 原生路径 / `CVRunner` / 转换工具 / FP16 / INT8）；
 > **没有下一阶段**——**Phase 5（清理旧模块）已永久取消**，旧模块由作者自行处理（见 §6.6）。
 >
@@ -10,12 +15,16 @@
 >    按政策不修，见 §5.11 与 `docs/TROUBLESHOOTING.md` §18.1；
 > 2. Phase 2 的残余缺口（含已定位的已知限制）见 §5.12 与 `docs/phase2_test_plan.md` §5；
 > 3. Phase 3 仅剩 G5/G6 两项按触发条件处理的缺口，见 `docs/future_iterations.md` §11。
- > 4. **真机全量：215 条 / 1 红**（2026-09-26 全量重跑确认；早先那次是 204 条 / 2 红，其中 1 条已结案）：
->    红 1 = `RealGpt2Fp16GreedyMatchesReferenceTokens`（GPT-2 FP16 NaN 的**按设计红**，唯一保留的红）；
->    红 2 = `Gpt2OnnxTest.MatchesAcrossProfileShapes` —— 机制是"两实现差异之下的并列"（§5.13），
->    判据已按**方案 B** 修正，并进一步收紧为**不可判行钉到行号**（实测 `(1,512)` 仅第 118 行）；
->    单测真机复跑 **PASSED**；**全量重跑已确认：215 条 / 1 红**（唯一红 = 上面那条按设计红）。
->    沙箱侧 **215 条 / 0 失败**（89 跳过 / 126 执行）；ResNet18 侧没有红；
+> 4. **真机：235 条 / 1 红**（2026-09-27，**P9_2-5b 之前**的全量；跳过项只有 `int8_crosscheck`——
+>    ctest 级的"缺报告 → 77"，设计如此）：
+>    **唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`**（GPT-2 FP16 NaN 的**按设计红**，§5.11）；
+>    本轮新增的 6 条 GPU 用例（S-12/S-13/S-14/S-15/S-16/S-21）**全部真机通过**。
+>    沙箱侧 **234 条 / 0 失败**（99 跳过 / 135 执行）；ResNet18 侧没有红。
+>    **P9_2-5b（改的是 Top-P kernel 内部）之后**真机只跑过 `--gtest_filter='Sampler*:Fp16PathTest*'`
+>    与 `'*SamplerPerf*'`（都通过）→ **全量建议在下一次真机时顺带复跑**（与 decode profile 同批最省）。
+>    过程红两条都已结案且**都不是产品缺陷**：`Gpt2OnnxTest.MatchesAcrossProfileShapes`
+>    （两实现差异之下的并列 → 判据钉行号，§5.13 / #34）与 S-14 首版（参考在并列行上不良定义 → 换
+>    `TopKSetByValue`，`TROUBLESHOOTING.md` #36）。
 >    B（文本端到端）与 C（INT8 口径交叉校验）两批真机用例**都通过**（见 §3.0e / §3.0f）。
 >    **引擎缓存指纹已上线**（`<engine>.fingerprint`）：升级后**第一次真机会重建全部引擎**（旧引擎无指纹），
 >    第二次起打 `Engine cache hit` —— **真机已确认**：第一遍 stale ×2 → 重建（623/709 MB），
@@ -405,7 +414,7 @@ utf8 10 / long 1 / edge 2；长文本 306 token）。utf8 一组刻意压在"Uni
 `Decode` 与 HF 解码一致；`Load` 的 4 条负例（目录不存在 /
 缺 merges / 坏 JSON / merges 行无空格）全部按预期拒绝。沙箱全量 `ctest` **204 条 / 0 失败**。
 
-**同批还有两条"待真机"的用例（代码已就绪，沙箱显式跳过）**：
+**同批还有两条用例（当时标注"待真机"；**均已在 2026-09-26 真机执行通过**，结果见本节末尾）**：
 
 - **B：文本端到端** —— `Gpt2GenerateTest.RealGpt2TextPromptEndToEnd`，把
   `文本 → Encode → LLMRunner → Decode → 文本` 接成一条链（判据三段：分词 / 生成 / 解码文本）。
@@ -474,22 +483,53 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
    → 指纹生效。这是真机上唯一能证明该机制的观察点。
 3. 仍待触发：`docs/future_iterations.md` §11 的 **SP-1**（SentencePieceTokenizer 未验证）。
 
-### 3.0g §9.2 Sampler 高性能 kernel：计划成文 + P9_2-0 仪器就位（2026-09-26）
+### 3.0g §9.2 采样器高性能 kernel（P9_2-0 ~ P9_2-5b，2026-09-26 ~ 27，**已关闭**）
 
-**计划落点（按作者决定：后续迭代每个事项的计划都并入 `future_iterations*`，不再单独新建文件）**：
-开发计划 `docs/future_iterations_development_plan.md` **§10**、测试计划 `docs/future_iterations_test_plan.md` **§9**。
+**计划落点**：开发计划 `future_iterations_development_plan.md` **§10**（P9_2-5b 见 §10.12）、
+测试计划 `future_iterations_test_plan.md` **§9**；归因与测量协议的教训在 `TROUBLESHOOTING.md`
+**#35 / #37 / #38**（本节只留决策与状态）。
 
-**已完成的第一步（P9_2-0 的仪器）**：`tests/test_sampler.cpp` 新增 `SamplerPerf.ThroughputByShape`——
-vocab ∈ {50257, 128000} × batch ∈ {1, 8}，warmup 3 + 采样 21 次，报**中位数 / 极差 / min-max**，
-并给 greedy 作"一趟扫描"的参照；**不对耗时做断言**（仪器不是判据），只断言"确实跑了"（中位数 > 0）
-且采样结果落在合法下标内。协议出处 = `phase3_test_plan.md` §5 的 **G6**。
+| 落点 | 说明 |
+|---|---|
+| `src/sampler/sampler_kernels.cu` | ① `TopPParallelSampleKernel<kSubChunked>`：一行一个 256 线程 block，各线程算"自己那段连续元素"的块和（`true` 时再切 16 个子块和）→ thread 0 做"块 → 子块 → 元素"三级交叉定位；② `LaunchTopPSampler` 走 `true` = **生产路径**；③ `LaunchTopPSamplerTwoLevel` 走 `false` = **P9_2-5b 之前的形态，只作 A/B**（1 KB shared / 48 寄存器，对照生产版 17.4 KB / 51 寄存器）；④ `LaunchTopPSamplerLegacy`（旧的逐行串行实现，只作对照）；⑤ `FastTopKSampleKernel` + `LaunchTopKSamplerFast`（**契约 `k ≤ 64`，越界写哨兵 -1；性能不达标、已撤出生产**） |
+| `include/.../sampler/nucleus_cutoff.hpp`（新） | 交叉点定位的**唯一实现**：`FindCrossingSegment` / `ScanSegmentForCrossing` / `FindCrossingByLevels`，`__host__ __device__` → kernel 与 host 用例共用（避免参考漂移） |
+| `include/.../sampler/sampler_common.hpp` | 只加声明与语义说明；**API 形态与 workspace 需求未变**（`LLMRunner` 无需改动即生效） |
+| `tests/sampler_test_support.hpp`（新） | 采样器解析参考的唯一实现（排序顺序 / nucleus / 截断后归一化分布 / **并列安全**的 top-k 集合） |
+| `tests/test_sampler.cpp` | perf harness（**中位数 + 配对 + 斜率 + ABBA + 同二进制 A/B**）、S-15/S-16/S-21/S-24、`NucleusCutoffTest.*`（4 条 host）、`SamplerReferenceTest.*`（3 条 host） |
+| `tests/test_fp16_paths.cpp` | S-12 / S-13（Top-K / Top-P 的 FP16 分布） |
 
-**下一步（真机，待执行）**：
-```bash
-MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests --gtest_filter='*SamplerPerf*'
-```
-出来的基线决定 §9.2 怎么走：**sampler 占比/耗时显著 → 按 §10.4 的 P9_2-1~8 换实现；可忽略 → 只补
-FP16 与大 vocab 覆盖（S-12~S-17），不换实现**（这是计划里写明的合法出口）。
+**最终验收（口径 = 配对 + 斜率净成本，n=15/31，2026-09-27 真机）**
+
+| 形状 | 配对（净）`legacy/parallel` | top-p 净 | top-k 净 | greedy 净 | `top-p − top-k` |
+|---|---|---|---|---|---|
+| 50257 × 1 | **12.63×** | 0.499 ms | 0.438 | 0.035 | **60.1 µs**（p25 56.4 / p75 64.0） |
+| 50257 × 8 | **22.43×** | 0.614 | 0.588 | 0.052 | −0.5 µs |
+| 128000 × 1 | **15.73×** | 1.225 | 1.225 | 0.098 | 14.3 µs |
+| 128000 × 8 | **17.57×** | 1.471 | 1.377 | 0.155 | 130.7 µs |
+
+- **判据（§10.5 第 4 条；冻结后从未调低）：top-p 对同类 legacy ≥10× → 4/4 达标**。
+- **Top-P 的语义差异（唯一一处，勿按"更自然"的写法改回去）**：legacy 逐元素累加 `exp/total` 再与 `p` 比，
+  新实现累加 `exp` 再与 `p·Σexp` 比（先除后加 vs 先加后除）→ **极端并列处 cutoff 可能差一格**；
+  随机数消费、`>=`、稳定项取 top-1、前缀内重新归一化全部不变。因此 Top-P 的判据是**分布级 + 集合级**，
+  **不能**要求"逐 token 与 legacy 相同"（登记在测试计划 §9.4）。
+- **P9_2-5b（收尾段子块级并行化）：效果无显著差异 → 保留代码、这条优化线关闭**。同二进制 A/B 中位数
+  （子块版 − 两级版）= +4.8 / +27.3 / −330.5 / −81.3 µs，**p25/p75 全跨 0** → 效应低于本平台
+  **±400~600 µs** 的判别下限。**P9_2-5c（第一趟访存/MLP）不做**：`greedy`（本来就完全合并访存）
+  净成本 35~155 µs，而 `top-p 净 − top-k 净` @50257×1 只有 60.1 µs —— 采样内核净开销 ≈ 裸读一遍行的
+  1.7 倍，**优化空间见底**（其余 ~89% 是保留的 CUB 排序）。
+- **Top-K 快速路径（P9_2-2~4）：正确性通过**（与 legacy **逐 token 相同**），**性能不达标**（慢 6~9×，
+  根因见开发计划 §10.10）→ **已从 `LLMRunner` 撤下**（生产走旧 CUB 路径）；达标前**不要接回**。
+- **测试覆盖**：本轮新增 6 条 GPU 用例（S-12 Top-K FP16 / S-13 Top-P FP16 / S-14 Top-K 大 vocab /
+  S-15 Top-P 大 vocab / S-16 p=1 大 nucleus / S-21 分布级截断）与 10 条 host 用例
+  （`NucleusCutoffTest.*` 4 / `SamplerReferenceTest.*` 3 / S-24 3）→ **`future_iterations.md` §11 的
+  P1.5-a 据此关闭**（Top-K / Top-P 的 FP16 分支都有真机通过的用例）。
+- **过程红 1 条（非产品缺陷）**：S-14 首版——128000 第 64 名有 **4 个 token 精确并列**，参考用不稳定
+  的 `partial_sort` 取"前 k 个"会把合法的采样结果排掉。改法 = **并列安全**的 `TopKSetByValue`
+  （`value ≥ 第 k 大值`）+ 事故数据固化为 host 回归；**产品代码一行未改**（`TROUBLESHOOTING.md` #36）。
+- **仍未采集**：sampler 在**整步 decode** 中的占比（`nsys` 那一腿）→ 见 §6 的下一步建议。
+- **测量纪律（本轮最贵的教训，务必沿用）**：① 分段测量对"差百分之几"没有判别力（#37）；
+  ② 跨协议 / 跨 session 的差值**不能直接比**（#38）；③ 判"改动有没有用"要**同二进制、同轮交替测**，
+  并用**斜率** `(T4−T1)/3` 扣掉每窗口固定开销；④ 这台机器对这类问题的**判别下限约 ±400 µs**。
 
 ### 3.1 目录与构建
 
@@ -532,15 +572,21 @@ FP16 与大 vocab 覆盖（S-12~S-17），不换实现**（这是计划里写明
 
 - `mini_trt_llm/tests/test_*.cpp`：Utils / Core 骨架（cuda_check、logger、timer、memory_pool、io、
   model_config、model_registry、safetensors_loader、engine）+ Phase 1 算子 + Phase 1.5 端到端。
-- 当前状态（2026-09-26 实测，含 Phase 4 + future_iterations 批次 A + §9.2 的 P9_2-0）：沙箱内 `ctest` **216 个用例，0 失败**
-  （**90 条跳过、126 条实际执行**，含 `onnx_graph_probe`、`GpuEnvProbe`、
+- 当前状态（2026-09-27 实测，含 Phase 4 + 批次 A/B/C + §9.2 的采样器迭代）：沙箱内 `ctest` **234 个用例，0 失败**
+  （**99 条跳过、135 条实际执行**，含 `onnx_graph_probe`、`GpuEnvProbe`、
   `int8_eval_selftest`、`tokenizer_golden_check`、`int8_crosscheck_selftest`、`ArgmaxCriterion*`（6 条）、
-  `EngineCacheTest*`（5 条）与批次 A 的 16 条 host 用例）。
-  真机全量（`MINI_TRT_REQUIRE_GPU=1`）**2026-09-26 全量重跑：215 条 / 1 红**（更早那次的
-  204 条 / 201 通过 / 1 跳过 / 2 红 是修正判据之前的快照）
-  （总耗时 632.5 s；跳过的是 `int8_crosscheck`——顺序上先跑全量、后跑 C，缺报告 → 77，**跳过 ≠ 通过**）——
-  红 1 = GPT-2 FP16 NaN 复现器（按设计）；**红 2 = `Gpt2OnnxTest.MatchesAcrossProfileShapes`
-  （新红：机制已定量 = 稳定并列、低于两实现差异；判据处置待作者定夺，见 §5.13 / `TROUBLESHOOTING.md` #34）**。
+  `EngineCacheTest*`（5 条）、批次 A 的 16 条 host 用例、P9_2-5/5b 的 4 条 `NucleusCutoffTest.*`
+  与 5 条 `SamplerReferenceTest.*`、以及 P9_2-5b 的 3 条 `NucleusCutoffTest.ThreeLevel*`）。
+  真机（`MINI_TRT_REQUIRE_GPU=1`）**最近一次全量：2026-09-27，235 条 / 1 红**（含 S-12/S-14；
+  **唯一的红 = GPT-2 FP16 NaN 复现器，按设计**）。**注意**：该全量在 **P9_2-5b 之前**；
+  P9_2-5b（Top-P kernel 内部改动）之后只跑过 `Sampler*:Fp16PathTest*` 与 `*SamplerPerf*`（均通过），
+  **全量待复跑**。
+  跳过的只有 `int8_crosscheck`——顺序上先跑全量、后跑 C，缺报告 → 77，**跳过 ≠ 通过**。
+  历史快照（勿当现状）：2026-09-26 那次是 215 条 / 1 红，更早是 204 条 / 2 红；
+  2026-09-27 首批新增用例时是 228 条 / 1 红，第二次（首次跑 S-12/S-14）是 **233 条 / 2 红**。
+  **本轮（P9_2-5~7）新增的 6 条 GPU 用例（S-12 / S-13 / S-14 / S-15 / S-16 / S-21）已全部真机通过**；
+  性能数字见 §3.0g。第二次真机那条多出来的红 S-14 已定位为"参考在并列行上不良定义"，
+  **只改测试参考**（产品代码一行未改，见 `TROUBLESHOOTING.md` #36），**复跑后绿**。
   B（文本端到端）与 C（INT8 交叉校验）两批真机用例**都通过**；
   `int8_crosscheck` 若在"先全量、后跑 C"的顺序下会**跳过（77，设计如此）**，跳过 ≠ 通过。
   实测命令：`cmake --build build -j$(nproc) && ctest --test-dir build`（build 目录已配 `BUILD_TESTS=ON`）。
@@ -606,7 +652,8 @@ FP16 与大 vocab 覆盖（S-12~S-17），不换实现**（这是计划里写明
 | `include/mini_trt_llm/plugins/rmsnorm_{kernel,plugin}.hpp` + `src/plugins/rmsnorm_plugin.cu` | RMSNorm Plugin（一行一 block，FP32 `float4` / FP16 8×half 向量化，不能整除时回退标量） |
 | `include/mini_trt_llm/plugins/rope_{kernel,plugin}.hpp` + `src/plugins/rope_plugin.cu` | RoPE Plugin（half-split 约定，双输入双输出，`position_ids` 作为输入） |
 | `include/mini_trt_llm/plugins/paged_attention_{kernel,plugin}.hpp` + `src/plugins/paged_attention_plugin.cu` | PagedAttention Plugin（仅 Decoding，GQA/MHA，online softmax 单趟扫描） |
-| `include/mini_trt_llm/sampler/sampler_common.hpp` + `src/sampler/sampler_kernels.cu` | Greedy / Top-K / Top-P 采样器（设备侧 API，内联 Philox 随机源） |
+| `include/mini_trt_llm/sampler/sampler_common.hpp` + `src/sampler/sampler_kernels.cu` | Greedy / Top-K / Top-P 采样器（设备侧 API，内联 Philox 随机源）。P9_2-5 后 Top-P 的生产路径 = CUB 排序 + **行内并行**采样 kernel；旧 kernel 由 `LaunchTopPSamplerLegacy` 保留作对照（见 §3.0g） |
+| `include/mini_trt_llm/sampler/nucleus_cutoff.hpp`（P9_2-5 新增） | Top-P 的交叉点定位 `FindFirstPrefixCrossing`：`__host__ __device__`，同一份实现给 kernel 与 host 用例共用（沙箱内可裁决，见 `tests/test_sampler.cpp` 的 `NucleusCutoffTest.*`） |
 | `include/mini_trt_llm/utils/cuda_dtype.cuh` / `cuda_reduce.cuh` | 多 kernel 共用的 dtype 转换与 block 归约 |
 | `tests/test_{rmsnorm_plugin,rmsnorm_integration,rope_plugin,paged_attention_plugin,sampler}.cpp` | 算子单测 + L2 集成测试 |
 | `tests/test_gpu_guard.hpp` / `test_reference.hpp` | 共享的 GPU 门控与 CPU 参考实现 |
@@ -662,6 +709,11 @@ FP16 与大 vocab 覆盖（S-12~S-17），不换实现**（这是计划里写明
 ---
 
 ## 4. 进行中 / 未完成的部分
+
+**当前没有进行中的阶段，也没有进行中的迭代**：Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成（§4.1 ~ §4.5），
+Phase 5 已永久取消（§4.6），**Phase 之后唯一的工作流 §9.2（采样器高性能 kernel）也于 2026-09-27 收口并关闭**
+（见 §3.0g）。下面各节保留的是**各阶段当时的交付与残余缺口快照**；仍然活着的开放项一律看 §6.6 的索引
+（唯一事实来源 = `future_iterations.md` §11）。
 
 ### 4.1 Phase 1：Plugin 基础（已完成）
 
@@ -851,6 +903,20 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 - **#18（前半）**：凡"按配置推断别人的宽度"的地方都要改成"向对方查询"，即边界精度查询、
   `source_is_half` 与 decode cache 输入精度校验这三条。
 
+### 5.13b 性能"改动前后差百分之几"在本平台的判别下限（2026-09-27 沉淀，**含 workaround**）
+
+- **问题**：要裁决"换个实现快了百分之几"时，本平台（WSL2 + 单卡 + 无 Tensor Core）上单次/分段测量的
+  噪声与固定开销**和信号同量级**：实测一个平凡的 `greedy` 内核单发就要 34~156 µs；分段测出来的
+  `top-p − top-k` 会出现负值；跨 session 的同一个实现能差 ±23%。
+- **影响**：把"未获支持"误写成"已否证"、或凭 cycle 估算直接改 kernel，都发生过一次（各花一轮真机）。
+- **Workaround（perf harness 已内置）**：① **同二进制 A/B**（把改动前/后的两版都编进去，
+  `LaunchTopPSamplerTwoLevel` 即此用途）；② **同轮交替测**（ABBA，抵消轮内顺序偏置）；
+  ③ **斜率口径** `(T4−T1)/3`（同一窗口发射 1 次与 4 次求差，扣掉每窗口固定开销）；
+  ④ 报**中位数 + p25/p75**（极差会被环境脉冲污染到 ±800 µs）。
+- **结论性数字**：这台机器对这类问题的**判别下限约 ±400 µs**；小于该量级的差异**不要改代码**，
+  先确认尺子够不够用。协议级教训见 `TROUBLESHOOTING.md` **#37 / #38**，实现见
+  `tests/test_sampler.cpp` 的 `SamplerPerf.ThroughputByShape`。
+
 ### 5.13 真机新红：`Gpt2OnnxTest.MatchesAcrossProfileShapes` 在 seq=512 上 argmax 不等（**已按方案 B 结案**）
 
 - **问题**：2026-09-26 真机全量里，`batch=1 seq=512` 的**逐行 argmax 相等**断言失败；
@@ -892,6 +958,23 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 B 触发即做 / C 需外部前置 / D 冻结；含文件级改动面、步序、破坏性动作预告）与
 `docs/future_iterations_test_plan.md`（用例 → 判据 → 出处 → 环境 → 状态）。
 **启动任何一项之前先读这两份**，再按 `AGENTS.md` §5 走一遍计划对账。
+
+**当前建议的下一步（按 `future_iterations.md` §0.3 的排序规则 = 前置可否立即满足 → 解锁广度 → 成本）**：
+
+1. **decode 端到端性能画像（`nsys`，按 G6 口径）+ 落地 §6.3 的 profile target** —— 一次性解锁
+   §2.2（attention 分块值不值得）、§10.2/§6.2（子图替换要的可复现测量方法）、§2.1（显存分配开销
+   该不该动），并补上 §9.2 留下的那一问（**sampler 在整步 decode 里占多少**）。
+   需作者在真机执行（单测外的测试任务，`AGENTS.md` §0.3 须先获批）；Agent 侧可先出计划/target/判据。
+2. **§9.3 采样器参考数据固化**（`scripts/ref_sampler.py` 输出落成 `.bin`）—— 纯 host、无外部前置，
+   是 §9.2 的自然收尾。
+3. **§10.1 ONNX / 原生 I/O 契约统一**（ONNX 侧加 `Cast` 把 `input_ids` 降到 INT32）—— 无外部前置，
+   为"ONNX 路径接进 `LLMRunner`"铺路。
+4. **§2.1 显存池——先量分配开销**（最好与第 1 条同一次真机顺带量），量完再决定要不要动实现。
+
+若你想要"无新需求时推进一件有实质结论的实事"，`future_iterations.md` §0.1 点名的是
+**§1.5（P4-INT8-a：per-channel 整网退化根因）**——唯一无外部前置的**已立项**条目（做法 / 验收 /
+成本校准都写全；前 3 步不联网），代价是真机 ≤3 往返 + 改探针脚本（须先获批）。
+其后按 §0.3 的表继续（§2.4 → §2.3/G2-3 → §1.2 → §6.4 → 需联网的 §1.6 / §3.x / §4.x）。
 
 **接下来做什么，取决于触发条件**（全部见 §6.6 的开放项索引与 `future_iterations.md` §11）：
 
@@ -1017,14 +1100,23 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 **已知会失败/跳过的测试**（避免新会话误判为回归）：
 
-- 真机（`MINI_TRT_REQUIRE_GPU=1`，**2026-09-26 全量重跑：215 条 / 1 红**，见 §3.0e / §3.0f；
-  沙箱同为 215 条，其中 89 条跳过——含 2 条真机用例与缺报告时的 `int8_crosscheck`）：
+- 真机（`MINI_TRT_REQUIRE_GPU=1`，**2026-09-27 最近一次全量：235 条 / 1 红（P9_2-5b 之前）**；
+  唯一跳过 = `int8_crosscheck`（缺报告 → ctest 级 77，设计如此）；
+  沙箱 **234 条 / 0 失败，其中 99 条跳过**——含全部 GPU 用例；
+  **P9_2-5b 只改 kernel 内部、未新增 GPU 用例，所以真机要复跑的仍是那 235 条
+  （P9_2-5b 之后只跑过过滤集）**）：
   - `RealGpt2Fp16GreedyMatchesReferenceTokens`：FP16 已知限制的**按设计红**（NaN → token 不符）。
+    这是**当前唯一的红**；P9_2-5~7 的 6 条新 GPU 用例（S-12 / S-13 / S-14 / S-15 / S-16 / S-21）
+    与其余全部用例都通过。
+  - ~~`SamplerKernelTest.TopKOnLargeVocabStaysWithinTopKSet`（S-14）第一版判据红~~
+    **已修（2026-09-27）**：不是产品缺陷，是**参考在数值并列时不良定义**
+    （128000 第 64 名有 4 个 token 精确并列）→ 换成并列安全的 `TopKSetByValue`，事故固化为 host 回归；
+    完整推导见 `docs/TROUBLESHOOTING.md` **#36**。**复跑已绿**。
   - ~~`Gpt2OnnxTest.MatchesAcrossProfileShapes`：seq=512 逐行 argmax 不等~~ **已结案（2026-09-26）**：
     它是"两实现差异之下的并列"，判据按方案 B 修正并收紧为钉行号；单测真机复跑 PASSED（见 §5.13 / §3.0f）。
   - 146 条快照里的第二条红 `PagedKVCacheTest.AppendCrossesBlockBoundary...`（测试与
     `AppendDecodeStep` 契约不同步）已修复，见 `docs/TROUBLESHOOTING.md` #20 / 计划 P2S-6；
-    **"唯一红是 FP16 复现器"这句在 2026-09-26 之后不再成立**——同一次复验多出了上面那条 ONNX 新红。
+    （2026-09-26 那次多出的 ONNX 新红已于同日结案，2026-09-27 全量里不再出现。）
   引擎缓存现在**带构建指纹**（`*.engine.fingerprint`）：换代码/配置/模型会自动重建，不必再手工删；
   例外是"保留 mtime 地覆盖模型文件"——那时指纹看不出变化，需删引擎或 bump `kEngineGraphVersion`。
 - 真机：**跑全量一定要带 `MINI_TRT_REQUIRE_GPU=1`**——否则无设备时用例会静默跳过，等于白跑。
@@ -1034,7 +1126,7 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 - 沙箱：全部 GPU 用例 `GTEST_SKIP`（无 GPU，见 §5.10）；`onnx_graph_probe` 在缺 `onnx` 包或
   缺 `1_gpt2_onnx/gpt2.onnx` 时返回 77 → `Skipped`（**设计如此**，缺环境 ≠ 图有问题）。
 
-## 6.6 当前未解决项（开放项索引，2026-09-26）
+## 6.6 当前未解决项（开放项索引，2026-09-27）
 
 > **事实与触发条件的唯一来源是 `docs/future_iterations.md` §11**；已**立项**的条目
 > （目标 / 做法 / 验收判据 / 前置依赖）在同文件 §1.5（P4-INT8-a）与 §1.6（P4-INT8-b）。
@@ -1050,7 +1142,9 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 | **P4-FP16-a** | **FP16 路径仍用已废弃的 `BuilderFlag::kFP16`**（TRT 10.12 起废弃、指向 strong typing）；实测可用 | 真要迁到强类型网络时（两条 builder 的每个算子都要显式设类型） |
 | **G5 / G6** | ONNX 子图识别只做计数（未做拓扑级）／ONNX 性能无可复现测量方法 | 真要做子图替换 / 真要优化 ONNX 路径性能时（`future_iterations.md` §10.2） |
 | **G2-3 / G2-4** | `LLMRunner` 只支持 `batch = 1`（有意限定）／EOS 无法在循环内早停（语义正确、多算） | 需要批处理 / 需要真早停时 |
-| **P1.5-a ~ P1.5-d** | Top-K/Top-P 的 FP16 未覆盖；E2 完整链路留后；E3 未验多 profile 切换；采样器分布数据未固化 | 见 `future_iterations.md` §11（各有触发条件） |
+| **P1.5-b ~ P1.5-d** | E2 完整链路留后；E3 未验多 profile 切换；采样器分布数据未固化 | 见 `future_iterations.md` §11（各有触发条件）。**P1.5-a 已于 2026-09-27 关闭**（Top-K/Top-P 的 FP16 分支真机通过，见 §3.0g） |
+| ~~**P9_2-5b**~~ | Top-P 收尾段并行化：**已实施**（重扫长度 197→13 / 500→32），同二进制 A/B 判定 **效果无显著差异**（中位数 +4.8/+27.3/−330.5/−81.3 µs，p25/p75 全跨 0） | **已关闭**：代码保留、`LaunchTopPSamplerTwoLevel` 留作永久对照入口（`TROUBLESHOOTING.md` #38） |
+| ~~**P9_2-5c**~~ | ~~第一趟访存/MLP~~ | **不做**：greedy（本来就完全合并访存）净成本 35~155 µs，而 `top-p 净 − top-k 净` @50257×1 仅 60.1 µs → 优化空间见底（#38） |
 
 **另有两条"已取消 / 不属于开放项"的说明**：
 
