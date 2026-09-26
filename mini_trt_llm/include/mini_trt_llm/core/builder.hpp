@@ -2,6 +2,7 @@
 
 #include "mini_trt_llm/core/model_registry.hpp"
 #include "mini_trt_llm/core/precision.hpp"
+#include "mini_trt_llm/core/engine_cache.hpp"
 #include "logger.hpp"
 #include <NvInfer.h>
 #include <cstddef>
@@ -130,8 +131,21 @@ class EngineBuilder {
                                     nvinfer1::INetworkDefinition* network,
                                     BuildStage stage);
 
+    // 写引擎 + 写它的构建指纹 sidecar（`<engine>.fingerprint`）。
+    // 指纹必须**随引擎一起落盘**：只有引擎没有指纹时，下次运行无法判断它是否同代
+    // （见 core/engine_cache.hpp 的说明与 docs/TROUBLESHOOTING.md #34）。
     bool SerializeAndSave(nvinfer1::IHostMemory* serialized,
-                          const std::string& engine_path);
+                          const std::string& engine_path,
+                          const std::string& fingerprint,
+                          const EngineFingerprintInputs& fingerprint_inputs);
+
+    // 当前配置 / 当前代码 / 当前源文件身份对应的引擎指纹。
+    // `onnx_path` 为空表示方案 A（原生建图）。
+    // 注意：`BuildFromOnnx` 的 `subgraph_names` **刻意不进指纹**——它只影响"子图名核对"，
+    // 不改变图本身；放进去会让同一份图因为调用方传了不同名字而反复重建。
+    EngineFingerprintInputs MakeFingerprintInputs(const std::string& model_dir,
+                                                 const std::string& onnx_path,
+                                                 BuildStage stage) const;
 
     Logger& logger_;
     Config config_;

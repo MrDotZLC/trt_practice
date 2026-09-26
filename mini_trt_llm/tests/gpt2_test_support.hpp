@@ -28,6 +28,74 @@
 namespace mini_trt_llm {
 namespace test_support {
 
+// ---------------------------------------------------------------------------
+// "跨实现比较 argmax" 的可判性判据（对应 TROUBLESHOOTING.md #34，方案 B）
+//
+// 背景：两条**独立实现**（例如 ONNX 图 vs 原生图）的 logits 只做到"有界接近"，
+// 而 argmax 判等是**精确**判据。在"并列间距小于两侧差异"的行上，argmax 归谁
+// 只由那点误差的**符号**决定——结果不携带"实现是否正确"的信息，且会随构建态翻绿翻红。
+//
+// 判据（**可证**的形式，不是拍脑袋的容差）：
+//   记 m = native 该行 top1 − top2，d = 该行两侧逐元素最大绝对差。
+//   若存在满足 |δ_c| ≤ d 的扰动把 argmax 翻过去，则必有 m < 2d
+//   （因为 a[ia] − a[ib] = −m + (δ_ia − δ_ib)，而 |δ_ia − δ_ib| ≤ 2d）。
+//   所以 **m > 2d 是"该行 argmax 可判"的充分条件**：
+//   · 可判行（m > 2d）→ argmax **必须相等**；
+//   · 不可判行（m ≤ 2d）→ 允许不同，但**必须计数与打印**，并受上界约束
+//     （上界用来把"真回归"变成红：真出错会让不可判行数变大，或让可判行出现不等）。
+//
+// 为什么阈值用 2d 而不是 d：2d 是能给出**证明**的那一档；用 d 只是经验值。
+// 判据强度在有信息的地方没有下降——所有可判行仍要求逐行全等。
+// ---------------------------------------------------------------------------
+struct ArgmaxAgreement {
+    int32_t rows = 0;              // 参与比较的行数
+    int32_t undecidable_rows = 0;  // m ≤ 2d：并列低于两侧差异，不可判
+    int32_t violations = 0;        // 可判行却 argmax 不等 —— 这才是缺陷信号
+    std::vector<int32_t> undecidable_row_indices;
+    std::vector<int32_t> violating_row_indices;
+};
+
+// 逐行比较两条实现的 argmax，按上面的可判性判据分类。
+// 两个 logits 都是行主序 [rows, vocab]，vocab 为每行元素数。
+inline ArgmaxAgreement CompareArgmaxByDecidability(const float* onnx_logits,
+                                                   const float* native_logits,
+                                                   int32_t rows, int32_t vocab) {
+    ArgmaxAgreement result;
+    result.rows = rows;
+    for (int32_t row = 0; row < rows; ++row) {
+        const float* a = onnx_logits + static_cast<size_t>(row) * vocab;
+        const float* b = native_logits + static_cast<size_t>(row) * vocab;
+
+        int32_t onnx_argmax = 0;
+        int32_t native_argmax = 0;
+        float row_max_abs_diff = 0.0f;
+        for (int32_t c = 0; c < vocab; ++c) {
+            if (a[c] > a[onnx_argmax]) onnx_argmax = c;
+            if (b[c] > b[native_argmax]) native_argmax = c;
+            row_max_abs_diff = std::max(row_max_abs_diff, std::fabs(a[c] - b[c]));
+        }
+
+        // native 该行的并列间距：top1 与 top2 之差（top2 是除 top1 之外的最大值）。
+        float second = -1e30f;
+        for (int32_t c = 0; c < vocab; ++c) {
+            if (c == native_argmax) continue;
+            second = std::max(second, b[c]);
+        }
+        const float margin = b[native_argmax] - second;
+
+        if (margin > 2.0f * row_max_abs_diff) {
+            if (onnx_argmax != native_argmax) {
+                ++result.violations;
+                result.violating_row_indices.push_back(row);
+            }
+        } else {
+            ++result.undecidable_rows;
+            result.undecidable_row_indices.push_back(row);
+        }
+    }
+    return result;
+}
+
 // 用小型同构模型做"两条路径互相对拍"：快、可控，且不依赖外部基线。
 // 真实 GPT-2 上的同样对比放到 P2-3 / P2-8 的精度用例里。
 inline constexpr int32_t kLayers = 2;

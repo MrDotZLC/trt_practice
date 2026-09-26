@@ -1,6 +1,7 @@
 #include "mini_trt_llm/sampler/sampler_common.hpp"
 #include "mini_trt_llm/utils/cuda_check.hpp"
 #include "mini_trt_llm/utils/memory_pool.hpp"
+#include "mini_trt_llm/utils/timer.hpp"
 #include "test_gpu_guard.hpp"
 
 #include <cuda_runtime.h>
@@ -9,6 +10,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
+#include <iostream>
 #include <stdexcept>
 #include <vector>
 
@@ -339,6 +342,130 @@ TEST(SamplerKernelTest, TopPWithFullProbabilityDoesNotOverTruncate) {
         CollectTokenCounts(logits, kVocab, /*k=*/0, kDraws, /*use_top_p=*/true, 1.0f);
     for (int32_t v = 0; v < kVocab; ++v) {
         EXPECT_GT(counts[v], 0) << "token " << v << " never sampled with p=1.0";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P9_2-0：采样器性能基线（计划见 future_iterations_development_plan.md §10，用例编号 S-18）
+//
+// 为什么先有它：§9.2 的触发条件是"profile 确认 sampler 占比显著"，而这个数据至今不存在
+// （PROGRESS.md §3.0d 里只有 CVRunner 的 benchmark）。本用例量的是**采样器自身**的耗时，
+// 用来做"改实现前后各跑一次"的对照。
+//
+// 协议按 G6（phase3_test_plan.md §5）：先 warmup，再多次采样，**报中位数与极差**，
+// 不报单次点值——单次点值已经在 Phase 3 的性能结论上吃过一次亏。
+//
+// 两点口径说明：
+// 1) `CudaTimer::Stop` 会同步，所以每次迭代含一次同步（微秒级，相对这里的毫秒级可忽略）；
+//    报的是"设备端执行 + 一次同步"的时间。前后对比在同一台机器上有效。
+// 2) 本用例**不对耗时做断言**（仪器不是判据），只断言"确实跑起来了"（中位数 > 0）
+//    以及采样结果落在合法下标范围内。
+// ---------------------------------------------------------------------------
+TEST(SamplerPerf, ThroughputByShape) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    struct Shape {
+        int32_t vocab;
+        int32_t batch;
+    };
+    // 50257 = GPT-2 真实词表；128000 = §9.2 提到的"可达 128K"的目标规模（合成 logits）。
+    const Shape kShapes[] = {{50257, 1}, {50257, 8}, {128000, 1}, {128000, 8}};
+    constexpr int32_t kTopK = 64;
+    constexpr float kTopP = 0.9f;
+    constexpr int32_t kWarmup = 3;
+    constexpr int32_t kIterations = 21;  // 奇数 → 中位数取正中间那个样本
+
+    const auto median_of = [](std::vector<float> values) {
+        std::sort(values.begin(), values.end());
+        return values[values.size() / 2];
+    };
+
+    std::cout << "[SamplerPerf] 口径：设备端执行 + 每次一次同步（CudaTimer）；warmup=" << kWarmup
+              << "，采样 " << kIterations << " 次，报中位数与极差\n";
+
+    for (const Shape& shape : kShapes) {
+        std::vector<float> host_logits(static_cast<size_t>(shape.batch) * shape.vocab);
+        for (size_t i = 0; i < host_logits.size(); ++i) {
+            host_logits[i] = DeterministicValue(static_cast<int64_t>(i));
+        }
+        const DeviceLogits logits = UploadLogits(host_logits);
+        DeviceBuffer tokens(static_cast<size_t>(shape.batch) * sizeof(int32_t));
+        DeviceBuffer device_k(static_cast<size_t>(shape.batch) * sizeof(int32_t));
+        DeviceBuffer device_p(static_cast<size_t>(shape.batch) * sizeof(float));
+        const size_t ws_topk_bytes = TopKSamplerWorkspaceBytes(shape.batch, shape.vocab);
+        const size_t ws_topp_bytes = TopPSamplerWorkspaceBytes(shape.batch, shape.vocab);
+        DeviceBuffer ws_topk(ws_topk_bytes);
+        DeviceBuffer ws_topp(ws_topp_bytes);
+        ASSERT_TRUE(tokens.Allocate(static_cast<size_t>(shape.batch) * sizeof(int32_t)));
+        ASSERT_TRUE(device_k.Allocate(static_cast<size_t>(shape.batch) * sizeof(int32_t)));
+        ASSERT_TRUE(device_p.Allocate(static_cast<size_t>(shape.batch) * sizeof(float)));
+        ASSERT_TRUE(ws_topk.Allocate(ws_topk_bytes));
+        ASSERT_TRUE(ws_topp.Allocate(ws_topp_bytes));
+
+        const std::vector<int32_t> host_k(shape.batch, kTopK);
+        const std::vector<float> host_p(shape.batch, kTopP);
+        CUDA_CHECK(cudaMemcpy(device_k.data(), host_k.data(), host_k.size() * sizeof(int32_t),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(device_p.data(), host_p.data(), host_p.size() * sizeof(float),
+                              cudaMemcpyHostToDevice));
+
+        SamplerArgs greedy_args;
+        greedy_args.logits = logits.buffer.data();
+        greedy_args.token_ids = static_cast<int32_t*>(tokens.data());
+        greedy_args.batch_size = shape.batch;
+        greedy_args.vocab_size = shape.vocab;
+        greedy_args.is_half = false;
+
+        TopKSamplerArgs topk_args;
+        static_cast<SamplerArgs&>(topk_args) = greedy_args;
+        topk_args.top_k = static_cast<const int32_t*>(device_k.data());
+        topk_args.seed = kSeed;
+
+        TopPSamplerArgs topp_args;
+        static_cast<SamplerArgs&>(topp_args) = greedy_args;
+        topp_args.top_p = static_cast<const float*>(device_p.data());
+        topp_args.seed = kSeed;
+
+        const auto measure = [](const std::function<void()>& launch) {
+            std::vector<float> times;
+            times.reserve(kIterations);
+            for (int32_t i = 0; i < kWarmup; ++i) launch();
+            CudaTimer timer;
+            for (int32_t i = 0; i < kIterations; ++i) {
+                timer.Start(nullptr);
+                launch();
+                times.push_back(timer.Stop(nullptr));
+            }
+            return times;
+        };
+        const auto report = [&shape, &median_of](const char* name, const std::vector<float>& times) {
+            const float median = median_of(times);
+            const auto range = std::minmax_element(times.begin(), times.end());
+            std::cout << "[SamplerPerf] vocab=" << shape.vocab << " batch=" << shape.batch << " "
+                      << name << "：median=" << median << " ms, min=" << *range.first
+                      << ", max=" << *range.second << " (n=" << times.size() << ")\n";
+            return median;
+        };
+
+        // Greedy 作为"一趟扫描"的参照：它没有排序，可以当作该形状下的下界参考。
+        const float greedy_ms = report(
+            "greedy", measure([&]() { CUDA_CHECK(LaunchGreedySampler(greedy_args, nullptr)); }));
+        const float topk_ms = report("top-k(k=64)", measure([&]() {
+            CUDA_CHECK(LaunchTopKSampler(topk_args, nullptr, ws_topk.data(), ws_topk_bytes));
+        }));
+        const float topp_ms = report("top-p(p=0.9)", measure([&]() {
+            CUDA_CHECK(LaunchTopPSampler(topp_args, nullptr, ws_topp.data(), ws_topp_bytes));
+        }));
+
+        // 仪器也要自证"确实跑了"：耗时为 0 说明没执行，采样结果越界说明写坏了。
+        EXPECT_GT(greedy_ms, 0.0f);
+        EXPECT_GT(topk_ms, 0.0f);
+        EXPECT_GT(topp_ms, 0.0f);
+        for (const int32_t token : DownloadTokens(tokens, shape.batch)) {
+            EXPECT_GE(token, 0);
+            EXPECT_LT(token, shape.vocab);
+        }
+        std::cout << "[SamplerPerf] 形状内对照：top-k/greedy=" << (topk_ms / greedy_ms)
+                  << "×，top-p/greedy=" << (topp_ms / greedy_ms) << "×\n";
     }
 }
 

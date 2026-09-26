@@ -12,7 +12,10 @@ class BaseTokenizer {
  public:
     virtual ~BaseTokenizer() = default;
 
-    // 加载词表文件（具体路径含义由子类决定）
+    // 加载词表资源。**入参的含义由子类决定**——这不是随手放宽，而是刻意的接口分工：
+    // 不同 tokenizer 的资产形态本来就不同，SentencePiece 收单个 `.model` 文件，
+    // BpeTokenizer 收含 `vocab.json` + `merges.txt` 的**目录**（见 bpe_tokenizer.hpp）。
+    // 若要统一语义，先按 AGENTS.md §5 出计划：这属于改已交付接口，不是顺手能改的事。
     virtual bool Load(const std::string& vocab_path) = 0;
 
     // 文本 -> token ids

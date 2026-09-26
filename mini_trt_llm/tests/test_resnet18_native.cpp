@@ -229,15 +229,11 @@ TEST(ResNet18NativeAccuracyTest, MatchesOnnxPath) {
     }
     Logger logger;
     EngineBuilder builder(logger, Fp32Config());
-    if (!std::filesystem::exists(kNativeFp32Engine)) {
-        ASSERT_TRUE(builder.BuildFromConfig(dir, kNativeFp32Engine, BuildStage::kSingle))
-            << "原生建图/建引擎失败";
-    }
+    ASSERT_TRUE(builder.BuildFromConfig(dir, kNativeFp32Engine, BuildStage::kSingle))
+        << "原生建图/建引擎失败";
     const std::string onnx_engine = "/tmp/mini_trt_llm_resnet18_onnx_fp32.engine";
-    if (!std::filesystem::exists(onnx_engine)) {
-        EngineBuilder onnx_builder(logger, Fp32Config());
-        ASSERT_TRUE(onnx_builder.BuildFromOnnx(dir, onnx, onnx_engine, {}));
-    }
+    EngineBuilder onnx_builder(logger, Fp32Config());
+    ASSERT_TRUE(onnx_builder.BuildFromOnnx(dir, onnx, onnx_engine, {}));
 
     Engine native(kNativeFp32Engine, logger);
     Engine onnx_ctx(onnx_engine, logger);
@@ -274,9 +270,7 @@ TEST(ResNet18NativeAccuracyTest, MatchesBaseline) {
     }
     Logger logger;
     EngineBuilder builder(logger, Fp32Config());
-    if (!std::filesystem::exists(kNativeFp32Engine)) {
-        ASSERT_TRUE(builder.BuildFromConfig(dir, kNativeFp32Engine, BuildStage::kSingle));
-    }
+    ASSERT_TRUE(builder.BuildFromConfig(dir, kNativeFp32Engine, BuildStage::kSingle));
     Engine engine(kNativeFp32Engine, logger);
 
     const std::vector<float> input =
@@ -317,9 +311,7 @@ TEST(ResNet18NativeProfileTest, AcceptsBatchRangeAndRejectsOutOfRange) {
     }
     Logger logger;
     EngineBuilder builder(logger, Fp32Config());
-    if (!std::filesystem::exists(kNativeFp32Engine)) {
-        ASSERT_TRUE(builder.BuildFromConfig(dir, kNativeFp32Engine, BuildStage::kSingle));
-    }
+    ASSERT_TRUE(builder.BuildFromConfig(dir, kNativeFp32Engine, BuildStage::kSingle));
     Engine engine(kNativeFp32Engine, logger);
 
     const int32_t max_batch = 16;

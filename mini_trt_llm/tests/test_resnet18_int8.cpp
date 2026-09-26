@@ -5,6 +5,7 @@
 #include "mini_trt_llm/core/engine.hpp"
 #include "mini_trt_llm/utils/logger.hpp"
 #include "mini_trt_llm/utils/memory_pool.hpp"
+#include "mini_trt_llm/utils/json.hpp"
 #include "test_gpu_guard.hpp"
 
 #include <NvInfer.h>
@@ -75,6 +76,12 @@ constexpr float kConfidentMargin = 5.0f;
 constexpr double kConfidentAgreementFloor = 0.90;
 constexpr double kOverallAgreementFloor = 0.30;
 
+// 分层区间与桶数：从用例体内提到文件作用域，是为了让"dump + 交叉校验"那条用例与
+// 精度用例共用同一份口径——两处各写一份边界值正是本项目反复吃过的漂移来源。
+// 边界取实测 margin 分布的经验值（见 TROUBLESHOOTING §29.4）。
+constexpr float kBucketEdges[] = {1.0f, 2.0f, 5.0f, 10.0f, 1e30f};
+constexpr int32_t kNumBuckets = 5;
+
 std::string FindModelDir() {
     const std::string config = FindFile({"models/resnet18/config.json",
                                          "../models/resnet18/config.json",
@@ -113,19 +120,18 @@ EngineBuilder::Config Fp32Config() {
 }
 
 // 建（或用缓存）Q/DQ 的 INT8 引擎。
+// 这里**不自己判断"文件在不在"**：缓存的复用/失效由 `EngineBuilder` 的构建指纹统一决定
+// （见 core/engine_cache.hpp 与 docs/TROUBLESHOOTING.md #34）——测试各自判断存在性正是
+// "缓存不随代码失效"那个老坑的来源。
 void EnsureInt8Engine(EngineBuilder* builder, const std::string& model_dir,
                       const std::string& qdq_onnx) {
-    if (!std::filesystem::exists(Int8EnginePath())) {
-        ASSERT_TRUE(builder->BuildFromOnnx(model_dir, qdq_onnx, Int8EnginePath(), {}))
-            << "对称 Q/DQ 图应当能被解析并建成引擎";
-    }
+    ASSERT_TRUE(builder->BuildFromOnnx(model_dir, qdq_onnx, Int8EnginePath(), {}))
+        << "对称 Q/DQ 图应当能被解析并建成引擎";
 }
 
 void EnsureFp32Engine(EngineBuilder* builder, const std::string& model_dir,
                       const std::string& onnx) {
-    if (!std::filesystem::exists(kFp32Engine)) {
-        ASSERT_TRUE(builder->BuildFromOnnx(model_dir, onnx, kFp32Engine, {}));
-    }
+    ASSERT_TRUE(builder->BuildFromOnnx(model_dir, onnx, kFp32Engine, {}));
 }
 
 // 跑一批（batch = 输入张量的批大小）并返回 logits。
@@ -347,11 +353,9 @@ TEST(ResNet18Int8AccuracyTest, Top1AgreementOnRealImages) {
     float max_abs = 0.0f;
     // 按"FP32 的判别余量"分层统计一致性：用来回答"整体一致率为什么不是 100%"。
     // 若一致率只在小余量区间塌陷、在余量大的区间接近 100%，就说明是**指标被测试集限制**，
-    // 而不是 INT8 破坏了模型。分桶边界取实测 margin 分布的经验值（见 TROUBLESHOOTING §29.4）。
-    const float kBucketEdges[] = {1.0f, 2.0f, 5.0f, 10.0f, 1e30f};
-    const int32_t kBuckets = 5;
-    int32_t bucket_total[kBuckets] = {0, 0, 0, 0, 0};
-    int32_t bucket_agreed[kBuckets] = {0, 0, 0, 0, 0};
+    // 而不是 INT8 破坏了模型。边界与桶数见文件作用域的 kBucketEdges / kNumBuckets。
+    int32_t bucket_total[kNumBuckets] = {0, 0, 0, 0, 0};
+    int32_t bucket_agreed[kNumBuckets] = {0, 0, 0, 0, 0};
     for (int32_t start = 0; start + kBatch <= total; start += kBatch) {
         std::vector<float> batch_input(kInputElements);
         for (int32_t i = 0; i < kBatch; ++i) {
@@ -392,7 +396,7 @@ TEST(ResNet18Int8AccuracyTest, Top1AgreementOnRealImages) {
             }
             const float margin = best - second;
             const bool same = ArgmaxOfRow(fp32_logits, i) == ArgmaxOfRow(int8_logits, i);
-            for (int32_t b = 0; b < kBuckets; ++b) {
+            for (int32_t b = 0; b < kNumBuckets; ++b) {
                 if (margin < kBucketEdges[b]) {
                     ++bucket_total[b];
                     bucket_agreed[b] += same ? 1 : 0;
@@ -410,7 +414,7 @@ TEST(ResNet18Int8AccuracyTest, Top1AgreementOnRealImages) {
               << confident_agreed << "/" << confident_total << " = " << confident_rate * 100.0
               << "%\n";
     // **这条交叉统计就是"整体一致率为什么不是 100%"的答案**
-    for (int32_t b = 0; b < kBuckets; ++b) {
+    for (int32_t b = 0; b < kNumBuckets; ++b) {
         if (bucket_total[b] == 0) {
             continue;
         }
@@ -425,6 +429,238 @@ TEST(ResNet18Int8AccuracyTest, Top1AgreementOnRealImages) {
     ASSERT_GT(confident_total, 0) << "没有任何有余量的样本——这批图不适合作精度判据";
     EXPECT_GE(confident_rate, kConfidentAgreementFloor)
         << "FP32 有余量的样本上仍然不一致，说明 INT8 真的在破坏分类";
+}
+
+// ---------------------------------------------------------------------------
+// A2-5：把两个引擎的 logits 落盘 + 写出 C++ 侧的统计，供 Python 侧交叉校验。
+//
+// 为什么要这条：`tools/validate/int8_eval.py` 是"判据规格"的第二种实现，
+// 而**两条独立实现对同一批数据必须给出同一组数字**（余量子集的 n 与分子）。
+// 数值不一致就说明口径漂移——那时要查口径，不是改阈值。
+//
+// 为什么不做断言：本用例只负责**产出物**（logits / manifest / meta / cpp_report），
+// 正确性判据仍由上面那条精度用例负责；交叉校验由 `ctest -R int8_crosscheck` 完成。
+// 因此这里必须断言"文件确实写出来了"——否则一次静默失败会伪装成"跑过了"。
+//
+// **注意这批数据本身就与标定集同源**（`calib_data` 既是标定集又是当前的测试图），
+// 所以跑交叉校验时必须用 `--legacy-mode`：脚本会在报告里写明"不满足 §1.6 规格、
+// 一致率会被高估，仅用于历史口径交叉校验"。默认（严格）路径仍然会拒绝这种输入。
+// ---------------------------------------------------------------------------
+TEST(ResNet18Int8AccuracyTest, DumpsLogitsAndCppReportForCrossCheck) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    const std::string model_dir = FindModelDir();
+    const std::string onnx = FindOnnxPath();
+    const std::string qdq = FindQdqOnnx();
+    if (model_dir.empty() || onnx.empty() || qdq.empty()) {
+        GTEST_SKIP() << "需要 models/resnet18 的 onnx / qdq 产物";
+    }
+    const std::string calib_root =
+        FindFile({"0_resnet18_onnx/calib_data", "../0_resnet18_onnx/calib_data",
+                  "../../0_resnet18_onnx/calib_data", "../../../0_resnet18_onnx/calib_data"});
+    if (calib_root.empty()) {
+        GTEST_SKIP() << "需要 0_resnet18_onnx/calib_data";
+    }
+
+    Logger logger;
+    EngineBuilder int8_builder(logger, Int8Config());
+    EnsureInt8Engine(&int8_builder, model_dir, qdq);
+    EngineBuilder fp32_builder(logger, Fp32Config());
+    EnsureFp32Engine(&fp32_builder, model_dir, onnx);
+    Engine int8_engine(Int8EnginePath(), logger);
+    Engine fp32_engine(kFp32Engine, logger);
+
+    std::vector<std::string> files;
+    for (const auto& entry : std::filesystem::directory_iterator(calib_root)) {
+        if (entry.path().extension() == ".bin") {
+            files.push_back(entry.path().string());
+        }
+    }
+    std::sort(files.begin(), files.end());
+    const int32_t total = std::min<int32_t>(256, static_cast<int32_t>(files.size()));
+    ASSERT_GE(total, kBatch);
+    const int32_t usable = (total / kBatch) * kBatch;  // 只跑整 batch，与精度用例同口径
+
+    std::vector<float> fp32_all;
+    std::vector<float> int8_all;
+    fp32_all.reserve(static_cast<size_t>(usable) * kCvClasses);
+    int8_all.reserve(static_cast<size_t>(usable) * kCvClasses);
+
+    int32_t agreed = 0;
+    int32_t confident_total = 0;
+    int32_t confident_agreed = 0;
+    int32_t bucket_total[kNumBuckets] = {0, 0, 0, 0, 0};
+    int32_t bucket_agreed[kNumBuckets] = {0, 0, 0, 0, 0};
+    float max_abs = 0.0f;
+
+    for (int32_t start = 0; start + kBatch <= usable; start += kBatch) {
+        std::vector<float> batch_input(kInputElements);
+        for (int32_t i = 0; i < kBatch; ++i) {
+            const std::vector<float> image =
+                ReadF32File(files[static_cast<size_t>(start + i)],
+                            static_cast<size_t>(kCvChannels) * kCvSize * kCvSize);
+            ASSERT_EQ(image.size(), static_cast<size_t>(kCvChannels) * kCvSize * kCvSize);
+            std::copy(image.begin(), image.end(),
+                      batch_input.begin() + static_cast<ptrdiff_t>(i) *
+                                                static_cast<ptrdiff_t>(kCvChannels * kCvSize * kCvSize));
+        }
+        const std::vector<float> fp32_logits = RunBatch(&fp32_engine, batch_input, kBatch);
+        const std::vector<float> int8_logits = RunBatch(&int8_engine, batch_input, kBatch);
+        ASSERT_EQ(fp32_logits.size(), kLogitsElements);
+        ASSERT_EQ(int8_logits.size(), kLogitsElements);
+        max_abs = std::max(max_abs, ComputeDiffStats(fp32_logits, int8_logits).max_abs);
+
+        fp32_all.insert(fp32_all.end(), fp32_logits.begin(), fp32_logits.end());
+        int8_all.insert(int8_all.end(), int8_logits.begin(), int8_logits.end());
+
+        for (int32_t i = 0; i < kBatch; ++i) {
+            const bool same = ArgmaxOfRow(fp32_logits, i) == ArgmaxOfRow(int8_logits, i);
+            agreed += same ? 1 : 0;
+            const float* row = fp32_logits.data() + static_cast<size_t>(i) * kCvClasses;
+            float best = row[0];
+            float second = -1e30f;
+            for (int32_t c = 1; c < kCvClasses; ++c) {
+                if (row[c] > best) {
+                    second = best;
+                    best = row[c];
+                } else if (row[c] > second) {
+                    second = row[c];
+                }
+            }
+            const float margin = best - second;
+            if (margin >= kConfidentMargin) {
+                ++confident_total;
+                confident_agreed += same ? 1 : 0;
+            }
+            for (int32_t b = 0; b < kNumBuckets; ++b) {
+                if (margin < kBucketEdges[b]) {
+                    ++bucket_total[b];
+                    bucket_agreed[b] += same ? 1 : 0;
+                    break;
+                }
+            }
+        }
+    }
+    ASSERT_EQ(static_cast<int32_t>(fp32_all.size()), usable * kCvClasses);
+
+    const std::filesystem::path out_dir =
+        std::filesystem::temp_directory_path() / "mini_trt_llm_int8_crosscheck";
+    std::filesystem::create_directories(out_dir);
+    const std::string fp32_path = (out_dir / "fp32.f32.bin").string();
+    const std::string int8_path = (out_dir / "int8.f32.bin").string();
+    const std::string manifest_path = (out_dir / "val_manifest.json").string();
+    const std::string meta_path = (out_dir / "meta.json").string();
+    const std::string report_path = (out_dir / "cpp_report.json").string();
+
+    const auto write_floats = [](const std::string& path, const std::vector<float>& values) {
+        std::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(values.data()),
+                  static_cast<std::streamsize>(values.size() * sizeof(float)));
+    };
+    write_floats(fp32_path, fp32_all);
+    write_floats(int8_path, int8_all);
+
+    // manifest 只给文件路径：sha256 由脚本在 legacy 模式下自己算（C++ 侧没有哈希实现，
+    // 而"要求提供哈希却不核对"比"明确说由消费方计算"更糟）。
+    JsonValue::Array manifest;
+    for (int32_t i = 0; i < usable; ++i) {
+        JsonValue::Object entry;
+        entry["file"] = JsonValue(std::filesystem::absolute(files[static_cast<size_t>(i)]).string());
+        manifest.emplace_back(entry);
+    }
+    JsonValue::Object meta;
+    {
+        JsonValue::Object validation;
+        validation["name"] = JsonValue("resnet18-calib-images-legacy");
+        validation["version"] = JsonValue("2026-09-26");
+        validation["num_samples"] = JsonValue(usable);
+        validation["manifest_path"] = JsonValue(manifest_path);
+        validation["source"] = JsonValue(JsonValue::Object{
+            {"url", JsonValue("local: 0_resnet18_onnx/calib_data")},
+            {"retrieved_utc", JsonValue("n/a")},
+            {"license", JsonValue("n/a")}});
+        validation["preprocessing"] = JsonValue(JsonValue::Object{
+            {"resize", JsonValue(JsonValue::Array{JsonValue(224), JsonValue(224)})},
+            {"layout", JsonValue("NCHW")},
+            {"dtype", JsonValue("float32")},
+            {"mean", JsonValue(JsonValue::Array{JsonValue(0.485), JsonValue(0.456), JsonValue(0.406)})},
+            {"std", JsonValue(JsonValue::Array{JsonValue(0.229), JsonValue(0.224), JsonValue(0.225)})}});
+        meta["validation_set"] = JsonValue(validation);
+
+        JsonValue::Object calibration;
+        calibration["dir"] = JsonValue(calib_root);
+        calibration["num_samples"] = JsonValue(static_cast<int>(files.size()));
+        meta["calibration_set"] = JsonValue(calibration);
+        meta["labels"] = JsonValue(JsonValue::Object{
+            {"num_classes", JsonValue(kCvClasses)},
+            {"source", JsonValue("n/a（legacy 模式：无真值标签）")}});
+    }
+    JsonValue::Object report;
+    {
+        JsonValue::Object thresholds;
+        thresholds["confident_margin"] = JsonValue(static_cast<double>(kConfidentMargin));
+        thresholds["bucket_edges"] = JsonValue(JsonValue::Array{
+            JsonValue(1.0), JsonValue(2.0), JsonValue(5.0), JsonValue(10.0)});
+        thresholds["provenance"] = JsonValue("tests/test_resnet18_int8.cpp + docs/phase4_int8_plan.md §4");
+        report["thresholds"] = JsonValue(thresholds);
+
+        JsonValue::Object overall;
+        overall["n"] = JsonValue(usable);
+        overall["agree"] = JsonValue(agreed);
+        overall["agree_rate"] = JsonValue(static_cast<double>(agreed) / usable);
+        report["overall"] = JsonValue(overall);
+
+        JsonValue::Object confident;
+        confident["n"] = JsonValue(confident_total);
+        confident["agree"] = JsonValue(confident_agreed);
+        confident["agree_rate"] = confident_total > 0
+                                      ? JsonValue(static_cast<double>(confident_agreed) / confident_total)
+                                      : JsonValue();
+        confident["margin_min"] = JsonValue(static_cast<double>(kConfidentMargin));
+        report["confident"] = JsonValue(confident);
+
+        JsonValue::Array strata;
+        float lower = -1e30f;
+        for (int32_t b = 0; b < kNumBuckets; ++b) {
+            JsonValue::Object stratum;
+            stratum["bucket"] = JsonValue(std::string("bucket") + std::to_string(b));
+            stratum["lo"] = (b == 0) ? JsonValue() : JsonValue(static_cast<double>(lower));
+            stratum["hi"] = (kBucketEdges[b] > 1e29f) ? JsonValue() : JsonValue(static_cast<double>(kBucketEdges[b]));
+            stratum["n"] = JsonValue(bucket_total[b]);
+            stratum["agree"] = JsonValue(bucket_agreed[b]);
+            stratum["agree_rate"] = bucket_total[b] > 0
+                                        ? JsonValue(static_cast<double>(bucket_agreed[b]) / bucket_total[b])
+                                        : JsonValue();
+            strata.emplace_back(stratum);
+            lower = kBucketEdges[b];
+        }
+        report["strata"] = JsonValue(strata);
+        report["max_abs"] = JsonValue(static_cast<double>(max_abs));
+    }
+
+    const auto write_text = [](const std::string& path, const std::string& text) {
+        std::ofstream out(path);
+        out << text;
+    };
+    write_text(manifest_path, JsonValue(manifest).Dump(1));
+    write_text(meta_path, JsonValue(meta).Dump(1));
+    write_text(report_path, JsonValue(report).Dump(2));
+
+    // 断言"确实写出来了"（大小 > 0）——静默失败不能伪装成跑过了。
+    for (const std::string& path : {fp32_path, int8_path, manifest_path, meta_path, report_path}) {
+        ASSERT_TRUE(std::filesystem::exists(path)) << "没写出 " << path;
+        ASSERT_GT(std::filesystem::file_size(path), 0u) << "写出的文件是空的：" << path;
+    }
+
+    std::cout << "[ResNet18 INT8 交叉校验] 产物目录：" << out_dir.string() << "\n"
+              << "        C++ 侧：整体 " << agreed << "/" << usable
+              << "、余量子集 " << confident_agreed << "/" << confident_total << "、max_abs=" << max_abs
+              << "\n        下一步（在真机执行，顺序不能反）：\n"
+              << "          python3 mini_trt_llm/tools/validate/int8_eval.py \\\n"
+              << "            --fp32-logits " << fp32_path << " \\\n"
+              << "            --int8-logits " << int8_path << " \\\n"
+              << "            --meta " << meta_path << " --calib-dir " << calib_root
+              << " --legacy-mode --json-out " << (out_dir / "py_report.json").string() << "\n"
+              << "          ctest --test-dir build -R int8_crosscheck --output-on-failure\n";
 }
 
 }  // namespace mini_trt_llm

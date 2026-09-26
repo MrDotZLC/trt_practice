@@ -169,10 +169,8 @@ TEST(CvRunnerTest, InferMatchesBaseline) {
     EngineBuilder::Config builder_config;
     builder_config.precision = Precision::FP32;  // 与基线对拍必须显式指定（#21）
     EngineBuilder builder(logger, builder_config);
-    if (!std::filesystem::exists(kFp32EnginePath)) {
-        ASSERT_TRUE(builder.BuildFromOnnx(model_dir,
-                                          onnx, kFp32EnginePath, {}));
-    }
+    ASSERT_TRUE(builder.BuildFromOnnx(model_dir,
+                                      onnx, kFp32EnginePath, {}));
 
     CVRunner runner(std::make_shared<Engine>(kFp32EnginePath, logger), kMean, kStd);
     ASSERT_TRUE(runner.ok());
@@ -215,10 +213,8 @@ TEST(CvRunnerTest, RejectsInvalidBatchAndSize) {
     EngineBuilder::Config builder_config;
     builder_config.precision = Precision::FP32;
     EngineBuilder builder(logger, builder_config);
-    if (!std::filesystem::exists(kFp32EnginePath)) {
-        ASSERT_TRUE(builder.BuildFromOnnx(model_dir,
-                                          onnx, kFp32EnginePath, {}));
-    }
+    ASSERT_TRUE(builder.BuildFromOnnx(model_dir,
+                                      onnx, kFp32EnginePath, {}));
     CVRunner runner(std::make_shared<Engine>(kFp32EnginePath, logger), kMean, kStd);
     ASSERT_TRUE(runner.ok());
 
@@ -249,10 +245,8 @@ TEST(CvRunnerTest, RejectsMeanStdSizeMismatch) {
     EngineBuilder::Config builder_config;
     builder_config.precision = Precision::FP32;
     EngineBuilder builder(logger, builder_config);
-    if (!std::filesystem::exists(kFp32EnginePath)) {
-        ASSERT_TRUE(builder.BuildFromOnnx(model_dir,
-                                          onnx, kFp32EnginePath, {}));
-    }
+    ASSERT_TRUE(builder.BuildFromOnnx(model_dir,
+                                      onnx, kFp32EnginePath, {}));
     auto engine = std::make_shared<Engine>(kFp32EnginePath, logger);
 
     const std::vector<float> one_image(
@@ -278,10 +272,8 @@ TEST(CvRunnerTest, BenchmarkReportsFiniteStats) {
     EngineBuilder::Config builder_config;
     builder_config.precision = Precision::FP32;
     EngineBuilder builder(logger, builder_config);
-    if (!std::filesystem::exists(kFp32EnginePath)) {
-        ASSERT_TRUE(builder.BuildFromOnnx(model_dir,
-                                          onnx, kFp32EnginePath, {}));
-    }
+    ASSERT_TRUE(builder.BuildFromOnnx(model_dir,
+                                      onnx, kFp32EnginePath, {}));
     CVRunner runner(std::make_shared<Engine>(kFp32EnginePath, logger), kMean, kStd);
     ASSERT_TRUE(runner.ok());
 
@@ -319,9 +311,7 @@ TEST(CvRunnerTest, InferMatchesBaselineOnNativeEngine) {
     builder_config.precision = Precision::FP32;
     EngineBuilder builder(logger, builder_config);
     const std::string native_engine = "/tmp/mini_trt_llm_resnet18_native_fp32.engine";
-    if (!std::filesystem::exists(native_engine)) {
-        ASSERT_TRUE(builder.BuildFromConfig(model_dir, native_engine, BuildStage::kSingle));
-    }
+    ASSERT_TRUE(builder.BuildFromConfig(model_dir, native_engine, BuildStage::kSingle));
     CVRunner runner(std::make_shared<Engine>(native_engine, logger), kMean, kStd);
     ASSERT_TRUE(runner.ok());
 

@@ -119,11 +119,9 @@ std::string EnsureFp32Engine(EngineBuilder* builder, bool* built_now) {
         return {};
     }
     const std::string dir = std::filesystem::path(config).parent_path().string();
-    if (!std::filesystem::exists(kFp32EnginePath)) {
-        *built_now = true;
-        if (!builder->BuildFromOnnx(dir, onnx, kFp32EnginePath, {})) {
-            return {};
-        }
+    *built_now = true;
+    if (!builder->BuildFromOnnx(dir, onnx, kFp32EnginePath, {})) {
+        return {};
     }
     return kFp32EnginePath;
 }
@@ -190,10 +188,8 @@ TEST(ResNet18OnnxBuildTest, BuildsFromCnnConfig) {
 
     Logger logger;
     EngineBuilder builder(logger, Fp32BuilderConfig());
-    if (!std::filesystem::exists(engine_path)) {
-        ASSERT_TRUE(builder.BuildFromOnnx(dir, onnx, engine_path, {}))
-            << "CNN 的 I/O 契约（input/output）应当被接受";
-    }
+    ASSERT_TRUE(builder.BuildFromOnnx(dir, onnx, engine_path, {}))
+        << "CNN 的 I/O 契约（input/output）应当被接受";
     Engine engine(engine_path, logger);
     nvinfer1::ICudaEngine* cuda = engine.GetCudaEngine();
     ASSERT_NE(cuda, nullptr);
@@ -227,9 +223,7 @@ TEST(ResNet18OnnxAccuracyTest, MatchesBaselineOnRampInput) {
 
     Logger logger;
     EngineBuilder builder(logger, Fp32BuilderConfig());
-    if (!std::filesystem::exists(engine_path)) {
-        ASSERT_TRUE(builder.BuildFromOnnx(dir, onnx, engine_path, {}));
-    }
+    ASSERT_TRUE(builder.BuildFromOnnx(dir, onnx, engine_path, {}));
     Engine engine(engine_path, logger);
 
     const size_t elements = static_cast<size_t>(kBatch) * 3 * 224 * 224;
@@ -279,9 +273,7 @@ TEST(ResNet18OnnxAccuracyTest, MatchesBaselineOnPixels) {
 
     Logger logger;
     EngineBuilder builder(logger, Fp32BuilderConfig());
-    if (!std::filesystem::exists(kFp32EnginePath)) {
-        ASSERT_TRUE(builder.BuildFromOnnx(dir, onnx, kFp32EnginePath, {}));
-    }
+    ASSERT_TRUE(builder.BuildFromOnnx(dir, onnx, kFp32EnginePath, {}));
     Engine engine(kFp32EnginePath, logger);
 
     const size_t elements = static_cast<size_t>(kBatch) * 3 * 224 * 224;

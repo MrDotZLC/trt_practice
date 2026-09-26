@@ -180,9 +180,7 @@ TEST(ResNet18Fp16PathTest, OnnxEngineMatchesFp32Baseline) {
     }
     Logger logger;
     EngineBuilder builder(logger, Fp16Config());
-    if (!std::filesystem::exists(kOnnxFp16Engine)) {
-        ASSERT_TRUE(builder.BuildFromOnnx(dir, onnx, kOnnxFp16Engine, {}));
-    }
+    ASSERT_TRUE(builder.BuildFromOnnx(dir, onnx, kOnnxFp16Engine, {}));
     Engine engine(kOnnxFp16Engine, logger);
 
     const std::vector<float> input = ReadF32File(
@@ -209,12 +207,8 @@ TEST(ResNet18Fp16PathTest, NativeMatchesOnnxInFp16) {
     }
     Logger logger;
     EngineBuilder builder(logger, Fp16Config());
-    if (!std::filesystem::exists(kOnnxFp16Engine)) {
-        ASSERT_TRUE(builder.BuildFromOnnx(dir, onnx, kOnnxFp16Engine, {}));
-    }
-    if (!std::filesystem::exists(kNativeFp16Engine)) {
-        ASSERT_TRUE(builder.BuildFromConfig(dir, kNativeFp16Engine, BuildStage::kSingle));
-    }
+    ASSERT_TRUE(builder.BuildFromOnnx(dir, onnx, kOnnxFp16Engine, {}));
+    ASSERT_TRUE(builder.BuildFromConfig(dir, kNativeFp16Engine, BuildStage::kSingle));
     Engine onnx_engine(kOnnxFp16Engine, logger);
     Engine native_engine(kNativeFp16Engine, logger);
 
@@ -246,9 +240,7 @@ TEST(ResNet18Fp16PathTest, NativeMatchesOnnxInFp16) {
     // 把"三角"打出来当证据：两条 FP16 各自离 FP32 多远、它们互相差多少。
     // 没有这几行，"阈值为什么是这个数"就只能靠嘴说——而那正是 AGENTS.md §7 禁止的。
     EngineBuilder fp32_builder(logger, Fp32Config());
-    if (!std::filesystem::exists(kNativeFp32Engine)) {
-        ASSERT_TRUE(fp32_builder.BuildFromConfig(dir, kNativeFp32Engine, BuildStage::kSingle));
-    }
+    ASSERT_TRUE(fp32_builder.BuildFromConfig(dir, kNativeFp32Engine, BuildStage::kSingle));
     Engine fp32_engine(kNativeFp32Engine, logger);
     const std::vector<float> fp32_logits = RunEngine(&fp32_engine, input);
     ASSERT_EQ(fp32_logits.size(), kLogitsElements);
@@ -275,9 +267,7 @@ TEST(ResNet18Fp16PathTest, NativeEngineMatchesFp32Baseline) {
     }
     Logger logger;
     EngineBuilder builder(logger, Fp16Config());
-    if (!std::filesystem::exists(kNativeFp16Engine)) {
-        ASSERT_TRUE(builder.BuildFromConfig(dir, kNativeFp16Engine, BuildStage::kSingle));
-    }
+    ASSERT_TRUE(builder.BuildFromConfig(dir, kNativeFp16Engine, BuildStage::kSingle));
     Engine engine(kNativeFp16Engine, logger);
 
     const std::vector<float> input = ReadF32File(
@@ -304,9 +294,7 @@ TEST(ResNet18Fp16PathTest, CvRunnerOnFp16EngineMatchesFp32Baseline) {
     }
     Logger logger;
     EngineBuilder builder(logger, Fp16Config());
-    if (!std::filesystem::exists(kOnnxFp16Engine)) {
-        ASSERT_TRUE(builder.BuildFromOnnx(dir, onnx, kOnnxFp16Engine, {}));
-    }
+    ASSERT_TRUE(builder.BuildFromOnnx(dir, onnx, kOnnxFp16Engine, {}));
     const std::vector<float> mean = {test_support::kImageNetMean[0],
                                      test_support::kImageNetMean[1],
                                      test_support::kImageNetMean[2]};

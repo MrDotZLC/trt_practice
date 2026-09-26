@@ -1,8 +1,10 @@
 #include "gpt2_test_support.hpp"
+#include "tokenizer_test_support.hpp"
 #include "logger.hpp"
 #include "mini_trt_llm/core/engine.hpp"
 #include "mini_trt_llm/core/llm_runner.hpp"
 #include "mini_trt_llm/sampler/sampler_common.hpp"
+#include "mini_trt_llm/tokenizer/bpe_tokenizer.hpp"
 #include "mini_trt_llm/utils/cuda_check.hpp"
 #include "mini_trt_llm/utils/memory_pool.hpp"
 #include "test_gpu_guard.hpp"
@@ -43,7 +45,10 @@ constexpr int32_t kRealPositions = 1024;
 constexpr int32_t kRealEos = 50256;
 
 // 已核对过的外部基线（§0.3）：HF 与"全序列重算"两条路径给出同一串 token。
-const std::vector<int64_t> kExpectedPrompt = {464, 2068, 7586, 21831};  // "The quick brown fox"
+// kPromptText 与 kExpectedPrompt 必须成对看：前者是文本，后者是它的分词结果
+// （A1-10 用 BpeTokenizer 重新算一遍，把"文本入口"这一段桥接起来）。
+constexpr const char* kPromptText = "The quick brown fox";
+const std::vector<int64_t> kExpectedPrompt = {464, 2068, 7586, 21831};  // kPromptText 的分词
 const std::vector<int64_t> kExpectedTokens = {274, 389, 257, 1049, 835, 284, 651, 257};
 
 std::string SequenceToString(const std::vector<int64_t>& tokens) {
@@ -559,6 +564,106 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
         std::cout << "        " << binding.name << "  " << (binding.is_half ? "FP16" : "FP32")
                   << "  max|v|=" << max_abs << "  NaN=" << (has_nan ? "是" : "否") << "\n";
     }
+}
+
+// A1-10：把"文本 → prompt token"这一段桥接起来验证（future_iterations A1 的收口用例）。
+//
+// 为什么是 **host** 用例而不是真机：这里要证明的只有"分词结果 == 既有基线常量"这一个变量；
+// runner 的数值路径已由上面的 RealGpt2GreedyMatchesReferenceTokens（真机）覆盖。
+// 再在真机上搭一遍双引擎，只会把有限的真机预算烧在没有新信息的路径上。
+TEST(BpeTokenizerWithRunnerTest, TextPromptMatchesReferenceTokens) {
+    const std::string dir = test_support::FindTokenizerDir();
+    if (dir.empty()) GTEST_SKIP() << test_support::DescribeTokenizerProbe();
+
+    BpeTokenizer tokenizer;
+    ASSERT_TRUE(tokenizer.Load(dir)) << "资产存在但加载失败：" << dir;
+
+    const std::vector<int64_t> from_text = tokenizer.Encode(kPromptText);
+    EXPECT_EQ(from_text, kExpectedPrompt)
+        << "文本 \"" << kPromptText << "\" 的分词与真机基线不一致——"
+           "说明【文本入口】与【token 入口】是两条不同的路，先查 tokenizer 再看 runner";
+}
+
+// 清单 B：**文本进 / 文本出**的真机端到端。
+//
+// 与 A1-10 的分工：A1-10（host）只证明"分词 == 既有基线常量"；本用例把三段接起来——
+//   文本 → Encode → LLMRunner → Decode → 文本，
+// 从而把"文本入口"与 Phase 2 已真机验证过的 runner 数值路径合成一条链。
+//
+// 第 3 段的期望文本出处：本机 HF `GPT2TokenizerFast.decode([464, 2068, 7586, 21831, 274, 389,
+// 257, 1049, 835, 284, 651, 257])` 的实测输出（transformers 4.44.0，离线 local_files_only），
+// 命令与结果见 docs/future_iterations_test_plan.md §2.1 的 B 项说明。
+constexpr const char* kExpectedFullText = "The quick brown foxes are a great way to get a";
+
+TEST(Gpt2GenerateTest, RealGpt2TextPromptEndToEnd) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    const std::string dir = FindRealModelDir();
+    if (dir.empty()) {
+        GTEST_SKIP() << "models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）";
+    }
+    const std::string tokenizer_dir = test_support::FindTokenizerDir();
+    if (tokenizer_dir.empty()) {
+        GTEST_SKIP() << test_support::DescribeTokenizerProbe();
+    }
+
+    // 第 1 段：文本 -> token。分词不过关就没必要启动引擎（省一次真机往返的等待）。
+    BpeTokenizer tokenizer;
+    ASSERT_TRUE(tokenizer.Load(tokenizer_dir)) << "tokenizer 加载失败：" << tokenizer_dir;
+    const std::vector<int64_t> prompt = tokenizer.Encode(kPromptText);
+    ASSERT_EQ(prompt, kExpectedPrompt) << "分词与基线不一致，先修 tokenizer";
+
+    Logger logger;
+    EngineBuilder::Config builder_config;
+    builder_config.precision = Precision::FP32;
+    builder_config.min_prefill_batch = 1;
+    builder_config.opt_prefill_batch = 1;
+    builder_config.max_prefill_batch = 1;
+    builder_config.min_prefill_seq_len = 1;
+    builder_config.opt_prefill_seq_len = static_cast<int32_t>(kExpectedPrompt.size());
+    builder_config.max_prefill_seq_len =
+        static_cast<int32_t>(kExpectedPrompt.size() + kExpectedTokens.size());
+    builder_config.min_decode_batch = 1;
+    builder_config.opt_decode_batch = 1;
+    builder_config.max_decode_batch = 1;
+
+    // 引擎路径与 RealGpt2GreedyMatchesReferenceTokens 共用：同一份图，构建一次即可复用，
+    // 不为了避免"共路径"而多花一次分钟级构建（缓存只按路径名区分的坑在这里正好是有利的，
+    // 因为两条用例的建图配置逐字段相同）。
+    EngineBuilder builder(logger, builder_config);
+    const std::string prefill_path = "/tmp/mini_trt_llm_gpt2_real_prefill.engine";
+    const std::string decode_path = "/tmp/mini_trt_llm_gpt2_real_decode.engine";
+    ASSERT_TRUE(builder.BuildFromConfig(dir, prefill_path, BuildStage::kPrefill));
+    ASSERT_TRUE(builder.BuildFromConfig(dir, decode_path, BuildStage::kDecode));
+
+    LLMRunner::Config runner_config;
+    runner_config.num_layers = kRealLayers;
+    runner_config.num_kv_heads = kRealHeads;
+    runner_config.head_size = kRealHeadSize;
+    runner_config.block_size = kRealBlockSize;
+    runner_config.max_blocks_per_seq = kRealPositions / kRealBlockSize;
+    runner_config.num_blocks = 64;
+    runner_config.is_half = false;
+    runner_config.vocab_size = kRealVocab;
+    runner_config.eos_token_id = kRealEos;
+
+    LLMRunner runner(runner_config, std::make_shared<Engine>(prefill_path, logger),
+                     std::make_shared<Engine>(decode_path, logger), nullptr);
+    ASSERT_TRUE(runner.ok());
+
+    // 第 2 段：token -> 新 token。
+    LLMRunner::GenerateOptions options;
+    options.max_new_tokens = static_cast<int>(kExpectedTokens.size());
+    options.top_k = 1;
+    const std::vector<int64_t> generated = runner.Generate(prompt, options);
+    ASSERT_EQ(generated, kExpectedTokens)
+        << "文本 prompt 的生成结果与 HF 基线不一致（这是 runner 侧的问题，不是分词）";
+
+    // 第 3 段：token -> 文本。整段（prompt + 生成）一起解码，覆盖"续写会粘在前一个词上"这类
+    // 边界——实测基线里 274 就是 "es"，与 "fox" 拼成 "foxes"。
+    std::vector<int64_t> full = prompt;
+    full.insert(full.end(), generated.begin(), generated.end());
+    EXPECT_EQ(tokenizer.Decode(full), kExpectedFullText)
+        << "解码结果与 HF 不一致（查 Decode 的 byte 回退路径）";
 }
 
 }  // namespace mini_trt_llm

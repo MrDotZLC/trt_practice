@@ -110,10 +110,8 @@ TEST(Gpt2PrefillAccuracyTest, RealGpt2LogitsMatchReference) {
     EngineBuilder builder(logger, config);
     // kSingle：只要能出 logits，不需要导出 K/V，绑定最简单
     const std::string engine_path = "/tmp/mini_trt_llm_gpt2_accuracy.engine";
-    if (!std::filesystem::exists(engine_path)) {
-        ASSERT_TRUE(builder.BuildFromConfig(dir, engine_path, BuildStage::kSingle))
-            << "真实 GPT-2 engine 构建失败";
-    }
+    ASSERT_TRUE(builder.BuildFromConfig(dir, engine_path, BuildStage::kSingle))
+        << "真实 GPT-2 engine 构建失败";
     Engine engine(engine_path, logger);
 
     std::vector<int32_t> tokens(kPrompt.begin(), kPrompt.end());

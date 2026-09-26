@@ -62,3 +62,66 @@ if(Python3_Interpreter_FOUND)
                 --self-test --skip-if-missing)
     set_tests_properties(resnet18_convert_selftest PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+
+# ---------------------------------------------------------------------------
+# INT8 判据脚本的自检（future_iterations §1.6 的离线子项）
+#
+# 为什么进 ctest：`int8_eval.py` 里有 7 道护栏（缺 provenance / 标定集重叠 /
+# 类型错 / 清单 sha256 不符 / logits 大小不符 / 只报率不报 n / 率与分子分母不自洽），
+# 外加分层数学的自证。**护栏没有用例证明"它会拦人"就等于没有护栏**——同
+# resnet18_convert_selftest 的理由（docs/phase3_test_plan.md §5 的 G1c）。
+#
+# 环境语义：不需要 GPU，也不需要任何外部数据（自造合成 fixture）→ 沙箱即可跑，
+# 因此**不用** SKIP_RETURN_CODE：它没跑起来就是真问题，不是"缺环境"。
+# 唯一的外部条件是 Python 解释器（找不到就干脆不注册，与上面两条一致）。
+# ---------------------------------------------------------------------------
+if(Python3_Interpreter_FOUND)
+    add_test(NAME int8_eval_selftest
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/validate/int8_eval.py --self-test)
+endif()
+
+# ---------------------------------------------------------------------------
+# GPT-2 BPE 参考数据的可复现性校验（future_iterations A1）
+#
+# 为什么进 ctest：`BpeTokenizer` 的判据是"与 HF 逐 token 全等"，那份 golden 就是标尺。
+# 标尺必须能自证"它确实来自声称的 tokenizer 文件与版本"——否则参考被改错、或本机
+# tokenizer 换了版本，测试会安静地跟着一起错。
+#
+# 环境语义：缺 Python / 缺 transformers / 缺本地 vocab.json+merges.txt → 返回 77（Skipped）。
+# **脚本自身不联网**（local_files_only=True 且先查文件是否存在），所以这个跳过不等于"躲开故障"。
+# ---------------------------------------------------------------------------
+if(Python3_Interpreter_FOUND)
+    add_test(NAME tokenizer_golden_check
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/make_tokenizer_golden.py
+                --check ${CMAKE_CURRENT_SOURCE_DIR}/data/gpt2_tokenizer_golden.json
+                --skip-if-missing)
+    set_tests_properties(tokenizer_golden_check PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
+# ---------------------------------------------------------------------------
+# INT8 口径交叉校验（future_iterations A2-5）
+#
+# 为什么进 ctest：`int8_eval.py` 是判据规格的第二种实现，C++ 精度用例是第一种。
+# 两条独立实现必须给出同一组数字——不一致说明口径漂移，这时要查口径而不是改阈值。
+#
+# 环境语义：两份报告都在真机上才会产生（C++ 侧要 GPU 跑引擎，Python 侧要读那批 logits），
+# **缺报告 → 77 跳过**。跳过不是"通过"：真机执行清单里要求先跑 dump 用例、再跑脚本、
+# 最后跑这一条（顺序见 docs/future_iterations_development_plan.md §9）。
+# ---------------------------------------------------------------------------
+if(Python3_Interpreter_FOUND)
+    add_test(NAME int8_crosscheck
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/validate/crosscheck_reports.py
+                --cpp-report /tmp/mini_trt_llm_int8_crosscheck/cpp_report.json
+                --py-report /tmp/mini_trt_llm_int8_crosscheck/py_report.json
+                --skip-if-missing)
+    set_tests_properties(int8_crosscheck PROPERTIES SKIP_RETURN_CODE 77)
+
+    # 比对器自己的护栏自证（一致放行 / 分母漂移 / 阈值漂移 / 逐桶漂移 / 缺报告 → 77）。
+    # 不需要任何外部产物，所以**不用** SKIP_RETURN_CODE：没跑起来就是真问题。
+    add_test(NAME int8_crosscheck_selftest
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/validate/crosscheck_reports.py --self-test)
+endif()

@@ -220,6 +220,7 @@ python3 scripts/ref_resnet18.py --input ramp --output models/resnet18/ref_output
 | R2.5d | ✅ | 真机：原生-FP16 vs torchvision-FP32（ramp）`max_abs = 0.0329475`（rel 3.64e-3）、argmax 0/8 不一致（P4-6 补验；与三角推断一致） |
 | R2.5e | ✅ | 真机：两条 FP16 引擎的 I/O 名字与声明精度逐字段相等，均为 `input=FP32, output=FP32`（P4-6 补验） |
 | R2.6 | ✅ | 真机：QDQ 引擎 43 层 / **38 层含 Int8** / **4 层 `i8i8` tactic**（对照 FP32 引擎 0 层 Int8）；真实图 256 张整体一致 38.3%、**余量子集 12/12 = 100%**、`max_abs = 21.6`；ramp 只记录（0/8 不一致）。产物形态 `prequant_dq`（13.3 MB）。**开放项**：per-channel 整网退化（`TROUBLESHOOTING.md` #29/#30/#31，P4-INT8-a）。**"整体 38.3%"的成因已用交叉统计固化进用例输出**：按 FP32 余量分层 → `<1: 23.6%`、`1~2: 39.7%`、`2~5: 73.7%`、`5~10: 100%`、`>10: 100%`（58% 的样本余量<1，即类别本身不可判） |
+| R2.6 的后续（判据升级） | 未开始 | **验收集到位后要补报的两项**：① 带真值标签的 top-1 **正确率**（不只是与 FP32 的一致率）；② 绝对误差在**余量子集**上的 p50 / p95 / p99（不报全样本 max）。规格与脚本：`mini_trt_llm/tools/validate/README.md` + `int8_eval.py`（`--self-test` 已进 ctest）；**唯一来源**：`docs/future_iterations.md` §1.6（P4-INT8-b，前置 = 联网取带标签验收集，须先获批） |
 | R3.1 | ✅ | 真机：`CVRunner::Infer` batch=1 与 8 均 `max_abs = 1.33514e-05`（rel 8.9e-7 / 5.4e-7），与 P4-1 基线一致（P4-3） |
 | R3.2 | ✅ | 真机：batch=17、batch=0、元素数不匹配均返回空；同一 runner 在合法输入上返回 `[1,1000]`（有对照）（P4-3） |
 | R3.3 | ✅ | 真机：batch=8 时 `mean=8.357ms p50=8.231ms p99=8.592ms throughput=957.2 img/s`；只验统计自洽；非法参数返回零值（P4-3，两次运行数值差异属正常抖动，不作为判据） |

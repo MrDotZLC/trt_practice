@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <map>
 #include <sstream>
@@ -13,8 +14,10 @@ namespace mini_trt_llm {
 
 // Phase 0 极简 JSON 解析器。
 // 基于递归下降法实现，支持对象、数组、字符串、数字、bool、null。
-// 仅用于加载 model config 等小型配置，不支持 Unicode 转义与浮点指数。
-// 后续迭代可替换为 nlohmann/json。
+// 字符串转义支持完整的 JSON 集，包含 \uXXXX（含代理对）——**这是被 GPT-2 的
+// `vocab.json` 逼出来的**：它的 5 万个 key 全是 `"\u0120the"` 这种形式，
+// 不支持 \u 就等于读不了 BPE 词表（见 docs/future_iterations.md §5.1）。
+// 仍不支持浮点指数形式（`1e5`），够用即可；后续迭代可替换为 nlohmann/json。
 
 // JSON 值的运行时容器，使用 std::variant 存储具体数据。
 // Type 顺序与 variant 的 alternatives 顺序严格一致，GetType 直接通过 index() 映射。
@@ -100,8 +103,14 @@ class JsonParser {
     // 解析 [ value, ... ]，空数组直接返回。
     JsonValue ParseArray();
 
-    // 解析双引号字符串，支持标准转义序列；未处理 Unicode \uXXXX。
+    // 解析双引号字符串，支持标准转义序列与 \uXXXX（含 UTF-16 代理对）。
     JsonValue ParseString();
+
+    // 读 4 位十六进制（\u 后缀）。单独抽出来是因为代理对要连读两次。
+    uint32_t ParseHex4();
+
+    // 把一个码点按 UTF-8 追加到 out。码点由 \u 转义给出，可能是 > 0xFFFF 的增补平面。
+    static void AppendUtf8(std::string* out, uint32_t code_point);
 
     // 解析整数 / 小数 / 科学计数法数字字符串，统一用 double 存储。
     JsonValue ParseNumber();
@@ -292,6 +301,23 @@ inline JsonValue JsonParser::ParseString() {
                 case 'n': s.push_back('\n'); break;
                 case 'r': s.push_back('\r'); break;
                 case 't': s.push_back('\t'); break;
+                case 'u': {
+                    uint32_t cp = ParseHex4();
+                    // \uD800-\uDBFF 是 UTF-16 高代理，**必须**紧跟一个低代理一起还原成
+                    // 单个增补平面码点；孤立代理是非法 JSON，直接报错而不是猜一个码点。
+                    if (cp >= 0xD800 && cp <= 0xDBFF) {
+                        if (Get() != '\\' || Get() != 'u') {
+                            Error("high surrogate not followed by \\u escape");
+                        }
+                        const uint32_t low = ParseHex4();
+                        if (low < 0xDC00 || low > 0xDFFF) Error("invalid low surrogate");
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                    } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+                        Error("lone low surrogate");
+                    }
+                    AppendUtf8(&s, cp);
+                    break;
+                }
                 default:
                     Error("unknown escape sequence");
             }
@@ -300,6 +326,42 @@ inline JsonValue JsonParser::ParseString() {
         }
     }
     return JsonValue(s);
+}
+
+inline uint32_t JsonParser::ParseHex4() {
+    uint32_t value = 0;
+    for (int i = 0; i < 4; ++i) {
+        const char c = Get();
+        value <<= 4;
+        if (c >= '0' && c <= '9') {
+            value |= static_cast<uint32_t>(c - '0');
+        } else if (c >= 'a' && c <= 'f') {
+            value |= static_cast<uint32_t>(c - 'a' + 10);
+        } else if (c >= 'A' && c <= 'F') {
+            value |= static_cast<uint32_t>(c - 'A' + 10);
+        } else {
+            Error("expected hex digit in \\u escape");
+        }
+    }
+    return value;
+}
+
+inline void JsonParser::AppendUtf8(std::string* out, uint32_t code_point) {
+    if (code_point <= 0x7F) {
+        out->push_back(static_cast<char>(code_point));
+    } else if (code_point <= 0x7FF) {
+        out->push_back(static_cast<char>(0xC0 | (code_point >> 6)));
+        out->push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+    } else if (code_point <= 0xFFFF) {
+        out->push_back(static_cast<char>(0xE0 | (code_point >> 12)));
+        out->push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+        out->push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+    } else {
+        out->push_back(static_cast<char>(0xF0 | (code_point >> 18)));
+        out->push_back(static_cast<char>(0x80 | ((code_point >> 12) & 0x3F)));
+        out->push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+        out->push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+    }
 }
 
 inline JsonValue JsonParser::ParseNumber() {

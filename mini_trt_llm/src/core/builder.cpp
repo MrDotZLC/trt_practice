@@ -9,13 +9,37 @@
 #include "mini_trt_llm/utils/logger.hpp"
 #include <NvOnnxParser.h>
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <functional>
+#include <string>
 #include <utility>
 #include <vector>
 #include <stdexcept>
 
 namespace mini_trt_llm {
+
+namespace {
+
+// **手工维护的"图版本"**：任何改动建图 / 精度 / 插件行为的代码变更都要 +1。
+//
+// 为什么手工而不是自动：运行期无法察觉"图代码变了"。自动方案只有把编译时间戳写进指纹，
+// 但那会让任何一次无关重编（例如改了注释）都强制重建引擎（分钟级），代价不成比例。
+// 于是采用"约定 + 指纹里的其他项兜底"：配置、精度、源文件身份、TRT/CUDA 版本都是自动的，
+// 只有"图代码本身的代次"需要人手动声明。忘记 +1 的后果是复用旧引擎——这与本功能之前的行为等价，
+// 不会比现状更差。
+constexpr int32_t kEngineGraphVersion = 1;
+
+const char* StageName(BuildStage stage) {
+    switch (stage) {
+        case BuildStage::kSingle: return "single";
+        case BuildStage::kPrefill: return "prefill";
+        case BuildStage::kDecode: return "decode";
+    }
+    return "unknown";
+}
+
+}  // namespace
 
 OnnxIoContract OnnxIoContractFor(const std::string& architecture) {
     // 只有 cnn 是"像素质进、logits 出"的形态；其余（decoder_only / encoder_decoder）
@@ -138,7 +162,9 @@ bool EngineBuilder::SetupBuilder(
 }
 
 bool EngineBuilder::SerializeAndSave(nvinfer1::IHostMemory* serialized,
-                                     const std::string& engine_path) {
+                                     const std::string& engine_path,
+                                     const std::string& fingerprint,
+                                     const EngineFingerprintInputs& fingerprint_inputs) {
     if (!serialized) {
         MINI_TRT_LOG_ERROR("serialize engine failed");
         return false;
@@ -146,7 +172,62 @@ bool EngineBuilder::SerializeAndSave(nvinfer1::IHostMemory* serialized,
     WriteFile(engine_path, serialized->data(), serialized->size());
     MINI_TRT_LOG_INFO("Engine saved: " << engine_path
                     << " (" << serialized->size() / 1024 / 1024 << " MB)");
+    // 指纹与引擎一起落盘：下次运行要能判断"这份引擎是不是当前配置/当前代码的产物"。
+    // 写失败不算致命（引擎本身可用），但要把话说清楚，否则下次会静默重建、让人以为是别的问题。
+    if (!WriteEngineFingerprint(engine_path, fingerprint, fingerprint_inputs)) {
+        MINI_TRT_LOG_WARN("引擎指纹写入失败：" << EngineFingerprintPath(engine_path)
+                        << "（下次运行会重建这份引擎）");
+    }
     return true;
+}
+
+EngineFingerprintInputs EngineBuilder::MakeFingerprintInputs(const std::string& model_dir,
+                                                            const std::string& onnx_path,
+                                                            BuildStage stage) const {
+    EngineFingerprintInputs inputs;
+    inputs.stage = StageName(stage);
+    inputs.precision = PrecisionString(config_.precision);
+    inputs.source_kind = onnx_path.empty() ? "config" : "onnx";
+    inputs.graph_version = kEngineGraphVersion;
+    inputs.trt_version = std::to_string(getInferLibVersion());
+    int cuda_version = 0;
+    if (cudaRuntimeGetVersion(&cuda_version) == cudaSuccess) {
+        inputs.cuda_runtime_version = cuda_version;
+    }
+
+    // 源文件身份：配置 + 权重（方案 A）/ ONNX 图（方案 B）。缺文件的项也会进入指纹（identity=missing），
+    // 于是"文件从无到有"同样会让指纹变化。
+    inputs.source_files = {model_dir + "/config.json"};
+    if (onnx_path.empty()) {
+        inputs.source_files.push_back(model_dir + "/model.safetensors");
+    } else {
+        inputs.source_files.push_back(onnx_path);
+    }
+
+    // 所有影响建图的数值参数都要进来：漏掉任何一个都会让"改了范围却复用旧引擎"重新变成一个坑。
+    inputs.numeric_params = {
+        {"workspace_bytes", static_cast<int64_t>(config_.workspace_bytes)},
+        {"cv.min_batch", config_.min_batch},
+        {"cv.opt_batch", config_.opt_batch},
+        {"cv.max_batch", config_.max_batch},
+        {"prefill.min_batch", config_.min_prefill_batch},
+        {"prefill.opt_batch", config_.opt_prefill_batch},
+        {"prefill.max_batch", config_.max_prefill_batch},
+        {"prefill.min_seq", config_.min_prefill_seq_len},
+        {"prefill.opt_seq", config_.opt_prefill_seq_len},
+        {"prefill.max_seq", config_.max_prefill_seq_len},
+        {"decode.min_batch", config_.min_decode_batch},
+        {"decode.opt_batch", config_.opt_decode_batch},
+        {"decode.max_batch", config_.max_decode_batch},
+        {"decode.min_seq", config_.min_decode_seq_len},
+        {"decode.opt_seq", config_.opt_decode_seq_len},
+        {"decode.max_seq", config_.max_decode_seq_len},
+    };
+    inputs.flags = {
+        {"export_diagnostics", config_.export_diagnostics},
+        {"detailed_profiling", config_.detailed_profiling},
+    };
+    return inputs;
 }
 
 bool EngineBuilder::AddCvOptimizationProfile(nvinfer1::IBuilder* builder,
@@ -234,6 +315,21 @@ bool EngineBuilder::AddLlmOptimizationProfiles(nvinfer1::IBuilder* builder,
 bool EngineBuilder::BuildFromConfig(const std::string& model_dir,
                                     const std::string& engine_path,
                                     BuildStage stage) {
+    // 缓存检查放在最前面（在任何昂贵动作之前）：指纹一致就直接复用，
+    // 指纹不一致**必须重建**——这正是"缓存不随代码失效"那个老坑的堵法（见 core/engine_cache.hpp）。
+    const EngineFingerprintInputs fingerprint_inputs =
+        MakeFingerprintInputs(model_dir, /*onnx_path=*/{}, stage);
+    const std::string fingerprint = ComputeEngineFingerprint(fingerprint_inputs);
+    if (EngineCacheIsFresh(engine_path, fingerprint)) {
+        MINI_TRT_LOG_INFO("Engine cache hit: " << engine_path << "（指纹一致，跳过重建）");
+        return true;
+    }
+    if (std::filesystem::exists(engine_path)) {
+        // 说清楚"为什么不复用"：否则下一个人只会看到构建耗时，却不知道是配置变了还是代码变了。
+        MINI_TRT_LOG_WARN("Engine cache stale: " << engine_path
+                         << "（指纹与当前配置/代码不一致 → 重建；旧引擎将被覆盖）");
+    }
+
     ModelConfig model_config;
     try {
         model_config = ModelConfig::Load(model_dir);
@@ -300,13 +396,27 @@ bool EngineBuilder::BuildFromConfig(const std::string& model_dir,
 
     std::unique_ptr<nvinfer1::IHostMemory> serialized(
         builder->buildSerializedNetwork(*network, *trt_config));
-    return SerializeAndSave(serialized.get(), engine_path);
+    return SerializeAndSave(serialized.get(), engine_path, fingerprint, fingerprint_inputs);
 }
 
 bool EngineBuilder::BuildFromOnnx(const std::string& model_dir,
                                   const std::string& onnx_path,
                                   const std::string& engine_path,
                                   const std::vector<std::string>& subgraph_names) {
+    // 与 BuildFromConfig 同一套语义：指纹一致即复用，不一致即重建。
+    // ONNX 路径的指纹里含 ONNX 文件身份——重新导出过图必须重建。
+    const EngineFingerprintInputs fingerprint_inputs =
+        MakeFingerprintInputs(model_dir, onnx_path, BuildStage::kSingle);
+    const std::string fingerprint = ComputeEngineFingerprint(fingerprint_inputs);
+    if (EngineCacheIsFresh(engine_path, fingerprint)) {
+        MINI_TRT_LOG_INFO("Engine cache hit: " << engine_path << "（指纹一致，跳过重建）");
+        return true;
+    }
+    if (std::filesystem::exists(engine_path)) {
+        MINI_TRT_LOG_WARN("Engine cache stale: " << engine_path
+                         << "（指纹与当前配置/代码/ONNX 不一致 → 重建；旧引擎将被覆盖）");
+    }
+
     // 先做纯数据校验（与方案 A 同样的顺序理由：createInferBuilder 既慢又依赖驱动，
     // 把它排在文件检查之后能显著降低失败路径的成本）。
     ModelConfig model_config;
@@ -409,7 +519,7 @@ bool EngineBuilder::BuildFromOnnx(const std::string& model_dir,
 
     std::unique_ptr<nvinfer1::IHostMemory> serialized(
         builder->buildSerializedNetwork(*network, *trt_config));
-    return SerializeAndSave(serialized.get(), engine_path);
+    return SerializeAndSave(serialized.get(), engine_path, fingerprint, fingerprint_inputs);
 }
 
 }  // namespace mini_trt_llm
