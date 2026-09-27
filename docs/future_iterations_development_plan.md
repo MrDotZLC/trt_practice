@@ -1776,7 +1776,7 @@ diverged(L)  ⟺  PC 臂的 max_abs(L) > kDivergenceFactor × noise_floor
 |---|---|
 | 输入 | `0_resnet18_onnx/calib_data/`（500 张，**已归一化**）按文件名排序；前 8 张拼成一个 `batch=8` 张量 |
 | 比较对象 | 同一张图：**TRT 引擎输出** vs **ONNX 参考实现输出**（逐张量、逐元素） |
-| 差异 | `max_abs`（主）+ `max_rel`（辅，分母取 `max|reference|`，沿用 `tests/diff_stats.hpp` 的唯一定义） |
+| 差异 | `max_abs`（主）+ `max_rel`（辅，分母取 `max\|reference\|`，沿用 `tests/diff_stats.hpp` 的唯一定义） |
 | 逐层曲线 | 按 ONNX 图中的拓扑序（= 用例里的 `probe_index.txt` 顺序）逐行打印，**不做单点比较**（§1.5 做法第 2 条） |
 | 确定性 | 同一引擎 + 同一输入连跑 2 次，**逐位相同**（先证确定性，再谈误差曲线） |
 | 复现对照 | 与正式产物**同一套**分层口径：`margin ≥ 5` 的余量子集一致率、整体一致率 |
