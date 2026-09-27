@@ -16,7 +16,7 @@ namespace mini_trt_llm {
 // 基于递归下降法实现，支持对象、数组、字符串、数字、bool、null。
 // 字符串转义支持完整的 JSON 集，包含 \uXXXX（含代理对）——**这是被 GPT-2 的
 // `vocab.json` 逼出来的**：它的 5 万个 key 全是 `"\u0120the"` 这种形式，
-// 不支持 \u 就等于读不了 BPE 词表（见 docs/future_iterations.md §5.1）。
+// 不支持 \u 就等于读不了 BPE 词表（见 docs/future_iterations.md + OI-BPE-TOKENIZER）。
 // 仍不支持浮点指数形式（`1e5`），够用即可；后续迭代可替换为 nlohmann/json。
 
 // JSON 值的运行时容器，使用 std::variant 存储具体数据。

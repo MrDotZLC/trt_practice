@@ -1,13 +1,36 @@
 # mini_trt_llm 项目进度交接文档
 
+> 最后更新：2026-09-27（`PROGRESS.md` + `DEC-INT8-WEIGHT-SOURCE` 结案）。
+>
+> **当前基线（唯一现状口径；以下几段历史快照与各节里的旧数字都不得当作现状）**：
+> - **测试（2026-09-27 整轮复跑，最新）**：沙箱 **264 / 0 失败**；真机整轮 **264 / 1 红 / 0 跳过 / 310 s**。
+>   唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`（GPT-2 FP16 NaN，按设计，见 §5.11）。
+>   `int8_crosscheck` 这次是 **Passed**——它只在**缺报告**时按设计跳过（77）；报告由 §8.3 的 C-1/C-2 产出。
+>   **真机必须带 `MINI_TRT_REQUIRE_GPU=1`**，否则等于白跑。
+>   同轮：INT8 交叉校验复跑通过（`overall 98/256`、**余量子集 12/12**、`max_abs 21.5985`），
+>   报告里的 provenance 已换成 `路径 + ID` 形式、C++ 与 Python 两侧一致。
+> - **阶段**：Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成；Phase 5 永久取消（§4.6）。**没有下一阶段**。
+> - **精度**：GPT-2 推荐 **FP32**（FP16 端到端 NaN，按政策不修，§5.11）；ResNet18 的 FP32/FP16
+>   健康；INT8 走 Q/DQ 显式量化，判据 = "FP32 余量子集一致率"（实测 12/12），默认 per_tensor。
+> - **最近一轮交付**：per-channel 整网退化的根因 = 产图脚本的权重 scale 取自**未折 BN** 的权重
+>   （`--weight-range-source onnx` 后 54.5% → 100%）；**默认行为与正式产物逐字节未变**。见 §3.0j。
+>
+> **接手必读（入口，不在此复述）**：
+> 1. 已知限制与坑 → §5；开放项 → §6.6（事实与触发条件的唯一来源是 `future_iterations.md` §11）。
+> 2. 跑真机 → `future_iterations_development_plan.md` + `OI-RUNBOOK`；命令与前置检查都在那里。
+> 3. 开工纪律（点名才开工 / 破坏性动作先列清单）→ `AGENTS.md` 与 §2.16。
+> 4. 本地产物与再生命令 → §6.5；环境版本 → §7；测试口径 → §5.10 / §2.13。
+
+<details><summary>展开：2026-09-27 及更早的头部快照原文（保留备查；现状以上面「当前基线」为准）</summary>
+
 > 最后更新：2026-09-27（**`future_iterations.md` §1.5 / P4-INT8-a 结案**，结论见 **§3.0j**、
 > 排查过程见 `docs/TROUBLESHOOTING.md` **#46 / #47**）。
-> **当前测试基线（2026-09-27）：沙箱 264 条 / 0 失败；真机整轮全量 264 条 / 1 红 / 1 跳过**
+> **[历史快照，勿当现状] 当天记的基线**：沙箱 264 条 / 0 失败；真机整轮全量 264 条 / 1 红 / 1 跳过
 > （红 = 按设计的 GPT-2 FP16 NaN、跳过 = `int8_crosscheck` 缺报告；真机整轮 **449 s**）。
 > 两边的**总数相同**，差别只在 GPU 用例是跑还是跳过。下面这一段头部里的 242 / 243 / 235 / 259
 > 都是**当天的历史快照**（每段都标了日期），要现状请以本行为准，明细见"接手必读"第 4 条与 §3.0j。
 >
-> **本轮（2026-09-27）交付：§1.5（P4-INT8-a）结案**，一句话 ——
+> **本轮（2026-09-27）交付：`future_iterations.md` §1.5（P4-INT8-a）结案**，一句话 ——
 > **per-channel 的整网退化是产图脚本的错，不是 TRT 的错**：`quantize_resnet18.py` 的权重 scale
 > 取自**未折 BN** 的 torchvision 权重，而 Q/DQ 插在**已折 BN** 的 ONNX 权重上（逐通道折叠系数
 > 0.05~19.9）→ 16.19% 的 int8 权重被 clamp 饱和；改 `--weight-range-source onnx` 后 per-channel
@@ -35,7 +58,7 @@
 > ncu 报 `Unknown Error on device 0`、加 sudo 与显式 `--trace=cuda` 都无效、"拷到 Windows"
 > 也救不了，见 **#41**）→ 逐 kernel 分解记为**能力边界**（工具与自检都在，换机器即可用），
 > 本机改用"同 session 比值 + 上下文扫描"；② **PF-7**（ONNX vs 原生 prefill 的跨构建对照）
-> **已移交 §10.2**，不在 §11 账上。
+> **已移交 `future_iterations.md` §10.2**，不在 §11 账上。
 > 同轮补齐 §3.0f 漏改的 **3 处"存在性门"**（`test_gpt2_generate.cpp`，见 **#40**），
 > 并把 `future_iterations.md` 的 **§5.1 / §6.3 / §9.2** "优先级"行与 §0.1 对齐。
 > 沙箱 **242 条 / 0 失败**；**真机复跑应为 243 条**（P9_2-5b 之后全量一直没复跑）。
@@ -49,7 +72,7 @@
 > 跳过 = `int8_crosscheck` 缺报告）。F1 的 B 半句（短上下文退化）**经作者决定改为观测项、
 > 不设判据**——理由与账目见 `TROUBLESHOOTING.md` **#45 / #45.1**。
 >
-> 同日：**§9.2 采样器迭代收口并关闭**（Top-P 改"保留 CUB 排序 + 行内并行"；P9_2-5b 判"无显著
+> 同日：**`future_iterations.md` §9.2 采样器迭代收口并关闭**（Top-P 改"保留 CUB 排序 + 行内并行"；P9_2-5b 判"无显著
 > 差异"、P9_2-5c 不做）。**真机最近一次全量 235 条 / 1 红**（唯一红 = 按设计的 GPT-2 FP16 NaN；
 > 该全量在 P9_2-5b 之前、也在本轮新增 8 项之前）→ ~~全量待复跑~~ **已复跑**：
 > 259 条 / 1 红 / 1 跳过（见上）。
@@ -68,10 +91,11 @@
 > 2. Phase 2 的残余缺口（含已定位的已知限制）见 §5.12 与 `docs/phase2_test_plan.md` §5；
 > 3. Phase 3 的缺口只剩 **G5**（ONNX 子图识别只做计数）——**G6 的"可复现测量方法"已于
 >    2026-09-27 交付并随 §11 关闭**（见 §3.0h / 开发计划 §11.5.2）；`docs/future_iterations.md` §11。
-> 4. **测试基线（2026-09-27）**：**沙箱 264 条 / 0 失败；真机整轮全量 264 条 / 1 红 / 1 跳过**
->    （整轮 **449 s**；两边**总数相同**，差别只在 GPU 用例跑还是跳过）。
->    真机的红与跳过**都按设计**：**唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`**
->    （GPT-2 FP16 NaN，§5.11）；**唯一跳过 = `int8_crosscheck`**（缺报告 → ctest 级 77）。
+> 4. **测试基线（2026-09-27 整轮复跑）**：**沙箱 264 条 / 0 失败；真机整轮全量 264 条 / 1 红 / 0 跳过**
+>    （整轮 **310 s**；两边**总数相同**，差别只在 GPU 用例跑还是跳过）。
+>    唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`（GPT-2 FP16 NaN，按设计，§5.11）。
+>    `int8_crosscheck` 在报告齐备时**执行并通过**，只在缺报告时按设计跳过（77）。
+>    上一轮（449 s）有 1 条跳过，就是因为当时还没跑 §8.3 的 C-1/C-2。
 >    **历史演进（保留备查，勿当现状）**：204 → 215 → 235 → 242 → 259 → **264**；
 >    笔记里那句"复跑应为 243"的**外推不准**——ctest 总数在沙箱与真机是**同一个数**。
 >    过程红两条都已结案且**都不是产品缺陷**：`Gpt2OnnxTest.MatchesAcrossProfileShapes`
@@ -96,6 +120,8 @@
 >    **另一条开放项**：P4-INT8-b → `docs/future_iterations.md` **§1.6**（INT8 绝对误差判据 +
 >    带真值标签的验收集；**前置依赖 = 联网下载，须先获批**）。
 >    §6.6 与 `future_iterations.md` §11 只保留索引，目标 / 做法 / 验收判据在 §1.5 / §1.6。
+
+</details>
 
 ---
 
@@ -171,10 +197,13 @@
 - **决策**：启用 `cpp-comment-style` skill，要求注释写"Why 而非 What"，必须覆盖魔数、workaround、非直观逻辑和公共 API；禁止复述代码、逐行翻译和遗留调试注释。
 - **为什么**：项目代码会长期维护并交给多轮会话接力，清晰的"Why"注释比代码本身更能降低接手成本。
 
-### 2.12 Phase 1 算子层的接口约定（实现时确立，勿回改）
+### 2.12 [DEC-IFACE-PHASE1] Phase 1 算子层的接口约定（实现时确立，勿回改）
 
 以下五条是实现 Phase 1 Plugin 时定下的约定，其中前三条与 `phase1_development_plan.md` 的早期表述**不一致**，
 是经用户确认后的有意偏离，后续会话不要按 plan 原文"修正"回去：
+
+<details><summary>展开：2.12 [DEC-IFACE-PHASE1] Phase 1 算子层的接口约定（实现时 全文</summary>
+
 
 - **形状优先、属性兜底**：`configurePlugin` 一律以输入形状为权威来源推导 `num_heads` / `head_size` 等；
   只有对应维度是动态轴（`<= 0`）时才回退到属性值。因此针对属性的校验用例必须构造动态轴。
@@ -193,10 +222,15 @@
 另有一条 kernel 实现纪律（来自 `docs/TROUBLESHOOTING.md` #4）：
 **输出与输入分离的 kernel，只要存在"部分写入"路径，就必须显式处理未覆盖区间**。
 
-### 2.13 测试与验证约定（Phase 1 / 1.5 沉淀，后续沿用）
+</details>
+
+### 2.13 [DEC-TEST-CONVENTIONS] 测试与验证约定（Phase 1 / 1.5 沉淀，后续沿用）
 
 - **参考实现必须唯一、必须自带断言、必须有 host 侧 meta-test**。
   **为什么**：参考实现是裁决对错的标尺，标尺错了会给出错误裁决——Phase 1.5 就吃过一次
+
+<details><summary>展开：2.13 [DEC-TEST-CONVENTIONS] 测试与验证约定（Phase 1  全文</summary>
+
   （`ReferenceRoPE` 漏了 batch 维度，把实现正确的 kernel 判成错的，见 #9）。
   "参考与被测必须独立"针对的是参考 vs 实现；同一算子的两份参考彼此只会漂移，必须合并。
   参考实现是纯 host 代码，进 CI 的成本远低于一次真机往返。
@@ -264,9 +298,14 @@
   `tests/gpt2_test_support.hpp` 的 `CompareArgmaxByDecidability`，事故全记录见
   `docs/TROUBLESHOOTING.md` #34。
 
-### 2.15 Phase 2 / 3 确立的接口约定（实现时确立，勿回改）
+</details>
+
+### 2.15 [DEC-IFACE-PHASE23] Phase 2 / 3 确立的接口约定（实现时确立，勿回改）
 
 与 §2.12 同性质：这些是实现时定下、且**与直觉写法相反**的约定。后续会话不要按"更自然"的写法改回去。
+
+
+<details><summary>展开：2.15 [DEC-IFACE-PHASE23] Phase 2 / 3 确立的接口约定 全文</summary>
 
 | 约定 | 为什么（写错会怎样） |
 |---|---|
@@ -294,16 +333,24 @@
 | **引擎缓存必须带构建指纹**（`<engine>.fingerprint`）：`BuildFromConfig` / `BuildFromOnnx` 在入口比指纹，一致才复用，**缺指纹一律视为不可信并重建** | 缓存过去只按路径名复用、不随代码/配置失效，只能靠人记得删 `/tmp`（`TROUBLESHOOTING.md` #34 的牵连因素）。指纹覆盖 stage / 精度 / 源文件身份（size+mtime）/ 全部建图数值参数 / 建图开关 / TRT·CUDA 版本 / **手工图版本 `kEngineGraphVersion`**；**图代码变了必须 bump 它**（自动察觉只能靠编译时间戳，代价不成比例）。测试里各文件自己判断 `exists()` 的门全部取消——复用与否只能由 builder 决定（见 #34.10） |
 | **INT8 的判据是"FP32 有余量子集的一致率"**（阈值 ≥90%），整体一致率只作"没崩坏"下界；**能用 `IEngineInspector` 自证在跑 INT8**（需 `Config::detailed_profiling = true`，且判 `Format/Datatype: Int8`，**不是** `[I8]` 标签） | 这批图 FP32 自身摇摆（55% 样本 margin<2），整体一致率主要在测测试集噪声；不设 `kDETAILED` 则读不出逐层精度，会误判成"没跑 INT8"（#29.4 / #30.5 / `phase4_int8_plan` §4） |
 
-### 2.14 证据纪律与操作纪律（Phase 2 沉淀，后续沿用）
+</details>
+
+### 2.14 [DEC-EVIDENCE-DISCIPLINE] 证据纪律与操作纪律（Phase 2 沉淀，后续沿用）
 
 本节记录两条**流程级**教训，源自 Phase 2 的两次实际事故：
 阈值放宽（技术事故，详见 `docs/TROUBLESHOOTING.md` #15）与擅自改写 Phase 0 文件
+
+<details><summary>展开：2.14 [DEC-EVIDENCE-DISCIPLINE] 证据纪律与操作纪律（Pha 全文</summary>
+
 （操作事故，记录即本节 B 条）。它们不是技术缺陷，但代价比技术缺陷更高：
 一次是让用户承担了本可以避免的决策负担，一次差点让一个真 bug 以"全绿"的形态留下来。
 
 #### A. 禁止用"放宽期望值"换取通过
 
 当实测与期望不一致时，**允许的动作只有三种**：
+
+
+<details><summary>展开：A. 禁止用"放宽期望值"换取通过 全文</summary>
 
 1. 继续查，不给结论（状态写成"原因未知"）；
 2. 证明**期望值本身**错——必须给出独立依据（参考实现、实测敏感性数据、设计文档出处），
@@ -325,6 +372,8 @@
 - **要求"它凭什么通过"**：只看"绿了没有"会漏掉整类问题；每个 Phase 验收时，
   对关键判据要能回答"这个阈值凭什么这么定"。
 
+</details>
+
 #### B. 批准目标 ≠ 批准手段
 
 - **涉及删除/覆盖现有文件、改配置文件、动 git 历史、联网**的操作，**每一个具体动作都要单独确认**，
@@ -339,6 +388,9 @@
 
 - **诊断输出必须说明比较对象是什么**（比了哪两个东西、各自的布局/形状是什么）。
   Phase 2 出现过诊断本身比错对象、输出 `13.8` / `175` 这种"看起来像真故障"的数字——
+
+<details><summary>展开：C. 诊断代码也必须自证 全文</summary>
+
   **比没有诊断更危险**，因为它会把人引向错误的方向。
 - 读回/对拍时先确认**读取范围落在同一段分配内**（那次 `cudaMemcpy` 越界报 invalid argument
   就是这么来的）。
@@ -349,6 +401,10 @@
   加仪器之前先问："我现在能看见哪几层／哪几个量？"
 - **每轮只改一个变量**：被否证的改动不是白做（LN 精度那次排除了一整个方向），
   但同时改多个变量会让读数无法归因。
+
+</details>
+
+</details>
 
 ### 2.16 协作与权限规则（2026-09-27 收紧）
 
@@ -372,26 +428,33 @@
 | **`kPagedAttentionPluginVersion` 与 `kEngineGraphVersion` 同批 bump** | workspace 需求由 0 变正数，复用旧引擎 = 往 0 字节缓冲里写。指纹**看不见插件源码的变化**（只看模型/配置的 size+mtime）→ 必须手工声明代次 |
 | **短上下文多一次归并发射是已知代价**（实测 +1.877%，观测项） | 它来自上面那条"宿主判定不可行"；想消掉得先解决宿主可见性，不是"顺手优化" |
 
-### 2.18 §1.5 确立的仪器 / 产物纪律（2026-09-27；**下个会话按这个来，不要回退**）
+### 2.18 `future_iterations.md` §1.5 确立的仪器 / 产物纪律（2026-09-27；**下个会话按这个来，不要回退**）
 
 | 纪律 | 为什么（违反时会怎样） |
 |---|---|
 | **量化类转换：scale 必须取自"被量化那张张量"本身** | `quantize_resnet18.py` 曾用**未折 BN** 的 torchvision 权重统计 scale，却把 Q/DQ 插在**已折 BN** 的 ONNX 权重上（折叠系数逐通道 0.05~19.9）→ per-channel 16.19% 的权重被 clamp 饱和、整网余量子集一致率 54.5%（修好后 100%）。**"尺子量 A、裁剪 B"是本项目最贵的一次教训**（`TROUBLESHOOTING.md` #46）。脚本已加**来源自检**：不一致就 `[WARN]` 并写进 meta（只报不拦——默认路径的历史产物要能逐位复现） |
-| **标尺必须独立于被测实现，且自己先被校准** | §1.5 的标尺 = **ONNX 官方参考实现**（`tools/validate/qdq_reference.py`），不是"自己折 BN 的 torch 模型"：图里 BN 已折好 → **没有"折叠"这一步可错**。它带 `--self-test`（最小 Q/DQ 图**逐位**比手算语义）并进 ctest。反面教材：#30.3 曾用一个**同样不忠实**的模拟去"否证"模拟不忠实 |
+| **标尺必须独立于被测实现，且自己先被校准** | `future_iterations.md` §1.5 的标尺 = **ONNX 官方参考实现**（`tools/validate/qdq_reference.py`），不是"自己折 BN 的 torch 模型"：图里 BN 已折好 → **没有"折叠"这一步可错**。它带 `--self-test`（最小 Q/DQ 图**逐位**比手算语义）并进 ctest。反面教材：#30.3 曾用一个**同样不忠实**的模拟去"否证"模拟不忠实 |
 | **探针图必须可证"= 产物图 + 探针"** | `tools/convert/add_probe_outputs.py` **只追加 `graph.output`**，并断言 `node` / `initializer` / `input` / `opset` **逐字节不变**。若改成"重新标定 + 顺手加输出"，探针图与产物图就绑在两次独立标定上，两图不可比 |
 | **探针要探"量化前"的 float 张量，不探量化后** | 量化台阶（conv1 是 0.0796）会把 FP32 kernel 的正常差异（1e-3）在桶边界放大成 **±1 格**——噪声与待查信号同量级（#30.5）。落地自证用 `d_pre ≤ d_post`（真机：8.34e-07 vs 0.0398） |
 | **产物身份必须钉死：正式产物 vs 复现样本** | `resnet18_qdq.onnx` = **正式产物**；`resnet18_qdq_per_channel.onnx` 及其探针图 = **#46 的复现样本、不是候选基线**（生成"错源"产物时脚本会直接打印这句）。B1-4 的"PC 更差"**要的就是它**——重生成它会让 B1-4 变红，那不是故障 |
-| **能离线验的别上真机** | §1.5 整条（含修复的反证）在本机 CPU 上 4 分钟跑完；同一条排查上一轮花了 3 次真机往返（#30.5）。**先找"不依赖后端行为的证据"**（本例：直接读 ONNX 里的 int8 权重常量，数被 clamp 到 ±127 的比例） |
+| **能离线验的别上真机** | `future_iterations.md` §1.5 整条（含修复的反证）在本机 CPU 上 4 分钟跑完；同一条排查上一轮花了 3 次真机往返（#30.5）。**先找"不依赖后端行为的证据"**（本例：直接读 ONNX 里的 int8 权重常量，数被 clamp 到 ±127 的比例） |
 | **形状只能问 `IExecutionContext`，不能问 `ICudaEngine`** | 引擎上动态维是 **-1**，转 `size_t` 就是天文数字 → 报错会伪装成"显存分配失败"（#47.1，遍历 I/O 张量时必踩） |
 
 ---
 
 ## 3. 已完成的部分
 
-### 3.0a Phase 2 交付（GPT-2 原生构建，2026-09-25）
+### 3.0a [DEC-PHASE2-DELIVERY] Phase 2 交付（GPT-2 原生构建，2026-09-25）
+
+
+<details><summary>展开：3.0a [DEC-PHASE2-DELIVERY] Phase 2 交付（GPT-2  全文</summary>
 
 | 文件 / 模块 | 说明 |
 |---|---|
+
+
+<details><summary>展开：3.0a [DEC-PHASE2-DELIVERY] Phase 2 交付（GPT-2 原生 全文</summary>
+
 | `core/gpt2_model_builder.{hpp,cpp}` | GPT-2 原生建图；`kSingle` / `kPrefill` / `kDecode` 三种切面共用同一份代码，只有注意力分支不同 |
 | `core/llm_runner.{hpp,cpp}` + `core/llm_runner_kernel.{hpp,cu}` | Prefill→Decode→Sampler 自回归循环；循环内零 H2D/D2H（`position_ids` 由设备端 `context_lens` 填） |
 | `kv_cache/paged_kv_cache.{hpp,cpp}` + `paged_kv_cache_kernels.{hpp,cu}` | 分页 cache：块池、序列预留、prefill 覆盖写、decode 追加（`AppendDecodeStep`） |
@@ -417,10 +480,21 @@
 #16 追加按层推进语境长度、#18（前半）FP16 缓冲按**假定**精度分配 → 越界写。
 同一条 #18 的**后半**是另一码事：FP16 图本身产生 NaN，已登记为已知限制（§5.11），按政策不修。
 
-### 3.0b Phase 3 交付（GPT-2 ONNX 路径，2026-09-25）
+</details>
+
+</details>
+
+### 3.0b [DEC-PHASE3-DELIVERY] Phase 3 交付（GPT-2 ONNX 路径，2026-09-25）
+
+
+<details><summary>展开：3.0b [DEC-PHASE3-DELIVERY] Phase 3 交付（GPT-2  全文</summary>
 
 | 文件 / 模块 | 说明 |
 |---|---|
+
+
+<details><summary>展开：3.0b [DEC-PHASE3-DELIVERY] Phase 3 交付（GPT-2 ON 全文</summary>
+
 | `core/builder.{hpp,cpp}` | `BuildFromOnnx(model_dir, onnx_path, engine_path, subgraph_names)`：复用方案 A 的 profile/精度语义、I/O 契约校验、parse 错误逐条打印、只挂 prefill 一组 profile |
 | `tools/inspect_onnx.py` | 图结构探针：基线比对 + `absent_ops` 护栏 + 三类子图识别断言（**人工执行，未接入 ctest**） |
 | `tests/test_gpt2_onnx.cpp` | 三方对拍（ONNX/原生/HF）、FP16 对照、`seq ∈ {1,64,512}` 覆盖；`RunEngine` 按引擎**声明的** I/O 与精度读取（不假定） |
@@ -435,10 +509,21 @@
 **性能结论未定**：两次测量的方向相反（±25%，小于构建间噪声），不能据此判断 ONNX 路径
 是否更优，更不能据此决定是否做子图替换——见 `docs/future_iterations.md` §10.2。
 
-### 3.0c Phase 2 补丁（诊断输出开关 + CUDA 环境判定，2026-09-25）
+</details>
+
+</details>
+
+### 3.0c [DEC-PHASE2-PATCH] Phase 2 补丁（诊断输出开关 + CUDA 环境判定，2026-09-25）
+
+
+<details><summary>展开：3.0c [DEC-PHASE2-PATCH] Phase 2 补丁（诊断输出开关 +  全文</summary>
 
 | 文件 / 模块 | 说明 |
 |---|---|
+
+
+<details><summary>展开：3.0c [DEC-PHASE2-PATCH] Phase 2 补丁（诊断输出开关 + CU 全文</summary>
+
 | `core/imodel_builder.hpp` + `core/builder.{hpp,cpp}` | `BuildOptions::export_diagnostics` / `EngineBuilder::Config::export_diagnostics`，**默认关** |
 | `core/gpt2_model_builder.cpp` | 4 处诊断 `markOutput` 改由开关控制 → 默认构建的输出数回到 `2*n_layer + 1` |
 | `tests/test_gpu_guard.hpp` | `ProbeCudaDevice()`（主判定 `cudaGetDeviceCount`）+ `MINI_TRT_SKIP_IF_NO_CUDA` 宏 + `MINI_TRT_REQUIRE_GPU` 闸门 |
@@ -451,10 +536,20 @@
 计划与验收见 `docs/phase2_supplement_plan.md`；缺陷与实测见 `docs/TROUBLESHOOTING.md` #19 / #20。
 **真机全量结果**：146 条，0 跳过（`MINI_TRT_REQUIRE_GPU=1`），**1 条红 = FP16 NaN 复现器（按设计红）**。
 
-### 3.0d Phase 4 交付（ResNet18 / CV 路径，2026-09-26）
+</details>
+
+</details>
+
+### 3.0d [DEC-PHASE4-DELIVERY] Phase 4 交付（ResNet18 / CV 路径，2026-09-26）
 
 计划与测试计划：`docs/phase4_development_plan.md`、`docs/phase4_test_plan.md`；
 INT8 子计划：`docs/phase4_int8_plan.md`；缺陷与排查：#21 ~ #31。
+
+<details><summary>展开：3.0d [DEC-PHASE4-DELIVERY] Phase 4 交付（ResNet 全文</summary>
+
+
+<details><summary>展开：3.0d [DEC-PHASE4-DELIVERY] Phase 4 交付（ResNet18 全文</summary>
+
 
 | 文件 / 模块 | 说明 |
 |---|---|
@@ -486,14 +581,24 @@ INT8 子计划：`docs/phase4_int8_plan.md`；缺陷与排查：#21 ~ #31。
 
 **开放项**：见 §6.6（P4-INT8-a / P4-INT8-b / P4-FP16-a 等）。
 
-### 3.0e future_iterations 批次 A 交付（2026-09-26）
+</details>
+
+</details>
+
+### 3.0e [DEC-BATCH-A-DELIVERY] future_iterations 批次 A 交付（2026-09-26）
 
 按 `docs/future_iterations_development_plan.md` 的分批，**批次 A（可立即开工）**两项已落地；
 计划 / 用例 / 判据出处见该文件与 `docs/future_iterations_test_plan.md`。
 
+<details><summary>展开：3.0e [DEC-BATCH-A-DELIVERY] future_iteration 全文</summary>
+
+
+<details><summary>展开：3.0e [DEC-BATCH-A-DELIVERY] future_iterations  全文</summary>
+
+
 | 文件 / 模块 | 说明 |
 |---|---|
-| `tools/validate/README.md` + `int8_eval.py` | **A2（§1.6 的离线子项）**：INT8 判据的验收集规格（meta 必需字段 / 重叠排除规则 / 率必带 n）与评估脚本（分层报告、余量子集 p50·p95·p99、带真值标签时另报 top-1 正确率）。含 `--self-test`（3 项分层数学 + 7 道护栏），已注册 ctest 项 `int8_eval_selftest`。**不下载任何数据** |
+| `tools/validate/README.md` + `int8_eval.py` | **A2（`future_iterations.md` §1.6 的离线子项）**：INT8 判据的验收集规格（meta 必需字段 / 重叠排除规则 / 率必带 n）与评估脚本（分层报告、余量子集 p50·p95·p99、带真值标签时另报 top-1 正确率）。含 `--self-test`（3 项分层数学 + 7 道护栏），已注册 ctest 项 `int8_eval_selftest`。**不下载任何数据** |
 | `tokenizer/bpe_tokenizer.{hpp,cpp}` | **A1（§5.1）**：GPT-2 byte-level BPE。`Load` 入参 = **目录**（`vocab.json` + `merges.txt`）；`Encode` 先按 GPT-2 正则语义做预切分、再按 merge rank 合并；`Decode` 走 byte 回退并在非法 UTF-8 处替换 U+FFFD；额外提供 `PreTokenizeForTesting` / `ByteEncodedPiecesForTesting` 供排错 |
 | `utils/json.hpp`（改动） | 补 `\uXXXX`（含 UTF-16 代理对）——GPT-2 的 `vocab.json` 全是这种转义，原先直接抛 `unknown escape sequence`；覆盖见 `tests/test_json.cpp`（6 条） |
 | `tools/make_tokenizer_golden.py` + `tests/data/gpt2_tokenizer_golden.json` | 参考数据的生成与校验。golden 存每个样本的 `text` / **`pieces`（HF 预切分结果）** / `ids` / `decoded` 与来源文件 SHA256；`--check` 已注册 ctest 项 `tokenizer_golden_check`（重新用 HF 算一遍再比对）。**脚本 `local_files_only=True`，不联网** |
@@ -544,11 +649,21 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
 > **原"A2-5 尚未申请"已不成立**：C 批（C-1 / C-2 / C-3）已在真机跑通并把 artefact 落盘，口径交叉校验完成；
 > 收尾事项见 §3.0f 末尾。
 
-### 3.0f 判据修正 + 引擎缓存指纹（2026-09-26，承接真机新红 #34）
+</details>
+
+</details>
+
+### 3.0f [DEC-ENGINE-FINGERPRINT] 判据修正 + 引擎缓存指纹（2026-09-26，承接真机新红 #34）
 
 **背景**：真机全量出现一条新红 `Gpt2OnnxTest.MatchesAcrossProfileShapes`（seq=512 逐行 argmax）。
 机制已被**定量**为"两实现差异之下的并列"——数据与三个可核对事实见 `TROUBLESHOOTING.md` **#34**
-（§34.6 定量、§34.8 为何 Phase 3 曾绿、§34.9 判据、§34.10 指纹）。
+
+<details><summary>展开：3.0f [DEC-ENGINE-FINGERPRINT] 判据修正 + 引擎缓存指纹（ 全文</summary>
+
+
+<details><summary>展开：3.0f [DEC-ENGINE-FINGERPRINT] 判据修正 + 引擎缓存指纹（20 全文</summary>
+
+（`TROUBLESHOOTING.md` §34.6 定量、`TROUBLESHOOTING.md` §34.8 为何 Phase 3 曾绿、`TROUBLESHOOTING.md` §34.9 判据、`TROUBLESHOOTING.md` §34.10 指纹）。
 
 | 文件 / 模块 | 说明 |
 |---|---|
@@ -575,10 +690,20 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
    → 指纹生效。这是真机上唯一能证明该机制的观察点。
 3. 仍待触发：`docs/future_iterations.md` §11 的 **SP-1**（SentencePieceTokenizer 未验证）。
 
-### 3.0g §9.2 采样器高性能 kernel（P9_2-0 ~ P9_2-5b，2026-09-26 ~ 27，**已关闭**）
+</details>
+
+</details>
+
+### 3.0g [DEC-SAMPLER-KERNEL] `future_iterations.md` §9.2 采样器高性能 kernel（P9_2-0 ~ P9_2-5b，2026-09-26 ~ 27，**已关闭**）
 
 **计划落点**：开发计划 `future_iterations_development_plan.md` **§10**（P9_2-5b 见 §10.12）、
 测试计划 `future_iterations_test_plan.md` **§9**；归因与测量协议的教训在 `TROUBLESHOOTING.md`
+
+<details><summary>展开：3.0g [DEC-SAMPLER-KERNEL] `future_iterations 全文</summary>
+
+
+<details><summary>展开：3.0g [DEC-SAMPLER-KERNEL] `future_iterations.m 全文</summary>
+
 **#35 / #37 / #38**（本节只留决策与状态）。
 
 | 落点 | 说明 |
@@ -599,7 +724,7 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
 | 128000 × 1 | **15.73×** | 1.225 | 1.225 | 0.098 | 14.3 µs |
 | 128000 × 8 | **17.57×** | 1.471 | 1.377 | 0.155 | 130.7 µs |
 
-- **判据（§10.5 第 4 条；冻结后从未调低）：top-p 对同类 legacy ≥10× → 4/4 达标**。
+- **判据（`future_iterations_development_plan.md` §10.5 第 4 条；冻结后从未调低）：top-p 对同类 legacy ≥10× → 4/4 达标**。
 - **Top-P 的语义差异（唯一一处，勿按"更自然"的写法改回去）**：legacy 逐元素累加 `exp/total` 再与 `p` 比，
   新实现累加 `exp` 再与 `p·Σexp` 比（先除后加 vs 先加后除）→ **极端并列处 cutoff 可能差一格**；
   随机数消费、`>=`、稳定项取 top-1、前缀内重新归一化全部不变。因此 Top-P 的判据是**分布级 + 集合级**，
@@ -623,10 +748,20 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
   ② 跨协议 / 跨 session 的差值**不能直接比**（#38）；③ 判"改动有没有用"要**同二进制、同轮交替测**，
   并用**斜率** `(T4−T1)/3` 扣掉每窗口固定开销；④ 这台机器对这类问题的**判别下限约 ±400 µs**。
 
-### 3.0h decode 性能画像基建（2026-09-27，**已出首份数据；kernel 时间线待宿主机**）
+</details>
+
+</details>
+
+### 3.0h [DEC-PERF-PROFILE] decode 性能画像基建（2026-09-27，**已出首份数据；kernel 时间线待宿主机**）
 
 **计划落点**：`future_iterations.md` §6.3 与 §11 的 **G6**；开发计划 **§11**（P6_3-0 ~ P6_3-7）、
 测试计划 **§10**（PF-1 ~ PF-7）。本节只记"落点 + 状态"，口径与判据在开发计划 §11.3 / §11.4。
+
+<details><summary>展开：3.0h [DEC-PERF-PROFILE] decode 性能画像基建（2026-0 全文</summary>
+
+
+<details><summary>展开：3.0h [DEC-PERF-PROFILE] decode 性能画像基建（2026-09- 全文</summary>
+
 
 | 落点 | 说明 |
 |---|---|
@@ -646,7 +781,7 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
   所以 P6_3-0（仪器自证）与 P6_3-4 ~ P6_3-6（出数）**只能由作者在 WSL2 真机执行**（命令见开发计划 §11.9）；
 - **后续进展（同日）**：`profile_gpt2` 真机跑通并出数；**sampler 占比**（PF-8）与
   **attention 占比**（PF-9 上下文扫描）都有了；`§2.1`（显存池）的触发条件**未获支持**；
-  `§2.2` 触发成立 → 升 P2；只有 **`§10.2`（ONNX 子图替换）仍缺可复现性能对照（PF-7 未跑）**；
+  `§2.2` 触发成立 → 升 P2；只有 **``future_iterations.md` §10.2`（ONNX 子图替换）仍缺可复现性能对照（PF-7 未跑）**；
 - **逐 kernel 分解仍未拿到**（WSL2 的 nsys 采不到 GPU 活动、ncu 不可用、加 sudo 与显式 trace 都无效，见 #41），
   但它已不再阻塞 §2.2（改用上下文扫描回答）。
 - 引擎缓存：`Gpt2DecodePerf` 与 `RealGpt2Greedy...` **共用** engine 路径与形状参数，
@@ -666,7 +801,7 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
 3. **本机两条 CLI profiling 路径都拿不到 kernel 时间线**：nsys 报告不含 GPU kernel 数据
    （`cuda_gpu_kern_sum` 连表头都没有），`profile_gpt2_ncu` 也失败
    （`==ERROR== Unknown Error on device 0.`、无 `.ncu-rep`）；**"拷到 Windows 看"没用**
-   ——数据压根没被采集（#41 更正了 #39 的说法）。**CUDA API 摘要是好的** → §11.4 的
+   ——数据压根没被采集（#41 更正了 #39 的说法）。**CUDA API 摘要是好的** → `future_iterations_development_plan.md` §11.4 的
    "三层 kernel 分解"仍未拿到；绕法见 #41。**PF-5（分配开销）不受影响**，已拿到初步数据
    （GPT-2：`cudaMalloc` 63 次 / 3.335 ms、`cudaFree` 69 次 / 249.7 ms；
    **`cudaFree` 含隐式同步，不等于纯分配器成本**）。
@@ -688,7 +823,7 @@ FP32、greedy、prompt 4 token、生成 32、n=15 + warmup 3、每轮 ABBA）：
 
 1. **同 session 漂移 10~18%**（T(1) 0.917 ms / 18.5%，T(32) 9.478 ms / 10.2%），
    同期 GPU 72→78 °C、44.5→65.7 W → **机器未进稳态**；decode 量级的比较**必须**同轮交替，
-   且**不能**套用 §9.2 的 ±400~600 µs 下限（#39 的教训）。
+   且**不能**套用 `future_iterations.md` §9.2 的 ±400~600 µs 下限（#39 的教训）。
 2. **batch=1 的 decode 是每步固定开销主导**：prefill 4 个 token 约 2.10 ms，decode 每个 token
   却要 2.85 ms，全程 ~30921 次 `cudaLaunchKernel`（~26 次/步）→ 假设是 launch/固定开销占大头，
   **待 kernel 时间线定论**。**（同日修正：这只在短上下文成立——第 5 条的上下文扫描显示，
@@ -704,7 +839,7 @@ FP32、greedy、prompt 4 token、生成 32、n=15 + warmup 3、每轮 ABBA）：
    而两次"绕开整段排序"的尝试（fast top-k）都更慢 → **暂无已知的优化抓手**，不必据此排期；
    ③ decode 步本身跨 session 漂 ±27%（2.458 / 2.847 / 3.365）→ 占比只在同一 session 内可比。
    **逐 kernel 分解**（attention vs MLP）仍拿不到；但**attention 的占比已由第 5 条的
-   上下文扫描回答**（长上下文 ≈80%）→ §2.2 的触发条件成立；`§10.2` 仍挂着。
+   上下文扫描回答**（长上下文 ≈80%）→ §2.2 的触发条件成立；``future_iterations.md` §10.2` 仍挂着。
 
 5. **上下文扫描（PF-9，2026-09-27 真机）：attention 在长上下文下占每步 ≈80% —— §2.2 的触发条件由此成立。**
    既然 profiler 拿不到 kernel 时间线（#41），改用"attention 随上下文增长、其余每步固定"这个
@@ -728,24 +863,34 @@ FP32、greedy、prompt 4 token、生成 32、n=15 + warmup 3、每轮 ABBA）：
    上下文一长分母就变大，长上下文下同样的 sampler 只占 ≈3%（0.49 ÷ 14.7）。**占比随上下文变**，
    引用时必须带上上下文长度。
 
-**收口（2026-09-27）：§11 关闭。** 目标（"把 decode 的时间花在哪从不知道变成知道 + 留下可复现的尺子"）
+**收口（2026-09-27）：`future_iterations.md` §11 关闭。** 目标（"把 decode 的时间花在哪从不知道变成知道 + 留下可复现的尺子"）
 已达成；尺子还自己抓到过一次测量错误（#42）。两条记账方式变更：
 
 - **逐 kernel 分解（P6_3-4）记为"能力边界"，不是"未完成"**——工具写好、自检过、报告能生成，
   缺的只是有 GPU 跟踪能力的机器（#41）。**别在下一轮把它当欠账去补**。
-- **PF-7 移交 §10.2**（ONNX 子图替换的前置），不再算 §11 的尾巴。
+- **PF-7 移交 `future_iterations.md` §10.2**（ONNX 子图替换的前置），不再算 §11 的尾巴。
 
-### 3.0i §2.2 长上下文 attention 交付（FlashDecoding 式 split-K，2026-09-27）
+</details>
+
+</details>
+
+### 3.0i [DEC-FLASHDECODING] §2.2 长上下文 attention 交付（FlashDecoding 式 split-K，2026-09-27）
 
 **计划落点**：`future_iterations.md` **§2.2**；开发计划 **§12**（12.1 计划对账 → 12.10 真机执行清单）；
 测试计划 **§11**（H 组 PS-* / G 组 PG-* / P 组 PP-*）。
+
+<details><summary>展开：3.0i [DEC-FLASHDECODING] §2.2 长上下文 attention 全文</summary>
+
+
+<details><summary>展开：3.0i [DEC-FLASHDECODING] §2.2 长上下文 attention 交 全文</summary>
+
 
 | 落点 | 说明 |
 |---|---|
 | `plugins/paged_attention_split.hpp`（新） | **分片规则 + workspace 布局的唯一实现**（`ResolveSplits` / `SplitRange` / `WorkspaceSlotOffset` / `WorkspaceBytes`），全部 `__host__ __device__` → kernel 与 host 用例共用一份 |
 | `plugins/paged_attention_plugin.cu` | 新增 `PagedAttentionSplitKernel`（stage-1，按 `(head,batch,split)` 出局部 `m/l/acc`）+ `PagedAttentionMergeKernel`（stage-2，max-trick 归约，**保序、不用原子累加**）；`getWorkspaceSize()` 由 0 改为按 `.max` 报上界；`enqueue` 走 split 路径、workspace 不可用时兜底单趟；单趟/ split 共用同一份入参校验 |
 | `plugins/paged_attention_kernel.hpp` | `LaunchPagedAttentionSplit`；`SetPagedAttentionNumSplitsOverride`（`>0` 强制片数 / `0` 自适应 / **`<0` 强制旧单趟路径** = 同二进制 A/B 开关，测试用） |
-| `plugins/paged_attention_plugin.hpp` | `kPagedAttentionPluginVersion` **"1" → "2"**（旧引擎反序列化直接失败，见 §12.8 第 2 条） |
+| `plugins/paged_attention_plugin.hpp` | `kPagedAttentionPluginVersion` **"1" → "2"**（旧引擎反序列化直接失败，见 `future_iterations_development_plan.md` §12.8 第 2 条） |
 | `core/builder.cpp` | `kEngineGraphVersion` **1 → 2**（**安全必需**：workspace 由 0 变正数，复用旧引擎会"往 0 字节缓冲里写"） |
 | 用例 | H 8 条（`PagedAttentionSplitPlanTest.*`，纯函数 + 分解数学自洽）+ G 7 条（`PagedAttentionSplitKernelTest.*` + `Fp16PathTest.PagedAttentionSplitMatchesFp16Reference`）+ P 2 条（`PagedAttentionSplitPerf.SlopeByContextLength`、`Gpt2DecodePerf.ContextLengthSweepSplitVsSinglePass`） |
 
@@ -790,10 +935,20 @@ PP-1 与 PP-2 对同一笔代价差 1.97× 未解释）→ 见 `TROUBLESHOOTING.
 **开放观察（不是缺陷）**：PP-1 的 kernel 级预测（+0.95%）与 PP-2 的端到端实测（+1.877%）
 差约 2×，**差因未查**。
 
-### 3.0j P4-INT8-a 结案：per-channel 整网退化的根因（2026-09-27）
+</details>
+
+</details>
+
+### 3.0j [DEC-INT8-WEIGHT-SOURCE] P4-INT8-a 结案：per-channel 整网退化的根因（2026-09-27）
 
 **计划落点**：`future_iterations.md` **§1.5**；开发计划 **§13**（13.1 计划对账 → 13.10 回填）；
 测试计划 **§3**（B1-1~B1-4 / B1-H1 / B1-H2）。排查全过程：`TROUBLESHOOTING.md` **#46**。
+
+<details><summary>展开：3.0j [DEC-INT8-WEIGHT-SOURCE] P4-INT8-a 结案：p 全文</summary>
+
+
+<details><summary>展开：3.0j [DEC-INT8-WEIGHT-SOURCE] P4-INT8-a 结案：per 全文</summary>
+
 
 **结论（一句话）**：根因**在产图脚本，不在 TRT**——`quantize_resnet18.py` 的**权重范围**取自
 **尚未折 BN 的 torchvision 权重**，而 Q/DQ 插在**已经折过 BN 的 ONNX 权重**上。
@@ -833,15 +988,15 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 `size_t` 一转成天文数字 → `显存分配失败：input`。已改用 `IExecutionContext::getTensorShape`
 并加"任何维 ≤ 0 即报错"的校验（`TROUBLESHOOTING.md` #47.1），**待复跑**。
 同一次运行还量到：**探针图确实改了 tactic**（产物图 44 层/38 Int8/4 个 `i8i8` → 探针图
-78 层/74 Int8/**0 个** `i8i8`，#47.2）——这正是 §13.3 D6 要防的事，所以 B1-4（复现对照）
+78 层/74 Int8/**0 个** `i8i8`，#47.2）——这正是 `future_iterations_development_plan.md` §13.3 D6 要防的事，所以 B1-4（复现对照）
 从"硬门"升级成"**唯一的裁判**"，并要求它在同一次运行里通过。
 
 **被推翻的旧结论两条**（#46.3）：#30.3 ①"模拟参照忠实"的否证**作废**（那次否证用的模拟
-**同样**不忠实）；§1.5 原表"整网模拟：两臂余量子集都 100%"一行**作废**。
+**同样**不忠实）；`future_iterations.md` §1.5 原表"整网模拟：两臂余量子集都 100%"一行**作废**。
 
-**验收状态**：§1.5 的"二选一"走**分支一**（第 0 层、机制明确），且机制被"scale 与被量化张量
+**验收状态**：`future_iterations.md` §1.5 的"二选一"走**分支一**（第 0 层、机制明确），且机制被"scale 与被量化张量
 一致则三级都不差"的最小复现支持。**沙箱 `ctest` 264 条 / 0 失败**（原 259 + 本轮 5）；
-**真机整轮全量 264 条 / 1 红 / 1 跳过**（449 s；红与跳过都按设计，见"接手必读"第 4 条）。
+**真机整轮全量 264 条 / 1 红 / 0 跳过 / 310 s**（2026-09-27 复跑；唯一红按设计，见"接手必读"第 4 条）。
 
 **真机 B1 四条：全绿（2026-09-27，首跑因用例绑定 bug 红过一次，见 #47.1）**：
 
@@ -867,6 +1022,10 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 | ① 把 `--weight-range-source` 默认切到 `onnx` | 产图规则 | **数值**：per-tensor 饱和权重 **3.919% → 0.000%（20 个）**，但 64 张上判据与一致率**完全不变**（60.9% / 100%） | 换了默认 = 换了正式产物 → `phase4_int8_plan` §4 / `PROGRESS` §3.0d / R2.6 / C 批交叉校验的数全要真机重测回填；而"更准"的证据不足（余量子集只有 11 张） |
 | ② 重生成 per-channel 产物 | 一份非默认产物 | **零功能收益**（默认路径无人读它） | 它是 B1-4 的承重件；重生成会让 B1-4 变红（现象消失），必须与"退役/改写 B1-4"打包做 |
 
+</details>
+
+</details>
+
 ### 3.1 目录与构建
 
 - `mini_trt_llm/CMakeLists.txt`：C++17 + CUDA C++17、`sm_75`、static library、第三方依赖接入。
@@ -887,8 +1046,15 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 
 ### 3.3 Core 通用化骨架
 
+
+<details><summary>展开：3.3 Core 通用化骨架 全文</summary>
+
 | 文件 | 说明 |
 |---|---|
+
+
+<details><summary>展开：3.3 Core 通用化骨架 全文</summary>
+
 | `include/mini_trt_llm/core/precision.hpp` + `src/core/precision.cpp` | 精度枚举与 TRT 映射（已补注释） |
 | `include/mini_trt_llm/core/builder.hpp` + `src/core/builder.cpp` | 统一 EngineBuilder（已补默认值注释）；入口按**构建指纹**决定复用还是重建 |
 | `include/mini_trt_llm/core/engine_cache.hpp` + `src/core/engine_cache.cpp` | 引擎缓存指纹（纯逻辑、可 host 测）：`ComputeEngineFingerprint` / `Read\|WriteEngineFingerprint` / `EngineCacheIsFresh`；**缺指纹一律视为不可信**（§3.0f、`TROUBLESHOOTING.md` #34.10） |
@@ -900,16 +1066,26 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 | `include/mini_trt_llm/core/llm_runner.hpp/.cpp` | Phase 0 仅接口声明 |
 | `include/mini_trt_llm/core/cv_runner.hpp/.cpp` | Phase 0 仅接口声明 |
 
+</details>
+
+</details>
+
 ### 3.4 其他模块占位
 
 - `kv_cache/`、`plugins/`、`sampler/`、`tokenizer/` 头文件与空实现已就位，供 Phase 1/2/4 填充。
 
-### 3.5 测试
+### 3.5 [DEC-TEST-INVENTORY] 测试
 
 - `mini_trt_llm/tests/test_*.cpp`：Utils / Core 骨架（cuda_check、logger、timer、memory_pool、io、
   model_config、model_registry、safetensors_loader、engine）+ Phase 1 算子 + Phase 1.5 端到端。
-- 当前状态（2026-09-27 实测，含 Phase 4 + 批次 A/B/C + §9.2 采样器迭代 + §3.0h 性能画像基建
-  + §3.0i 的 §2.2 split-K + **§3.0j 的 §1.5 仪器**）：
+
+<details><summary>展开：3.5 [DEC-TEST-INVENTORY] 测试 全文</summary>
+
+
+<details><summary>展开：3.5 [DEC-TEST-INVENTORY] 测试 全文</summary>
+
+- 当前状态（2026-09-27 实测，含 Phase 4 + 批次 A/B/C + `future_iterations.md` §9.2 采样器迭代 + §3.0h 性能画像基建
+  + §3.0i 的 §2.2 split-K + **§3.0j 的 `future_iterations.md` §1.5 仪器**）：
   沙箱内 `ctest` **264 个用例，0 失败**（GPU / P 层用例在沙箱显式跳过）。
   **演进**：242（§3.0h 的 8 项）→ **259**（§3.0i 的 17 项：H 8 + G 7 + P 2）→ **264**
   （§3.0j 的 5 项：2 条 host 自检 + 3 条 GPU 用例）。
@@ -917,12 +1093,13 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
   `int8_crosscheck_selftest`、`ArgmaxCriterion*`（6 条）、`EngineCacheTest*`（5 条）、批次 A 的 16 条、
   P9_2-5/5b 的 `NucleusCutoffTest.*` 与 `SamplerReferenceTest.*`、§3.0h 的 5 条 `PerfStatsTest.*`
   与 `profile_summary_selftest`、**§3.0j 的 `qdq_reference_selftest` / `add_probe_outputs_selftest`**。
-  真机（`MINI_TRT_REQUIRE_GPU=1`）**整轮全量：2026-09-27，264 条 / 1 红 / 1 跳过**（449 s）
-  （**唯一的红 = GPT-2 FP16 NaN 复现器，按设计**，§5.11；跳过 = `int8_crosscheck` 缺报告）。
+  真机（`MINI_TRT_REQUIRE_GPU=1`）**整轮全量：2026-09-27 复跑，264 条 / 1 红 / 0 跳过 / 310 s**
+  （**唯一的红 = GPT-2 FP16 NaN 复现器，按设计**，§5.11；`int8_crosscheck` 报告齐备 → Passed）。
   **沙箱同为 264 条 / 0 失败**——两边总数相同，差别只在 GPU 用例是跑还是跳过。
   §3.0i 新增的 17 项**全部真机通过**（含 split-K 的数值/性能用例）；§3.0j 新增的 3 条 GPU 用例
   也已随整轮通过（此前按 filter 跑过两遍，见 §3.0j）。
-  跳过的只有 `int8_crosscheck`——顺序上先跑全量、后跑 C，缺报告 → 77，**跳过 ≠ 通过**。
+  上一轮跳过的只有 `int8_crosscheck`——那是按"先全量、后跑 C"的顺序做、缺报告 → 77；**跳过 ≠ 通过**。
+  先跑 C-1/C-2 产出报告后，它执行并通过（2026-09-27 复跑）。
   **历史快照（勿当现状）**：更早的 235 条 / 1 红是 **§3.0h 新增 8 项之前、且 P9_2-5b 之前**的数，
   当时笔记写"复跑应为 243"——**那个外推也不准**（ctest 总数沙箱与真机是同一个数，
   差异只在"GPU 用例跑还是跳过"；见测试计划 §11.1 的更正）。
@@ -932,16 +1109,26 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
   性能数字见 §3.0g。第二次真机那条多出来的红 S-14 已定位为"参考在并列行上不良定义"，
   **只改测试参考**（产品代码一行未改，见 `TROUBLESHOOTING.md` #36），**复跑后绿**。
   B（文本端到端）与 C（INT8 交叉校验）两批真机用例**都通过**；
-  `int8_crosscheck` 若在"先全量、后跑 C"的顺序下会**跳过（77，设计如此）**，跳过 ≠ 通过。
+  `int8_crosscheck` 若在"先全量、后跑 C"的顺序下会**跳过（77，设计如此）**；先跑 C-1/C-2 产出报告则执行并通过。跳过 ≠ 通过。
   实测命令：`cmake --build build -j$(nproc) && ctest --test-dir build`（build 目录已配 `BUILD_TESTS=ON`）。
   分层与覆盖度详见 §3.9 / §3.10 与 `docs/phase1_test_plan.md`。
 - 待补（不阻塞 Phase 2）：`docs/phase0_model_loading_test_plan.md` 里 T2（ONNX→Engine）仍未实施；
   T1 / T3 的能力已由 Phase 1.5 的 E1/E2 以更强的形式覆盖。
 
+</details>
+
+</details>
+
 ### 3.6 工具与文档
 
 - `mini_trt_llm/tools/convert/hf_to_mini_trt_llm.py`：HF checkpoint → `config.json + model.safetensors` 转换脚本（真实实现的唯一落点）。
 - `scripts/ref_rope.py` / `scripts/ref_sampler.py`：参考语义自检脚本（RoPE 与 HuggingFace 交叉验证、采样器截断语义与理论概率）。
+
+<details><summary>展开：3.6 工具与文档 全文</summary>
+
+
+<details><summary>展开：3.6 工具与文档 全文</summary>
+
 - `requirements.txt`：转换工具依赖（已移到项目根目录）。
 - `docs/mini_trt_llm_design.md`：v1.0 设计文档。
 - `docs/phase0_development_plan.md`：Phase 0 开发计划。
@@ -964,7 +1151,7 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 - `mini_trt_llm/tools/validate/`：**INT8 判据的验收集规格与评估脚本**（`README.md` 定义 meta 必需字段 /
   重叠排除规则 / 率必带 n；`int8_eval.py` 出分层报告，含 `--self-test` 并已注册为 ctest 项
   `int8_eval_selftest`）。开发期被抓到的两个问题见 `TROUBLESHOOTING.md` #32。
-- `mini_trt_llm/tools/validate/qdq_reference.py`（§3.0j 新增）：**§1.5 的数值标尺**——用 ONNX 官方
+- `mini_trt_llm/tools/validate/qdq_reference.py`（§3.0j 新增）：**`future_iterations.md` §1.5 的数值标尺**——用 ONNX 官方
   参考实现执行 Q/DQ 图并把指定张量落盘（量化前 + 量化后两份），含 `--self-test`（最小 Q/DQ 图
   **逐位**比手算 ONNX 语义）并注册为 ctest 项 `qdq_reference_selftest`。
   **为什么标尺是"直接执行这张图"**：图里 BN 已折好 → 根本不存在"折叠"这一步（#30.5 那两轮预算
@@ -974,7 +1161,7 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
   （node / initializer / input / opset **逐字节不变**），含 `--self-test` 并注册为 ctest 项
   `add_probe_outputs_selftest`。
 - `docs/future_iterations.md`：后续迭代计划（**§0 = 优先级与排序规则的唯一来源**；
-  章节顺序是主题分类、不是优先级；§1.5 / §1.6 是两条已立项条目）。
+  章节顺序是主题分类、不是优先级；`future_iterations.md` §1.5 / `future_iterations.md` §1.6 是两条已立项条目）。
 - `docs/future_iterations_development_plan.md`：**执行层**——分批（A 可立即开工 / B 触发即做 /
   C 需外部前置 / D 冻结）、文件级改动面、步序、破坏性动作预告、待拍板决策 F1~F4。
   条目内部的做法与验收**不复制**到本文件，仍以 `future_iterations.md` 为准。
@@ -984,6 +1171,10 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 - `docs/PROGRESS.md`：本交接文档（已按 `progress-summary` skill 更新）。
 
 > 历史文档：`docs/phase1_pending_confirmations.md` 的内容已全部合并进 `docs/phase1_development_plan.md` §10，原文件已删除。
+
+</details>
+
+</details>
 
 ### 3.7 第三方依赖
 
@@ -998,10 +1189,17 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
   - 纯英文注释改为中文（`builder.hpp`、`memory_pool.cpp`）。
   - 魔数与边界逻辑补充"Why"注释（`builder.hpp` 默认值、`engine.cpp` 统计、`safetensors_loader.cpp` BF16 位运算）。
 
-### 3.9 Phase 1 插件与采样器
+### 3.9 [DEC-PHASE1-DELIVERY] Phase 1 插件与采样器
+
+
+<details><summary>展开：3.9 [DEC-PHASE1-DELIVERY] Phase 1 插件与采样器 全文</summary>
 
 | 文件 | 说明 |
 |---|---|
+
+
+<details><summary>展开：3.9 [DEC-PHASE1-DELIVERY] Phase 1 插件与采样器 全文</summary>
+
 | `include/mini_trt_llm/plugins/rmsnorm_{kernel,plugin}.hpp` + `src/plugins/rmsnorm_plugin.cu` | RMSNorm Plugin（一行一 block，FP32 `float4` / FP16 8×half 向量化，不能整除时回退标量） |
 | `include/mini_trt_llm/plugins/rope_{kernel,plugin}.hpp` + `src/plugins/rope_plugin.cu` | RoPE Plugin（half-split 约定，双输入双输出，`position_ids` 作为输入） |
 | `include/mini_trt_llm/plugins/paged_attention_{kernel,plugin}.hpp` + `src/plugins/paged_attention_plugin.cu` | PagedAttention Plugin（仅 Decoding，GQA/MHA，online softmax 单趟扫描） |
@@ -1023,10 +1221,21 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 - 参考数据脚本：`scripts/ref_rope.py`（与 HuggingFace `apply_rotary_pos_emb` 交叉验证，最大差异 0.0）、
   `scripts/ref_sampler.py`（Top-K/Top-P 截断语义与理论概率）。
 
-### 3.10 Phase 1.5：全流程测试基建与收尾
+</details>
+
+</details>
+
+### 3.10 [DEC-PHASE15-DELIVERY] Phase 1.5：全流程测试基建与收尾
+
+
+<details><summary>展开：3.10 [DEC-PHASE15-DELIVERY] Phase 1.5：全流程测试基 全文</summary>
 
 | 文件 | 说明 |
 |---|---|
+
+
+<details><summary>展开：3.10 [DEC-PHASE15-DELIVERY] Phase 1.5：全流程测试基建与 全文</summary>
+
 | `tests/e2e_safetensors_writer.{hpp,cpp}` | 测试用 Safetensors 写入 helper（B/F16/BF16），让端到端夹具自包含、不依赖 Python |
 | `tests/e2e_fixture.{hpp,cpp}` | 临时模型目录（`mkdtemp` + 析构清理），组装 `config.json` + `model.safetensors` |
 | `tests/test_e2e_error_paths.cpp` | E4：5 条错误路径用例（3 条 host 侧可进 CI，2 条需 GPU） |
@@ -1061,6 +1270,10 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 
 ---
 
+</details>
+
+</details>
+
 ## 4. 进行中 / 未完成的部分
 
 **当前没有进行中的阶段，也没有进行中的迭代**：Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成（§4.1 ~ §4.5），
@@ -1068,10 +1281,10 @@ Phase 5 已永久取消（§4.6）。**Phase 之后的四条工作流都已于 2
 
 | 工作流 | 状态 | 结论在哪 |
 |---|---|---|
-| **§9.2 采样器高性能 kernel** | 已关闭（P9_2-5b 判"无显著差异"、5c 不做） | §3.0g |
-| **§6.3 / G6 decode 性能画像**（含 profile target 与可复现测量方法） | 已关闭（逐 kernel 分解记为**能力边界**；PF-7 移交 §10.2） | §3.0h |
+| **`future_iterations.md` §9.2 采样器高性能 kernel** | 已关闭（P9_2-5b 判"无显著差异"、5c 不做） | §3.0g |
+| **§6.3 / G6 decode 性能画像**（含 profile target 与可复现测量方法） | 已关闭（逐 kernel 分解记为**能力边界**；PF-7 移交 `future_iterations.md` §10.2） | §3.0h |
 | **§2.2 长上下文 attention（split-K）** | **已交付并真机验证**（斜率降幅 88.85% / 88.20%） | **§3.0i**（关键设计 §2.17） |
-| **§1.5 / P4-INT8-a per-channel 整网退化根因** | **已结案**（根因在**产图脚本**、不在 TRT；离线反证 + 文件级证据 + 真机 B1 四条全绿） | **§3.0j**（证据链 `docs/TROUBLESHOOTING.md` #46 / #47；两件"暂不做"见开发计划 §13.11） |
+| **`future_iterations.md` §1.5 / P4-INT8-a per-channel 整网退化根因** | **已结案**（根因在**产图脚本**、不在 TRT；离线反证 + 文件级证据 + 真机 B1 四条全绿） | **§3.0j**（证据链 `docs/TROUBLESHOOTING.md` #46 / #47；两件"暂不做"见开发计划 §13.11） |
 
 下面各节保留的是**各阶段当时的交付与残余缺口快照**；仍然活着的开放项一律看 §6.6 的索引
 （唯一事实来源 = `future_iterations.md` §11）。
@@ -1080,6 +1293,12 @@ Phase 5 已永久取消（§4.6）。**Phase 之后的四条工作流都已于 2
 
 - 决策状态：15 项待确认问题已全部关闭，无遗留阻塞项（详见 `docs/phase1_development_plan.md` §10）。
 - ✅ 完善 `IPluginV3` 基类，补齐 TRT 10.x 接口。
+
+<details><summary>展开：4.1 Phase 1：Plugin 基础（已完成） 全文</summary>
+
+
+<details><summary>展开：4.1 Phase 1：Plugin 基础（已完成） 全文</summary>
+
 - ✅ 实现 `RMSNormPlugin` + 单元测试（GPU 用例已在真机验证通过）。
 - ✅ `RMSNormPlugin` 接入 `PluginRegistry`，并补 L2 集成测试（真实 TRT network → engine 序列化/反序列化 → 推理）。
 - ✅ 实现 `RoPEPlugin` + 单元测试。
@@ -1096,6 +1315,10 @@ Phase 1 明确不在本次范围内、留待后续的项：
   行内并行"；Top-K 快速路径正确但性能不达标、已撤出生产）。剩下的是把采样器参考数据固化成数据文件
   = `future_iterations.md` §9.3（P2，纯 host）。
 
+</details>
+
+</details>
+
 ### 4.2 Phase 1.5：全流程测试基建与收尾（已完成）
 
 - ✅ P1.5-0：修复 `SafetensorsLoader` 转换路径的 3 个缺陷（详见 `docs/TROUBLESHOOTING.md` #5）。
@@ -1110,7 +1333,7 @@ Phase 1 明确不在本次范围内、留待后续的项：
 
 真机复验：E1 / E2 / E3 与 E4 的 2 条用例**已通过**。
 
-### 4.3 Phase 2：GPT-2 原生构建（已完成，见 §3.0）
+### 4.3 Phase 2：GPT-2 原生构建（已完成，见 §3.0a）
 
 - 开工顺序与风险提示见 **§6.2**；关键事实（GPT-2 不用 RMSNorm / RoPE）见 **§6.1**。
 - 先做多权重加载 spike（约 150 个张量、BF16/FP16 源），再确认 LayerNorm / GELU(tanh)
@@ -1119,16 +1342,22 @@ Phase 1 明确不在本次范围内、留待后续的项：
   的 `Prefill → Decode` 自回归循环。
 - 精度对比基准：`1_gpt2_onnx/ref_output.bin`（PyTorch FP32）。
 
-### 4.4 Phase 3：GPT-2 ONNX + Plugin（已完成，见 §3.0.5）
+### 4.4 Phase 3：GPT-2 ONNX + Plugin（已完成，见 §3.0b）
 
 - 实现 `OnnxBuilder` + subgraph replacer。
 - 对 `1_gpt2_onnx/gpt2.onnx` 替换 RoPE / RMSNorm / Attention 子图。
 - 验证与方案 A 输出一致。
 
-### 4.5 Phase 4：ResNet18 替换（✅ 已完成，2026-09-26）
+### 4.5 [DEC-PHASE4-STATUS] Phase 4：ResNet18 替换（✅ 已完成，2026-09-26）
 
 **交付清单与实测数字见 §3.0d**。计划文档 `docs/phase4_development_plan.md`（§1 保留了
 "先读 `0_resnet18_onnx` 历史工程"的四条关键发现，供后续参考）：
+
+<details><summary>展开：4.5 [DEC-PHASE4-STATUS] Phase 4：ResNet18 替换（ 全文</summary>
+
+
+<details><summary>展开：4.5 [DEC-PHASE4-STATUS] Phase 4：ResNet18 替换（✅  全文</summary>
+
 
 1. 该 ONNX **已在导出时折叠 BatchNorm**（42 个 FP32 张量全是 Conv/Gemm 的 weight+bias），
    算子是 `Conv/Relu/Add/MaxPool/GlobalAveragePool/Flatten/Gemm`——**原生建图不需要任何 Plugin**；
@@ -1144,19 +1373,23 @@ Phase 1 明确不在本次范围内、留待后续的项：
 **结论**：ResNet18 的 **FP32 / FP16 都健康**；**INT8 走 Q/DQ 显式量化、判据用"FP32 余量子集一致率"**
 （实测 12/12 = 100%），权重默认 per_tensor。**per-channel 的整网退化原因未知** → 开放项 §6.6。
 
-### 4.6 Phase 5：清理旧模块（❌ 已永久取消，2026-09-26 由用户决定）
+</details>
+
+</details>
+
+### 4.6 [DEC-PHASE5-CANCELLED] Phase 5：清理旧模块（❌ 已永久取消，2026-09-26 由用户决定）
 
 - **用户决定：Phase 5 永久取消**。旧模块 `0_resnet18_onnx/`、`1_gpt2_onnx/` 与根 `CMakeLists.txt`
   里的注释项**保持原样**，**由作者本人按需处理**；Agent **不要**删除或移动它们。
 - **为什么不能擅自删**：它们不只是"旧代码"——`0_resnet18_onnx/` 还是 Phase 3（`gpt2.onnx` 走
   `1_gpt2_onnx/`）与 INT8（`calib_data/` 500 张真实图 + `resnet18.onnx`）的**本地产物来源**，
-  删掉会让 ONNX / INT8 用例全部跳过。这也与 AGENTS.md §0.6 一致：**"这东西没人用"的判断权在作者**。
+  删掉会让 ONNX / INT8 用例全部跳过。这也与 `AGENTS.md` §0.6 一致：**"这东西没人用"的判断权在作者**。
 
 ---
 
 ## 5. 已知问题与坑
 
-### 5.0 `LLMRunner` 无法在解码循环内早停 EOS（有意为之的 workaround）
+### 5.0 [DEC-EOS-EARLY-STOP] `LLMRunner` 无法在解码循环内早停 EOS（有意为之的 workaround）
 
 - **问题**：AGENTS.md §3.A.3 要求解码循环内不得有 H2D/D2H 拷贝，而"一见 EOS 就停"
   必须先知道刚采样出的 token 值（在设备上）。
@@ -1204,7 +1437,7 @@ Phase 1 明确不在本次范围内、留待后续的项：
 - **状态**：已清理，当前仅保留 `mini_trt_llm/third_party/sentencepiece` 与 `mini_trt_llm/third_party/safetensors-cpp`。
 - **注意**：新增第三方依赖时避免在根目录再建 submodule。
 
-### 5.7 Phase 0 utils 测试缺少 GPU 门控（已修复）
+### 5.7 [DEC-GPU-GATING] Phase 0 utils 测试缺少 GPU 门控（已修复）
 
 - **问题**：`CudaCheckTest`、`DeviceBufferTest`、`PinnedBufferTest`、`CudaTimerTest` 共 6 个用例直接调用 CUDA API 且未做环境判断，在无 GPU 环境下抛 `cudaErrorInsufficientDriver` 而失败，而不是跳过。
 - **影响**：无 GPU 的 CI / 沙箱里 `ctest` 永远不绿，真实回归信号被固定噪声淹没（用户真机上这 6 个用例是过的）。
@@ -1219,12 +1452,12 @@ Phase 1 明确不在本次范围内、留待后续的项：
 - **Workaround**：已改为只与 `inOut[0]` 比对；新增回归用例 `RmsNormPluginTest.IgnoresInvalidDescriptorsAfterPos`。
 - **排查过程**：见 `docs/TROUBLESHOOTING.md` #2。
 
-### 5.9 采样器曾存在两套 API（已清理）
+### 5.9 [DEC-SAMPLER-OLD-API] 采样器曾存在两套 API（已清理）
 
 - **问题（已解决）**：Phase 0 留下的 `sampler/{greedy,topk,topp}_sampler.{hpp,cpp}` 声明的是「标量 k/p + host `std::vector` 输出」的接口，与已确认的 Q7（per-batch tensor）和「Decode 全程驻留显存」冲突，函数体仍是 `throw not implemented`。
 - **解决**：经用户授权删除 6 个旧桩文件，采样器 API 统一收敛到 `sampler/sampler_common.hpp` + `src/sampler/sampler_kernels.cu`。
 
-### 5.10 GPU 用例在沙箱内无法执行（已确认为环境限制，非缺陷）
+### 5.10 [DEC-SANDBOX-NO-GPU] GPU 用例在沙箱内无法执行（已确认为环境限制，非缺陷）
 
 - **问题**：所有 kernel 数值与 engine 集成用例都需要 GPU，沙箱内只会 `GTEST_SKIP`。
 - **影响**：Agent 侧的结论上限是「编译通过 + 契约自洽 + host 侧逻辑正确」。
@@ -1233,10 +1466,16 @@ Phase 1 明确不在本次范围内、留待后续的项：
 
 ---
 
-### 5.11 GPT-2 的 FP16 端到端不可用（已知限制，按政策不修）
+### 5.11 [DEC-GPT2-FP16-LIMIT] GPT-2 的 FP16 端到端不可用（已知限制，按政策不修）
 
 - **问题**：真实 GPT-2 在本项目的**弱类型 FP16** 引擎下端到端产生 NaN（贪心输出恒为 0）。
   出现 NaN 的层随构建变化（实测 0/1/2），而激活幅值远未触及 FP16 上限 65504。
+
+<details><summary>展开：5.11 [DEC-GPT2-FP16-LIMIT] GPT-2 的 FP16 端到端不 全文</summary>
+
+
+<details><summary>展开：5.11 [DEC-GPT2-FP16-LIMIT] GPT-2 的 FP16 端到端不可用 全文</summary>
+
 - **影响**：**GPT-2 的推荐精度是 FP32**。FP16 只能用于算子/网络层验证（Phase 1.5 已覆盖），
   不能用于 GPT-2 的端到端推理。
 - **已排除**：LayerNorm 计算精度（显式设 FP32 后仍 NaN）、`c_fc`/`gelu_new`
@@ -1253,6 +1492,10 @@ Phase 1 明确不在本次范围内、留待后续的项：
   诊断仪器读回的中途张量数值与当初记录逐位一致。
   完整证据与教训见 **`docs/TROUBLESHOOTING.md` #19**，任务与验收见
   **`docs/phase2_supplement_plan.md`**。
+
+</details>
+
+</details>
 
 ### 5.12 Phase 2 修掉的缺陷（结论索引）
 
@@ -1280,10 +1523,16 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
   先确认尺子够不够用。协议级教训见 `TROUBLESHOOTING.md` **#37 / #38**，实现见
   `tests/test_sampler.cpp` 的 `SamplerPerf.ThroughputByShape`。
 
-### 5.13 真机新红：`Gpt2OnnxTest.MatchesAcrossProfileShapes` 在 seq=512 上 argmax 不等（**已按方案 B 结案**）
+### 5.13 [DEC-ARGMAX-CASE] 真机新红：`Gpt2OnnxTest.MatchesAcrossProfileShapes` 在 seq=512 上 argmax 不等（**已按方案 B 结案**）
 
 - **问题**：2026-09-26 真机全量里，`batch=1 seq=512` 的**逐行 argmax 相等**断言失败；
   同一次运行中 `cosine`（`> 0.999999`）与相对界（`< 1e-5`）**都通过**
+
+<details><summary>展开：5.13 [DEC-ARGMAX-CASE] 真机新红：`Gpt2OnnxTest.Ma 全文</summary>
+
+
+<details><summary>展开：5.13 [DEC-ARGMAX-CASE] 真机新红：`Gpt2OnnxTest.Matc 全文</summary>
+
   （实测 `max_abs 0.000274658 / 相对 1.97989e-06 / cosine 1`），其余形状（`(1,1)`、`(1,64)`、`(2,4)`、`(2,64)`）也都通过。
 - **机制（2026-09-26 定量，证据见 `TROUBLESHOOTING.md` #34.6）**：翻转只有 **1 行 / 512**（行 118，类别 79 vs 325），
   两次**独立重建**后位置与类别完全相同、native 余量逐位相同（`1.53e-05`）→ **不是构建噪声，是稳定并列**。
@@ -1313,6 +1562,10 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 - **完整路径与判读规则**：`docs/TROUBLESHOOTING.md` **#34**；执行入口见
   `docs/future_iterations_development_plan.md` §8.5。
 
+</details>
+
+</details>
+
 ### 5.14 §2.2 过程中沉淀的三条操作类坑（2026-09-27，**结论在此，过程见 TROUBLESHOOTING**）
 
 这三条都**不是产品缺陷**（产品代码一行未改），但每一条都能让"验证"这件事静默失效，
@@ -1324,7 +1577,7 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 | **长上下文夹具自相矛盾** | 块表行宽 < `ceil(context_len / block_size)` 时，`block_table[t/block_size]` 越界 → **host 参考 SEGFAULT**（不是 CUDA 错误） | 症状是 `Exception: SegFault` 而非断言失败。已加 `MakeLongContextFixture`（宽度由上下文反推）+ `AssertFixtureConsistent`（把夹具写错变成可读失败）。**另外：越界夹具也可能侥幸"通过"，那种通过没有信息量** | `TROUBLESHOOTING` **#44** |
 | **"同 session 漂移"与阈值来路** | ① 我曾把"锚点取 max 更保守"写反（取 max 是**宽松**）；② 曾议的"退化 ≤2%"其唯一数值输入（单次发射 3~6 µs）**无出处**，且 PP-1/PP-2 对同一笔代价差 **1.97× 未解释** → 该判据**改为观测项、不设阈值** | 判据里出现"漂移"必须钉死是**哪一种**（绝对 max/min 还是配对差）；**预估里的每个数值输入都要有出处**，否则几轮后会被当成阈值引用 | `TROUBLESHOOTING` **#45 / #45.1** |
 
-### 5.15 §1.5 过程中沉淀的四条"仪器类"坑（2026-09-27，**结论在此，过程见 TROUBLESHOOTING**）
+### 5.15 `future_iterations.md` §1.5 过程中沉淀的四条"仪器类"坑（2026-09-27，**结论在此，过程见 TROUBLESHOOTING**）
 
 同 §5.14 的性质：**都不是产品缺陷**（产品代码一行未改），但每一条都能让排查本身失效。
 
@@ -1335,7 +1588,7 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 | **探针图会改变后端行为** | 挂 21 个图输出后，TRT 的 tactic 从 `i8i8` 变成 `volta_fp32_icudnn_int8x4_*`（层数 44 → 78）——**仪器改变了被观测对象** | 不能只看"某个计数变了"，要问"现象还复不复现"：**B1-4（复现对照）是硬门**；另加逐层 ONELINE 落盘供人核对 | `TROUBLESHOOTING` **#47.2** |
 | **遍历 I/O 张量时形状问错对象** | `ICudaEngine::getTensorShape` 对动态维返回 **-1** → 转 `size_t` 成天文数字 → 报错伪装成"**显存分配失败：input**" | 形状**只能问 `IExecutionContext`**（`setInputShape` 之后），并对任何 ≤0 的维显式报错。既有用例没踩到它，是因为它把尺寸硬编码成常量、从不枚举张量 | `TROUBLESHOOTING` **#47.1 / #47.4** |
 
-## 6. 下一步计划
+## 6. [DEC-NEXT-STEPS] 下一步计划
 
 **没有下一阶段。** Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成，**Phase 5（清理旧模块）已永久取消**（§4.6）。
 
@@ -1345,27 +1598,27 @@ B 触发即做 / C 需外部前置 / D 冻结；含文件级改动面、步序�
 **启动任何一项之前先读这两份**，再按 `AGENTS.md` §5 走一遍计划对账。
 
 > **2026-09-27 结账：当前没有待办。** 清单里剩下的**全都是"等触发"**（需求 / 硬件 / 资产 / 测量），
-> 唯二零前置的是 **§9.3**（采样器参考数据固化）与 **§10.1**（ONNX / 原生 I/O 契约统一），
-> 而它们**不服务任何现存需求**（§10.1 的真正受益者是 §10.2，而 §10.2 要先跑 PF-7）。
+> 唯二零前置的是 **`future_iterations.md` §9.3**（采样器参考数据固化）与 **§10.1**（ONNX / 原生 I/O 契约统一），
+> 而它们**不服务任何现存需求**（`future_iterations.md` §10.1 的真正受益者是 §10.2，而 §10.2 要先跑 PF-7）。
 > **下一步不该是"把 `future_iterations.md` 做完"**——按该文件 §0 的定位，它是**触发驱动的清单、
 > 不是待办队列**；现在就动手等于为不存在的需求写代码。
 
 **当前建议的下一步（按 `future_iterations.md` §0.3 的排序规则 = 前置可否立即满足 → 解锁广度 → 成本）**：
 
 > **上一批（decode 性能画像 / §6.3 / G6）已于 2026-09-27 完成并关闭**，结论见 §3.0h 与开发计划
-> §11.5.2：三个问题都有答案（sampler 占比、attention 占比、显存分配够不够贵）；逐 kernel 分解记为
-> **能力边界**（本机拿不到 GPU 时间线，#41）；**PF-7 移交 §10.2**。**原第 1 条与第 4 条都已做完**。
+> `future_iterations_development_plan.md` §11.5.2：三个问题都有答案（sampler 占比、attention 占比、显存分配够不够贵）；逐 kernel 分解记为
+> **能力边界**（本机拿不到 GPU 时间线，#41）；**PF-7 移交 `future_iterations.md` §10.2**。**原第 1 条与第 4 条都已做完**。
 >
 > **紧接着的 §2.2（长上下文 attention / split-K）也已同日交付并真机验证**，结论见 **§3.0i**：
 > 斜率降幅 **88.85% / 88.20%**、token 与单趟一致、图版本与插件版本各 bump 一次。
 > **原清单里的第 4 条到此结清**（它曾是"唯一有实测支撑、收益最大的产品代码改动"）。
 > 剩下的排序**没有变化**，仍是下面 1→3；`future_iterations.md` §0.3 的第 14 项已标记为已交付。
 
-1. **§9.3 采样器参考数据固化**（`scripts/ref_sampler.py` 输出落成 `.bin`）—— 纯 host、无外部前置，
-   是 §9.2 的自然收尾。
-2. **§10.1 ONNX / 原生 I/O 契约统一**（ONNX 侧加 `Cast` 把 `input_ids` 降到 INT32）—— 无外部前置，
+1. **`future_iterations.md` §9.3 采样器参考数据固化**（`scripts/ref_sampler.py` 输出落成 `.bin`）—— 纯 host、无外部前置，
+   是 `future_iterations.md` §9.2 的自然收尾。
+2. **`future_iterations.md` §10.1 ONNX / 原生 I/O 契约统一**（ONNX 侧加 `Cast` 把 `input_ids` 降到 INT32）—— 无外部前置，
    为"ONNX 路径接进 `LLMRunner`"铺路。
-3. **要碰 §10.2（ONNX 子图替换）就先跑 PF-7**（ONNX vs 原生 prefill 的可复现对照）——它是 §10.2
+3. **要碰 `future_iterations.md` §10.2（ONNX 子图替换）就先跑 PF-7**（ONNX vs 原生 prefill 的可复现对照）——它是 §10.2
    的前置，命令见开发计划 §11.9 / 测试计划 §10.2。
 4. ~~**§2.2（长上下文 attention）**~~ **已交付**（2026-09-27，见 §3.0i）；若还想沿这条线继续，
    开发计划 §12.7 末行列了唯一没做的二次优化方向（block 内组织改 "warp-per-position"），
@@ -1376,7 +1629,7 @@ B 触发即做 / C 需外部前置 / D 冻结；含文件级改动面、步序�
 **它没有留下待办**：两件后续事项（把 `--weight-range-source` 默认切到 `onnx`、重生成 per-channel
 产物）**按作者决定暂不做**——触发条件 = `future_iterations.md` **§1.6** 的验收集到位（当前那批
 图判别力不足，得不出"谁更好"），详见开发计划 **§13.11**。
-若真想再推进一件实事，仍是先补 **§1.6 的验收集**（要联网，解锁最多），其次 §9.3 / §10.1。
+若真想再推进一件实事，仍是先补 **`future_iterations.md` §1.6 的验收集**（要联网，解锁最多），其次 §9.3 / §10.1。
 
 **接下来做什么，取决于触发条件**（全部见 §6.6 的开放项索引与 `future_iterations.md` §11）：
 
@@ -1394,9 +1647,15 @@ B 触发即做 / C 需外部前置 / D 冻结；含文件级改动面、步序�
 
 **Phase 2：GPT-2 原生构建（方案 A）**
 
-### 6.1 关键事实：GPT-2 用不上 Phase 1 的 RMSNorm / RoPE
+### 6.1 [DEC-GPT2-OPS] 关键事实：GPT-2 用不上 Phase 1 的 RMSNorm / RoPE
 
 对 `1_gpt2_onnx/gpt2.onnx` 做过算子统计：
+
+
+<details><summary>展开：6.1 [DEC-GPT2-OPS] 关键事实：GPT-2 用不上 Phase 1 的  全文</summary>
+
+
+<details><summary>展开：6.1 [DEC-GPT2-OPS] 关键事实：GPT-2 用不上 Phase 1 的 RM 全文</summary>
 
 ```
 LayerNormalization × 25   （2/block × 12 + 最终 1 层）
@@ -1417,6 +1676,10 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 > （`RMSNorm → RoPE → PagedAttention`）是 **LLaMA 风格**的，与 GPT-2 结构不同。
 > 该类比曾写进文档，已更正，见 `docs/phase1_5_development_plan.md` §0.1。
 
+</details>
+
+</details>
+
 ### 6.2 建议的开工顺序（按风险从高到低）
 
 1. **多权重加载 spike（最高风险，先做）**：用 GPT-2 的真实权重（约 150 个张量、BF16/FP16 源）
@@ -1430,6 +1693,12 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 - dynamic shape 的 optimization profile 已打通（Phase 2 的双引擎直接依赖）；
 - 多权重取用路径已有端到端验证，且修掉了会让 GPT-2 静默建错的转换缓冲区缺陷；
+
+<details><summary>展开：6.3 Phase 1.5 已扫清的前置 全文</summary>
+
+
+<details><summary>展开：6.3 Phase 1.5 已扫清的前置 全文</summary>
+
 - 端到端骨架（模型目录 fixture / safetensors 写入 helper / 参考实现 meta-test）可直接复用。
 
 > 开发流程提醒：Phase 1 的经验是「沙箱内 host 用例通过不代表真机没问题」——
@@ -1440,15 +1709,21 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 > 本节只保留下一步入口。Phase 1 的 15 项已确认决策见 `docs/phase1_development_plan.md` §10，
 > 接口约定见本文档 §2.12，测试与验证约定见 §2.13，证据与操作纪律见 §2.14，均已归档。
->
-> </details>
 
 ---
 
-## 6.5 工作区与本地产物状态（新会话先看这一节）
+</details>
+</details>
 
-**代码与文档的提交状态**：**"现在提交到哪了"一律以 `git log` / `git status` 为准，不要读本文档的描述**——
-本节写过的每个"最新提交 / 已全部提交"都在下一次提交后立刻变成假话（下面三条更正记录全为此）。
+</details>
+
+## 6.5 [DEC-WORKSPACE-STATE] 工作区与本地产物状态（新会话先看这一节）
+
+**提交状态**：**"现在提交到哪了"一律以 `git log` / `git status` 为准，本文档不记录它**——
+写过的每句"已全部提交"都会在下一次提交后立刻变成假话。
+
+<details><summary>展开：6.5 [DEC-WORKSPACE-STATE] 工作区与本地产物状态（新会话先看这一 全文</summary>
+
 本节只保留**提交序列的追溯**（截至 2026-09-26；新 → 旧），它不会因为新提交而变错：
 
 1. `14844df`（"update future_iterations.md, PROGRESS.md"）——`future_iterations.md` 新增 §0 优先级重定
@@ -1506,13 +1781,13 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 > **引擎缓存现状（2026-09-27，§3.0i 之后）**：`kEngineGraphVersion` 1→2 且
 > `kPagedAttentionPluginVersion` 1→2，**所有旧引擎在真机上被判 `stale` 并重建过一次**
 > （GPT-2 主引擎 623 / 709 MB、ctxsweep 627 / 475 MB，分钟级）——这是**预期行为**，不是故障
-> （§12.8 第 1 条：workspace 需求由 0 变正数，复用旧引擎会往 0 字节缓冲里写）。
+> （`future_iterations_development_plan.md` §12.8 第 1 条：workspace 需求由 0 变正数，复用旧引擎会往 0 字节缓冲里写）。
 > 重建后指纹稳定、后续运行命中 `cache hit`。**新会话不要把这些引擎的"已重建"当成异常。**
 
 **已知会失败/跳过的测试**（避免新会话误判为回归）：
 
-- 真机（`MINI_TRT_REQUIRE_GPU=1`）**整轮全量：2026-09-27，264 条 / 1 红 / 1 跳过**（449 s）；
-  唯一跳过 = `int8_crosscheck`（缺报告 → ctest 级 77，设计如此）；
+- 真机（`MINI_TRT_REQUIRE_GPU=1`）**整轮全量：2026-09-27 复跑，264 条 / 1 红 / 0 跳过 / 310 s**；
+  `int8_crosscheck` 只在缺报告时按设计跳过（77）；报告齐备时（如 2026-09-27 复跑）执行并通过；
   沙箱**同为 264 条 / 0 失败**——两边**总数相同**，区别只在 GPU 用例是跑还是跳过：
   - 新增的两条 P 层用例（`Gpt2DecodePerf.StepLatencyByPhase` / `ContextLengthSweep`）在**沙箱里
     显式跳过**、只在真机跑；它们**只打印、不 assert 数值**（"凭什么通过"的答案就是它不判正确性，
@@ -1545,10 +1820,15 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 - 沙箱：全部 GPU 用例 `GTEST_SKIP`（无 GPU，见 §5.10）；`onnx_graph_probe` 在缺 `onnx` 包或
   缺 `1_gpt2_onnx/gpt2.onnx` 时返回 77 → `Skipped`（**设计如此**，缺环境 ≠ 图有问题）。
 
-## 6.6 当前未解决项（开放项索引，2026-09-27）
+</details>
+
+## 6.6 [DEC-OPEN-ITEMS-INDEX] 当前未解决项（开放项索引，2026-09-27）
 
 > **事实与触发条件的唯一来源是 `docs/future_iterations.md` §11**；已**立项**的条目
-> （目标 / 做法 / 验收判据 / 前置依赖）在同文件 §1.5（P4-INT8-a）与 §1.6（P4-INT8-b）。
+> （目标 / 做法 / 验收判据 / 前置依赖）在同文件 `future_iterations.md` §1.5（P4-INT8-a）与 `future_iterations.md` §1.6（P4-INT8-b）。
+
+<details><summary>展开：6.6 [DEC-OPEN-ITEMS-INDEX] 当前未解决项（开放项索引，2026 全文</summary>
+
 > **优先级排序见同文件 §0**（P0~P3 与"冻结"的定义、每条的建议级别与理由）——
 > 该文件的**章节顺序是主题分类、不是优先级**（2026-09-26 重定，原标签有 8 处与现状不符）。
 > 本节只做**索引**，避免多处维护。**这些都不是"已知缺陷"**——已发现的缺陷一律进
@@ -1575,7 +1855,9 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 2. **R0.1（`ResNet18ConfigTest.LoadsCnnConfig`）不单独落地**：config 解析断言已由
    `ResNet18WeightContractTest` 承担（见 `phase4_test_plan.md` §7），刻意不建重复用例。
 
-## 7. 重要环境信息
+</details>
+
+## 7. [DEC-ENVIRONMENT] 重要环境信息
 
 | 项目 | 版本 / 说明 |
 |---|---|
@@ -1608,8 +1890,10 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 > **注意**：上述 `models/resnet18/*.bin`、`calib_data/`、`*.onnx`、`*.safetensors` **都不入库**
 > （`.gitignore` 规则：`*.bin` / `*.onnx` / `*.safetensors` / `**/calib_data/`）。
-> 仓库只跟踪源码与文档；换机器要按上表重建本地产物。入库的只有 `.meta.json`（含各产物 SHA256，
-> 用于回答"基线有没有被改过"）。
+> 仓库只跟踪源码与文档；换机器要按上表重建本地产物。入库的 `.meta.json` 里，**基线（`ref_*`）含
+> SHA256**（权重缓存 / 契约输入 / 归一化输入 / logits），可回答"基线有没有被改过"；
+> 但 **INT8 的 `resnet18_qdq.meta.json` 目前不含任何 SHA256** → "正式 ONNX 有没有被改过"当前回答不了
+> （已知缺口；补它要改转换脚本，需另行批准）。
 
 ---
 

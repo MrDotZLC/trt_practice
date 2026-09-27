@@ -151,7 +151,7 @@ if [[ "${tool}" == "nsys" ]]; then
             "[profile] 提示：报告里没有 GPU kernel 时间线。WSL2 上这是**已知限制**" \
             "（CUDA API 能采到，GPU kernel 采不到）。**注意**：把这份 .nsys-rep 拷到 Windows" \
             " 也看不到 kernel 时间线——数据压根没被采集，不是查看器的问题（#39 已更正）。" \
-            "可行路径见 docs/TROUBLESHOOTING.md #41：① 在 Windows 宿主侧做采集；" \
+            "可行路径见 docs/TROUBLESHOOTING.md + TS-041：① 在 Windows 宿主侧做采集；" \
             "② 不用 profiler，用同一 session 的 SamplerPerf + 本用例取比值。" >&2
     fi
 

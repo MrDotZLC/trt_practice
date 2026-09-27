@@ -238,7 +238,7 @@ bool RmsNormPlugin::supportsFormatCombination(
     // 只允许与 inOut[0] 比对。TensorRT 按 pos 递增调用，保证 inOut[0..pos] 有值，而
     // inOut[pos+1..] 是未初始化内存；早期实现扫描了整个数组，导致所有格式组合都被判为
     // 不支持，engine 构建直接报 "could not find any supported formats consistent with
-    // input/output data types"（详见 docs/PROGRESS.md §5.9）。
+    // input/output data types"（详见 docs/PROGRESS.md + DEC-SAMPLER-OLD-API）。
     return inOut[pos].desc.format == inOut[0].desc.format &&
            inOut[pos].desc.type == inOut[0].desc.type;
 }

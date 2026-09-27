@@ -1,5 +1,9 @@
 # Phase 4 开发计划：ResNet18 替换（CV 路径）
 
+> **STATUS: ARCHIVED｜冻结于 2026-09-27（所属阶段已交付）**
+> 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
+> 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
+
 > **状态**：**待确认**。§0.5 列出 4 个必须你拍板的决策（D1～D4）与我的推荐；
 > 确认之前不写任何代码（AGENTS.md §5 第 0 步）。
 >
@@ -72,7 +76,7 @@
 **读过的文件**：`README.md`、`load_model.py`、`prepare_calib_data.py`、`src/builder.{hpp,cpp}`、
 `src/calibrator.{hpp,cpp}`、`src/infer.{hpp,cpp}`、`src/main.cpp`。
 
-### 1.1 事实
+### 1.1 [PH4-LEGACY-FINDINGS] 事实
 
 | 项 | 事实 | 出处 |
 |---|---|---|
@@ -104,7 +108,7 @@
 | 隐式量化（若不选 D2-③） | TRT 10.15 已废弃 |
 | `calibrator.hpp` 里"用随机数据"的过时注释 | 与 `calib_data/` 的实际内容不符（见 §0.4） |
 
-### 1.3 从历史工程**继承不到的**东西（Phase 4 必须新建）
+### 1.3 [PH4-LEGACY-INHERIT] 从历史工程**继承不到的**东西（Phase 4 必须新建）
 
 1. **外部基线**：历史工程从没对过 torchvision/ONNX 的数值 → P4-1 先造。
 2. **前处理**：推理路径喂合成数据，前处理从未跑过 → D4 要先定契约。
@@ -130,7 +134,7 @@
 
 ## 3. 架构与接口设计
 
-### 3.1 两条接入路径（D1）
+### 3.1 [PH4-ONNX-SOURCE-DECISION] 两条接入路径（D1）
 
 ```
                      ┌── 路径 A（先做）：resnet18.onnx ──► BuildFromOnnx ──► engine
@@ -180,7 +184,7 @@ input [B,3,224,224] → Conv(7x7,s2)+ReLU → MaxPool(3x3,s2)
 4. `Benchmark` 复用 `Engine::Benchmark` 的统计口径（mean/p50/p99 + 吞吐），与历史工程的
    batch 扫描点 {1,2,4,8,16} 对齐，**但不引用历史数字**（历史没留数字，见 §1.3）。
 
-### 3.5 CV optimization profile
+### 3.5 [PH4-CV-PROFILE] CV optimization profile
 
 沿用历史工程的单 profile：`min/opt/max = 1/8/16`（`EngineBuilder::Config` 的 CV 默认值
 `min_batch=1/opt_batch=1/max_batch=16` 与之**opt 不一致**——opt 该取 8）。
@@ -204,7 +208,7 @@ input [B,3,224,224] → Conv(7x7,s2)+ReLU → MaxPool(3x3,s2)
 | **P4-5** | `ResNet18ModelBuilder` + 注册到 `ModelRegistry` | P4-4 | 原生引擎与 **ONNX 引擎**（P4-2）逐值对拍达标 | 中：无插件，纯建图 |
 | **P4-6** | 三方对拍：原生 / ONNX / torchvision 基线，FP32 + FP16 | P4-5 | 三方一致（判据见 §5.3）；FP16 另按 FP16 档判定 | 中：FP16 在 CV 上未验证过（GPT-2 的 FP16 NaN 是弱类型网络的算子问题，**不能假定 CV 安全**） |
 | **P4-7** | **（按 D2 条件式）INT8，走 Q/DQ 显式量化** | P4-6 | 见 **`docs/phase4_int8_plan.md`**（独立计划：技术前提、工具链 A/B/C、任务 P4-7-0~5、判据纪律） | 高：TRT 10.15 已把 `kINT8`/`setDynamicRange`/Calibrator 全线废弃并指向"strong typing"；弱类型网络能否吃 Q/DQ 是**必须先验的前提** |
-| **P4-8** | 文档收口：PROGRESS §2.15/§3.x/§6、`future_iterations.md` §11 缺口、本文件 §10 | P4-1~P4-7 | —— | —— |
+| **P4-8** | 文档收口：PROGRESS `PROGRESS.md` §2.15/§3.x/§6、`future_iterations.md` §11 缺口、本文件 §10 | P4-1~P4-7 | —— | —— |
 
 **顺序理由**：先立尺子（P4-1），再用最小改动拿到可运行引擎（P4-2/P4-3），
 最后攻工作量最大但风险可控的原生路径（P4-4/P4-5）——那时已有两条基准可以对拍。
@@ -292,7 +296,7 @@ Phase 4 沿用 Phase 1.5/2/3 的做法：**开发计划（本文件）与测试�
 - **Phase 5（清理旧模块）已永久取消**（用户 2026-09-26 决定）：旧模块**由作者本人按需处理**，
   Agent **不要**删除或移动 `0_resnet18_onnx/` / `1_gpt2_onnx/` / 根 `CMakeLists.txt` 的注释项。
   **理由不只是"旧代码"**：它们还是 Phase 3（`gpt2.onnx`）与 INT8（`calib_data` 500 张真实图、
-  `resnet18.onnx`）的**本地产物来源**，删掉会让 ONNX / INT8 用例全部跳过（AGENTS.md §0.6：
+  `resnet18.onnx`）的**本地产物来源**，删掉会让 ONNX / INT8 用例全部跳过（`AGENTS.md` §0.6：
   "这文件没人用"的判断权在作者，不在 Agent）。
 - **FP16 NaN 的修复**（LLM 侧已知限制）：与本阶段无关，按政策不修。
 - **图像解码/缩放**（JPEG → 224×224）：本阶段只处理"已解码并 resize 好"的 NCHW 输入；
@@ -302,7 +306,7 @@ Phase 4 沿用 Phase 1.5/2/3 的做法：**开发计划（本文件）与测试�
 
 ## 9. 破坏性动作清单（**预告，执行前再逐条确认**）
 
-按 AGENTS.md §2.14 B，**现在不申请批准**；每个任务开工前重新列一次。已知将会涉及：
+按 `PROGRESS.md` + `DEC-EVIDENCE-DISCIPLINE`（§2.14 B），**现在不申请批准**；每个任务开工前重新列一次。已知将会涉及：
 
 1. 覆盖修改 `mini_trt_llm/src/core/builder.cpp`（ONNX I/O 校验按 architecture 分支）；
 2. 覆盖修改 `mini_trt_llm/include/mini_trt_llm/core/builder.hpp`（若改 CV `opt_batch` 默认值）；
@@ -314,7 +318,7 @@ Phase 4 沿用 Phase 1.5/2/3 的做法：**开发计划（本文件）与测试�
 
 ---
 
-## 10. 执行结果（待回填）
+## 10. [PH4-RESULTS] 执行结果（已回填）
 
 | ID | 状态 | 实际产出 |
 |---|---|---|

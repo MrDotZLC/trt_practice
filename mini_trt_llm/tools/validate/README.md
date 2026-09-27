@@ -1,14 +1,14 @@
 # INT8 判据的验收集规格（离线口径）
 
 > **定位**：这里定义"INT8 怎么算合格"所需的**输入规格**与**报告字段**。
-> 目标 / 做法 / 验收判据的**唯一来源**是 `docs/future_iterations.md` §1.6；本目录只把它们落成可执行的东西。
+> 目标 / 做法 / 验收判据的**唯一来源**是 `docs/future_iterations.md` + OI-INT8-ABS；本目录只把它们落成可执行的东西。
 > 本目录**不下载任何数据**——见 §4 的"前置"。
 
 ---
 
 ## 1. 为什么需要这份规格
 
-当前 INT8 的判据是**分层的**（`docs/phase4_int8_plan.md` §4）：
+当前 INT8 的判据是**分层的**（`docs/phase4_int8_plan.md` + PH4-INT8-CRITERIA）：
 
 | 判据 | 现状 | 弱点 |
 |---|---|---|
@@ -16,7 +16,7 @@
 | **下界**：整体一致率 `≥ 30%` | 实测 38.3% | 这批图（tiny-imagenet 放大图）FP32 自身摇摆，主要在测测试集噪声 |
 | 数值上界 | **未定**（实测 `max_abs ≈ 21.6`，故意不作判据） | 被少数样本放大；且验收集**没有真值标签** → 只能判"与 FP32 是否一致"，判不了"对不对" |
 
-所以本规格要补的三件事，正是 `docs/future_iterations.md` §1.6 的目标：
+所以本规格要补的三件事，正是 `docs/future_iterations.md` + OI-INT8-ABS 的目标：
 
 1. 验收集**带真值标签**，从而能报 top-1 **正确率**（而不只是与 FP32 的一致率）；
 2. 每个率都必须带**样本量 n**；
@@ -116,7 +116,7 @@ JSON 数组，每个元素：
 ```jsonc
 {
   "thresholds": { "confident_margin": 5.0, "bucket_edges": [1,2,5,10],
-                  "provenance": "tests/test_resnet18_int8.cpp + docs/phase4_int8_plan.md §4" },
+                  "provenance": "tests/test_resnet18_int8.cpp + docs/phase4_int8_plan.md + PH4-INT8-CRITERIA" },
   "provenance": { "validation_set": {...}, "calibration_set": {...}, "labels": {...} },
   "overall":    { "n": 512, "agree": 196, "agree_rate": 0.383, "correct": ..., "top1_accuracy": ... },
   "confident":  { "n": 12, "agree": 12, "agree_rate": 1.0, ... },

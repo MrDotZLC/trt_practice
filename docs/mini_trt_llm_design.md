@@ -1,5 +1,9 @@
 # mini_trt_llm 需求分析、方案设计与实现路径（v1.0）
 
+> **STATUS: ARCHIVED｜冻结于 2026-09-27（所属阶段已交付）**
+> 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
+> 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
+
 > 目标：用 `mini_trt_llm` 完全替换现有 `0_resnet18_onnx` 与 `1_gpt2_onnx` 两个 ONNX 模型加载模块。  
 > “替换”含义：不是删除 ResNet18 / GPT-2 的推理能力，而是把两个独立的 ONNX 加载示例模块合并进统一的 `mini_trt_llm` 多模态推理框架，最终从根 `CMakeLists.txt` 中移除 `0_resnet18_onnx` 与 `1_gpt2_onnx` 的 `add_subdirectory`，由 `mini_trt_llm` 提供等价的推理能力。
 
@@ -378,7 +382,7 @@ builder.RegisterSubgraphReplacer(std::make_unique<RMSNormSubgraphReplacer>());
 builder.BuildFromOnnx(onnx_path, engine_path);
 ```
 
-### 2.6 原生网络构建（方案 A）
+### 2.6 [DESIGN-NATIVE-BUILD] 原生网络构建（方案 A）
 
 #### GPT-2
 

@@ -14,7 +14,7 @@ namespace mini_trt_llm {
 // **为什么需要这一层**：参考实现是判断被测实现对不对的唯一标尺，它自己错了，
 // 测试就会给出错误的裁决。曾有一版 ReferenceRoPE 漏了 batch 维度，调用方在 batch>1 时
 // 传入 batch*seq_len 个位置、函数却只用了前 seq_len 个——编译通过、运行通过，
-// 直到真机数值对不上才暴露（见 docs/TROUBLESHOOTING.md #9）。
+// 直到真机数值对不上才暴露（见 docs/TROUBLESHOOTING.md + TS-009）。
 //
 // 这些用例全部是纯 host 计算，**不需要 GPU**，因此可以进 CI：
 // 参考实现在 CI 里被验证，GPU 侧才只负责"参考 vs 实现"的对比。

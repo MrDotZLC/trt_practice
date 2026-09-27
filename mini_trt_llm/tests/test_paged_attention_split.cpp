@@ -1,7 +1,7 @@
 // decode 阶段 PagedAttention 的 split-K **纯逻辑**用例（H 层，沙箱可跑）。
 //
-// 开发计划：`docs/future_iterations_development_plan.md` §12（P2_2-3）
-// 测试计划：`docs/future_iterations_test_plan.md` §11（PS-1 ~ PS-7）
+// 开发计划：`docs/future_iterations_development_plan.md` + OI-FLASHDECODING-PLAN（P2_2-3）
+// 测试计划：`docs/future_iterations_test_plan.md` + OI-FLASHDECODING-TESTS（PS-1 ~ PS-7）
 //
 // 为什么这些用例值得单独存在：分片边界（不整除、片数超过位置数、只有当前 token）
 // 与 workspace 布局都是**纯逻辑**，而它们出错的表现是"某些长度下结果错/NaN"或

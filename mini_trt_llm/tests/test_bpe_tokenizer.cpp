@@ -5,7 +5,7 @@
 //
 // 环境语义：缺 tokenizer 文件或参考文件 → **显式跳过**（打印探测结果）。
 // "缺环境"不等于"实现有问题"，但"资产在、加载失败"必须判红——两者的区别正是
-// docs/TROUBLESHOOTING.md #19 留下的教训。
+// docs/TROUBLESHOOTING.md + TS-019 留下的教训。
 
 #include "mini_trt_llm/tokenizer/bpe_tokenizer.hpp"
 

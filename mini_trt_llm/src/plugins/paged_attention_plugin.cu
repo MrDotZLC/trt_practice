@@ -34,7 +34,7 @@ int32_t g_num_splits_override = 0;
 // 单趟不需要按 max_context_len 预分配缓存，也不需要把整行 logits 物化到显存。
 //
 // 代价是每处理一个历史位置就要做一次 block 归约。这是 Phase 1 为换取正确性接受的
-// 取舍；warp 级优化留到后续迭代（见 docs/phase1_development_plan.md §9）。
+// 取舍；warp 级优化留到后续迭代（见 docs/phase1_development_plan.md + PH1-RISKS）。
 template <typename T>
 __global__ void PagedAttentionDecodeKernel(
     const T* __restrict__ query, const T* __restrict__ key_cache,

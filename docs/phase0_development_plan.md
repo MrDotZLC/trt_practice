@@ -1,5 +1,9 @@
 # Phase 0 开发计划：基础设施与通用化骨架
 
+> **STATUS: ARCHIVED｜冻结于 2026-09-27（所属阶段已交付）**
+> 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
+> 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
+
 > 周期：2 周  
 > 目标：搭建 `mini_trt_llm` 可编译基础框架，完成通用化骨架（ModelConfig / ModelRegistry / IModelBuilder / WeightLoader / Engine / Builder），接入 SentencePiece 与 Safetensors 解析，实现基础单元测试。
 

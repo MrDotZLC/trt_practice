@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """把 `nsys stats` 导出的 CSV 摘要整理成"可归因"的报告。
 
-对应 `docs/future_iterations_development_plan.md` §11.4（分解口径）与
-`docs/future_iterations_test_plan.md` §10 的 PF-4 / PF-5。
+对应 `docs/future_iterations_development_plan.md` + OI-PERF-PROFILE-DECOMPOSITION（分解口径）与
+`docs/future_iterations_test_plan.md` + OI-PERF-PROFILE-TESTS 的 PF-4 / PF-5。
 
 两种模式：
   * 默认（kernel）：读 `nsys stats --report cuda_gpu_kern_sum --format csv` 的输出，

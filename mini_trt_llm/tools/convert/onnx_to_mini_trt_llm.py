@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """把 ResNet18 的 ONNX 转成 mini_trt_llm 原生路径需要的 `model.safetensors` + `config.json`。
 
-**为什么源是 ONNX 而不是 PyTorch 的 state_dict**（docs/phase4_development_plan.md §3.1 的决定）：
+**为什么源是 ONNX 而不是 PyTorch 的 state_dict**（docs/phase4_development_plan.md + PH4-ONNX-SOURCE-DECISION 的决定）：
 这份 ONNX 在导出时已经把 BatchNorm **折叠进 Conv**（42 个张量里没有 BN 的 running stats，
 也没有独立的 Mul/Div）。直接取 ONNX 里的权重，就保证了**原生路径与 ONNX 路径用的是逐位相同的
 权重**——"两条路对拍"才谈得上干净。若改从 state_dict 折叠，折叠顺序/精度与当年导出的结果
@@ -222,7 +222,7 @@ def _expect_rejected(label: str, mutate, model: onnx.ModelProto) -> None:
     """把模型改坏，确认自检**真的会拦**。
 
     为什么要有这个自检：护栏没有用例证明"它会拦人"，就等于没有护栏——项目里已经吃过
-    "声明了却没人核对"的亏（Phase 3 的子图名核对一栏，见 docs/phase3_test_plan.md §5）。
+    "声明了却没人核对"的亏（Phase 3 的子图名核对一栏，见 docs/phase3_test_plan.md + PH3-GAPS）。
     """
     broken = onnx.ModelProto()
     broken.CopyFrom(model)

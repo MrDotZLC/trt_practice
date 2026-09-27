@@ -1,5 +1,9 @@
 # Phase 1.5 开发计划：全流程测试基建与收尾
 
+> **STATUS: ARCHIVED｜冻结于 2026-09-27（所属阶段已交付）**
+> 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
+> 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
+
 > **定位**：Phase 1 已交付算子层（RMSNorm / RoPE / PagedAttention / Sampler）并通过真机验证，
 > 但「模型加载 → builder 分发 → Plugin 挂载 → engine 构建/反序列化 → 推理 → 采样」这条
 > **真实使用路径**从未被自动化验证过。Phase 1.5 补的是这一段，不是新功能开发。
@@ -19,7 +23,7 @@
 
 ---
 
-## 0. 执行结果（2026-09-24 完成，已通过真机验证）
+## 0. [PH1.5-RESULTS] 执行结果（2026-09-24 完成，已通过真机验证）
 
 | ID | 状态 | 实际产出 |
 |---|---|---|
@@ -36,7 +40,7 @@
 （`--gtest_filter='Fp16PathTest.*:E2eMiniDecoderTest.*'`，共 5 条）**全部通过**。
 过程中共修复 4 个产品缺陷（`docs/TROUBLESHOOTING.md` #5 / #6 / #8 / #9）与 1 处校验顺序问题（#7）。
 
-### 0.1 P1.5-4 的定位（含一次结论修正）
+### 0.1 [PH1.5-P154-SCOPE] P1.5-4 的定位（含一次结论修正）
 
 **本阶段的定位**：在进入 Phase 2 的模型加载之前，把**组件与集成验证全部收口**——
 插件、采样器、权重加载、动态 shape、端到端测试骨架都在 Phase 1.5 内完成并验证，
@@ -87,9 +91,9 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 2. `PROGRESS.md` §6 收敛为单入口，不再重复罗列条目；
 3. `phase1_test_plan.md` 改为引用式，进度归属以本计划为准；
 4. `phase0_development_plan.md` §4 改写为可执行判据，并补上 Phase 0 遗漏的
-   「Optimization profile 能力可用」一条（详见该文档 §4.1 / §4.2）。
+   「Optimization profile 能力可用」一条（详见该文档 `phase0_development_plan.md` §4.1 / §4.2）。
 
-### 0.3 一并收口的覆盖缺口
+### 0.3 [PH1.5-GAP-CLOSURE] 一并收口的覆盖缺口
 
 `docs/phase1_test_plan.md` §8 列的缺口，凡属于「Phase 2 建模前应具备的组件能力」，本次一并处理：
 
@@ -365,7 +369,7 @@ scripts/
 
 ---
 
-## 5. 验收标准（Phase 1.5 整体）
+## 5. [PH1.5-ACCEPTANCE] 验收标准（Phase 1.5 整体）
 
 - [ ] P1.5-0 的三个缺陷各有针对性回归用例，且都不需要 GPU 即可运行。
 - [ ] `ctest` 在沙箱内全绿，GPU 用例以 `GTEST_SKIP` 跳过、不产生噪声。

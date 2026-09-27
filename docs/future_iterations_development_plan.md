@@ -1,10 +1,11 @@
 # future_iterations 开发计划（触发驱动的分批执行计划）
 
-> **状态**：2026-09-26 产出，**未开工**。本文件是 `docs/future_iterations.md` 的**执行层**。
+> **状态**：2026-09-26 产出。**分批计划已执行完毕**——批次 A/B/C 与 §9~§13 的执行条目均已跑完并回填；
+> **现状与测试基线一律以 `PROGRESS.md` 的「当前基线」为准**。本文件是 `docs/future_iterations.md` 的**执行层**。
 >
 > **分工（避免两处来源漂移）**：
 > - **排序 / 级别定义 / 触发条件 / 目标 / 做法 / 验收判据** → `docs/future_iterations.md`
->   （§0 优先级、§1.5 P4-INT8-a、§1.6 P4-INT8-b、§11 缺口索引）；
+>   （§0 优先级、`future_iterations.md` §1.5 P4-INT8-a、`future_iterations.md` §1.6 P4-INT8-b、§11 缺口索引）；
 > - **本文件只回答**：轮到某条时"改哪些文件、分几步、每步怎么自检、哪一步要你批"。
 >   条目内部的做法与验收**不复制过来**——复制出来的第二份必然漂移。
 >
@@ -18,15 +19,15 @@
 
 **有。** 能力条目与触发条件在 `docs/future_iterations.md`（2026-09-26 已重定优先级，含 §0 总表）；
 本文件是它的执行层，测试侧在 `docs/future_iterations_test_plan.md`。
-两条**已立项**条目（P4-INT8-a → §1.5、P4-INT8-b → §1.6）的目标 / 做法 / 验收已在该文件里写全。
+两条**已立项**条目（P4-INT8-a → `future_iterations.md` §1.5、P4-INT8-b → `future_iterations.md` §1.6）的目标 / 做法 / 验收已在该文件里写全。
 
 ### 0.2 逐条对照：本文件的任务 / 接口 / 验收 vs 现状
 
 | 本次要做的 | 现状 | 是否一致 |
 |---|---|---|
 | 把 31 个条目按触发条件分批 | `future_iterations.md` §0.1 已给出级别与理由 | 一致，本文件只做"批次化"（同级内按依赖排序） |
-| 给"可立即开工"的条目写可执行步骤 | §5.1 与 §1.6 离线子项此前只有"工作内容"级描述 | **有偏差**：缺文件级改动面、步序、自检点 → 本文件 §2 补齐 |
-| 给"触发即做"的条目定开工前提 | §1.5 已有做法与成本校准 | 一致；本文件补"先修仪器"的硬前置与真机往返预算 |
+| 给"可立即开工"的条目写可执行步骤 | §5.1 与 `future_iterations.md` §1.6 离线子项此前只有"工作内容"级描述 | **有偏差**：缺文件级改动面、步序、自检点 → 本文件 §2 补齐 |
+| 给"触发即做"的条目定开工前提 | `future_iterations.md` §1.5 已有做法与成本校准 | 一致；本文件补"先修仪器"的硬前置与真机往返预算 |
 | 给"需外部前置"的条目定第一步 | §0.1 只有一行备注 | **有意保持粗粒度**：触发后各条按 AGENTS.md §5 升格为独立 phase 计划，本文件不预写细节（预写必然过期） |
 | 测试侧判据 | 各条目只写了主判据，没有用例清单与分层 | **有偏差** → `future_iterations_test_plan.md` |
 
@@ -39,11 +40,14 @@
 
 - **【已修，2026-09-26】我上一轮把 §5.1 的数据前置写错了。** `future_iterations.md` §0.1 原写
   "`vocab.json` + `merges.txt` 本地没有 → 缺文件时本条降为 P2"。查证后是**我错**：
+
+<details><summary>展开：0.4 反向查：文档与现状矛盾之处（当场修） 全文</summary>
+
   本地 HF 缓存里有 gpt2 的完整 tokenizer 文件——
   `~/.cache/huggingface/hub/models--gpt2/snapshots/607a30d783dfa663caf39e06633721c8d4cfcd7e/{vocab.json,merges.txt,tokenizer.json}`，
   且实测 `transformers 4.44.0` 能 `local_files_only=True` 离线加载并给出参考 token id
   （`"The quick brown fox"` → `[464, 2068, 7586, 21831]`，`vocab_size = 50257`）。
-  **结论：§5.1 保持 P1，不需要联网。** 我当时的判断只查了 `models/gpt2/`，把"仓库里没有"
+  **结论：`future_iterations.md` §5.1 保持 P1，不需要联网。** 我当时的判断只查了 `models/gpt2/`，把"仓库里没有"
   当成了"机器上没有"——这正是 `AGENTS.md` §7 禁止的"观测缺口当成现象"。
 - **【已修，2026-09-26，同一次自检发现】** `future_iterations.md` §5.1 原先没写"byte-level BPE 需要
   **两个**文件"这个接口事实，而 `BaseTokenizer::Load` 只有一个路径参数（见 §2.1 的 F2）。
@@ -52,11 +56,13 @@
 - **【已修，2026-09-27，§2.2 立项时】** `future_iterations.md` §2.2 的"支持 decode 阶段的
   batching 优化"与代码现状矛盾——`PagedAttentionDecodeKernel` 的 `grid.y = batch_size`，
   kernel **本来就支持任意 batch**（`PagedAttentionKernelTest.MhaMatchesCpuReferenceAcrossMultipleBlocks`
-  已覆盖 `batch=2`）；把 batch 卡在 1 的是 `LLMRunner`（缺口 G2-3，属 §2.3）。该句已作废，
+  已覆盖 `batch=2`）；把 batch 卡在 1 的是 `LLMRunner`（缺口 G2-3，属 `future_iterations.md` §2.3）。该句已作废，
   本条范围收敛为"只做上下文维 split-K"。详见 **§12.1**。
 - **【已登记，未改代码，2026-09-27】** `tests/test_paged_attention_plugin.cpp` 的主判据阈值
   `1e-4f / 1e-5f` **旁边没有出处**（`AGENTS.md` §7 要求写清出处）→ §2.2 只补出处、不放宽；
   出处待作者确认。详见 **§12.1**。
+
+</details>
 
 ### 0.5 需要你拍板的决策（F1～F4）
 
@@ -77,10 +83,10 @@
 
 | 批次 | 含义 | 条目 | 现在能开工吗 |
 |---|---|---|---|
-| **A** | 无外部前置，且触发已成立 | §5.1（BPE Tokenizer）、§1.6 的离线子项 | **能**（见 §2） |
-| **B** | 无外部前置，但触发未成立（触发即做） | §1.5（P4-INT8-a） | 触发后能（见 §3） |
-| **C** | 有外部前置（联网 / 新硬件 / 先补测量 / 需求未定） | §1.2、§1.6 整条、§2.1、§2.3、§2.4、§3.1、§3.2、§4.1、§4.2、§6.1~§6.4、§9.2、§9.3、§10.1 | 不能（见 §4） |
-| **D** | 冻结备查 | §1.1、§9.1 | **不做**（见 §5） |
+| **A** | 无外部前置，且触发已成立 | §5.1（BPE Tokenizer）、`future_iterations.md` §1.6 的离线子项 | **能**（见 §2） |
+| **B** | 无外部前置，但触发未成立（触发即做） | `future_iterations.md` §1.5（P4-INT8-a） | 触发后能（见 §3） |
+| **C** | 有外部前置（联网 / 新硬件 / 先补测量 / 需求未定） | §1.2、`future_iterations.md` §1.6 整条、§2.1、§2.3、§2.4、§3.1、§3.2、§4.1、§4.2、§6.1~`future_iterations.md` §6.4、§9.2、§9.3、§10.1 | 不能（见 §4） |
+| **D** | 冻结备查 | `future_iterations.md` §1.1、§9.1 | **不做**（见 §5） |
 
 **批次规则**：一批一次收口——每批结束时跑真机全量、回填文档、把新增的"坑"写进
 `docs/TROUBLESHOOTING.md`（结论留 `PROGRESS.md`）。批次内可以并行，批次间不并行，
@@ -94,6 +100,9 @@
 
 **目标（一句话）**：让框架具备"文本进 / 文本出"的 GPT-2 路径——目前 `LLMRunner` 只收发 token id，
 `tokenizer_` 仅在构造时校验（`include/mini_trt_llm/core/llm_runner.hpp:16`）。
+
+<details><summary>展开：2.1 A1 = BPE Tokenizer（`future_iterations.md`  全文</summary>
+
 
 **前置（已核实，2026-09-26）**：tokenizer 数据文件在本地 HF 缓存，**不需要联网**（见 §0.4）。
 
@@ -152,16 +161,21 @@
 **已知最容易错的地方（开工时按此设用例）**：前缀空格（`Ġ`）、连续空格、UTF-8 字节回退
 （中文 / emoji 会被切成字节 token）、特殊 token 是否参与 BPE、数字的分词边界。
 
-**明确不做**：`tiktoken`（§5.2）、chat template（§5.3）、tokenizer 级批处理、性能优化。
+**明确不做**：`tiktoken`（`future_iterations.md` §5.2）、chat template（§5.3）、tokenizer 级批处理、性能优化。
 
 **破坏性动作**：**无删除、无覆盖既有文件**。实际动到的既有文件有三个，全是**追加**：
 `tests/CMakeLists.txt`（注册 ctest 项）、`tests/test_gpt2_generate.cpp`（加一条桥接用例）、
 `include/mini_trt_llm/utils/json.hpp`（补 `\uXXXX` 转义——原先该分支直接报错，属"打开以前走不通的路径"）。
 **已执行（2026-09-26）**，其余全部是新增文件。
 
+</details>
+
 ### 2.2 A2 = INT8 判据的离线口径定义（`future_iterations.md` §1.6 的离线子项，P1）
 
 **目标（一句话）**：把"INT8 怎么算合格"写成可执行的判据规格 + 脚本，**不下载任何数据**。
+
+
+<details><summary>展开：2.2 A2 = INT8 判据的离线口径定义（`future_iterations.md` 全文</summary>
 
 **前置**：无。现有资产：`models/resnet18/*.meta.json`（已有 `sha256` 字段体例）、
 `scripts/ref_resnet18.py`（基线生成）、`tests/test_resnet18_int8.cpp`（余量分层统计的 C++ 现役实现）。
@@ -172,7 +186,7 @@
 |---|---|
 | `mini_trt_llm/tools/validate/int8_eval.py` | 新增：读 logits + meta → 输出**分层报告**（每层：率 + 样本量 n） |
 | `mini_trt_llm/tools/validate/README.md` | 新增：验收集规格（来源 / 版本 / SHA256 / 与 `calib_data` 的重叠排除规则） |
-| `docs/phase4_int8_plan.md` §4 | 改：把新规格接进判据表（**先改文档**） |
+| `docs/phase4_int8_plan.md` + PH4-INT8-CRITERIA | 改：把新规格接进判据表（**先改文档**） |
 | `docs/phase4_test_plan.md` R2.6 | 改：判据出处指向新规格 |
 | `mini_trt_llm/tests/CMakeLists.txt` | 加：脚本自检项（`--self-test`，缺 Python/资产返回 77） |
 
@@ -182,7 +196,7 @@
 2. **A2-2 写分层统计**：口径与 C++ 现役实现**必须一致**（同一 `margin` 定义、同一分桶边界来源）；
    两者不一致时以实测交叉校验为准（测试计划 A2-5）。
 3. **A2-3 加护栏自检**：脚本对下面 **7 类**输入必须**拒绝**，每种都要有一份故意改坏的输入把它打出来
-   （`AGENTS.md` §2.13「护栏必须有用例证明它会拦人」）：
+   （`PROGRESS.md` §2.13「护栏必须有用例证明它会拦人」）：
    ① 缺 provenance（`manifest_sha256` 缺失）；② 验收集与标定集重叠（文件名或 `sha256` 命中）；
    ③ 字段类型错（`num_samples` 是字符串）；④ 清单被改过（`sha256` 不符）；
    ⑤ logits 大小与 `shape` 不符；⑥ 报告只报率不报 n；⑦ 率与分子分母不自洽。
@@ -191,12 +205,14 @@
 
 **明确不做**：下载验收集、定绝对误差阈值（那需要真数据，见 §4 的 C 组）。
 
-**破坏性动作**：改动 `docs/phase4_int8_plan.md` §4 与 `docs/phase4_test_plan.md` R2.6 的**判据表文字**
+**破坏性动作**：改动 `docs/phase4_int8_plan.md` + PH4-INT8-CRITERIA 与 `docs/phase4_test_plan.md` R2.6 的**判据表文字**
 （不删条目、不改判据本身）——按 `AGENTS.md` §0.5，动手前把这两处改动一次性列给你确认。
 **已执行（2026-09-26 获你批准）**：两处均为**追加**指向新规格与脚本，未改动任何既有判据；
 另按同一批批准把 `int8_eval_selftest` 注册进 `tests/CMakeLists.txt`。
 
 ---
+
+</details>
 
 ## 3. 批次 B：触发即做
 
@@ -204,6 +220,9 @@
 
 > **执行细节已细化到本文件 §13**（2026-09-27）。下面这一节保留为"开工硬前置 + 改动面"的入口，
 > 与 §13 冲突时以 §13 为准（§13 是同一轮的文档，含计划对账与测量口径）。
+
+<details><summary>展开：3.1 B1 = P4-INT8-a（`future_iterations.md` §1.5 全文</summary>
+
 
 **触发条件**：需要更高 INT8 精度（当前 per-tensor 已达标，故未触发）。
 **做法 / 验收**：见 `future_iterations.md` §1.5——本文件不复制。
@@ -222,7 +241,7 @@
 | `mini_trt_llm/tools/convert/quantize_resnet18.py` | 加开关：导出带"量化前张量输出"的探针图。**默认输出到新路径**（如 `models/resnet18/resnet18_qdq_probe.onnx`），不覆盖正式产物 |
 | `mini_trt_llm/tests/test_resnet18_int8_probe.cpp` | 新增：仪器自证 + 逐层曲线报告 |
 | `docs/TROUBLESHOOTING.md` | 新增节：结论（无论"定位到层"还是"查空"） |
-| `docs/future_iterations.md` §1.5 | 回填状态 |
+| `docs/future_iterations.md` + OI-INT8-PERCHANNEL | 回填状态 |
 
 **真机预算**：每轮 1 次往返；本轮自带仪器自证，目标 ≤3 轮。
 **每轮只改一个变量**（`PROGRESS.md` §2.14 C）。
@@ -236,26 +255,32 @@
 
 ---
 
+</details>
+
 ## 4. 批次 C：需要外部前置（只到"预备"深度）
+
+> **本表是 2026-09-26 的计划快照**："前置/触发后的第一步"两列描述的是**当时**的状态，
+> 其中若干条目此后已交付（如 §6.3 / G6 的 profile、§9.2 采样器、§1.6 的离线子项）——
+> **哪些已交付以 `future_iterations.md` §0.1 的状态列为准**，不要照本表判断"还没做"。
 
 **共同纪律**：触发后**先产独立 phase 计划**（`AGENTS.md` §5 第 0 步），再动手；
 本表只写"前置是什么 + 触发后的第一步"，不预写做法细节（预写必然过期，且会与将来那份 phase 计划形成两份来源）。
 
 | 条目 | 前置是什么 | 触发后的第一步 | 要联网吗 |
 |---|---|---|---|
-| §1.6 整条（INT8 验收集） | 带真值标签的验收集 | **先获批**，再下载并登记 SHA256 + 重叠排除（规格来自 A2） | **要** |
-| §1.2 LLM INT8 / INT4 | `PagedAttentionPlugin` 只支持 `kFLOAT`/`kHALF`（`paged_attention_plugin.cu:265`）→ 先扩 INT8 KV cache；INT4 需先评估 sm_75 kernel | 先做"PagedAttention INT8 KV cache"的设计 + 契约用例 | 否 |
+| `future_iterations.md` §1.6 整条（INT8 验收集） | 带真值标签的验收集 | **先获批**，再下载并登记 SHA256 + 重叠排除（规格来自 A2） | **要** |
+| `future_iterations.md` §1.2 LLM INT8 / INT4 | `PagedAttentionPlugin` 只支持 `kFLOAT`/`kHALF`（`paged_attention_plugin.cu:265`）→ 先扩 INT8 KV cache；INT4 需先评估 sm_75 kernel | 先做"PagedAttention INT8 KV cache"的设计 + 契约用例 | 否 |
 | ~~§2.1 显存池~~ **已量完（2026-09-27）** | 无前置 | ~~先量一次分配开销（按 `G6` 口径）~~ **已由 §11 的 PF-5 量完**：`cudaMalloc` 63 次 / 3.335 ms → **触发不成立、不排期**（`future_iterations.md` §0.1 / §2.1、`PROGRESS.md` §3.0h 第 3 条） | 否 |
-| §2.3 Continuous Batching | 与 `G2-3`（`batch = 1` 限定）耦合 | 先扩 `LLMRunner` 的 batch（含多序列 block 分配与 `context_lens`） | 否 |
-| §2.4 CV 动态分辨率 | 无前置，但会牵动 profile 与缓存 | 先改 `AddCvOptimizationProfile` 的接受/拒绝语义（host 可测） | 否 |
-| §3.1 Encoder-Decoder / §3.2 ViT | 需要目标模型（HF 权重 + 导出） | 先定模型与 `config.json` 契约 | 可能（取权重） |
-| §4.1 GroupNorm / InstanceNorm、§4.2 SiLU / SwiGLU | 需要用到它们的模型（CV / LLaMA 系列） | 先接模型，再写 Plugin（`LayerNorm` 一半已作废，见 §5） | 可能 |
-| §6.1 转换工具增强 | 出现新权重来源 | 先定"要支持谁"，再动脚本 | 可能 |
-| §6.2 ONNX custom op | 真做子图替换（§10.2） | 先定替换目标子图 | 否 |
-| §6.3 Nsight 一键 target | 需要按 `G6` 口径做可复现测量 | 先定测量协议（≥3 次构建 / ≥20 次推理、报中位数与极差） | 否 |
-| §6.4 CI | 无前置（本地脚本部分），GitHub Actions 属联网 | 先做本地 `ctest` 脚本，联网部分**先获批** | 部分 |
-| §9.2 Sampler 高性能 kernel | **profile 从未做过** | 先做一次 decode 性能 profile，确认 sampler 占比 | 否 |
-| §9.3 采样器参考数据固化 | 无前置 | 把 `scripts/ref_sampler.py` 输出落成 `.bin` 供 C++ 载入 | 否 |
+| `future_iterations.md` §2.3 Continuous Batching | 与 `G2-3`（`batch = 1` 限定）耦合 | 先扩 `LLMRunner` 的 batch（含多序列 block 分配与 `context_lens`） | 否 |
+| `future_iterations.md` §2.4 CV 动态分辨率 | 无前置，但会牵动 profile 与缓存 | 先改 `AddCvOptimizationProfile` 的接受/拒绝语义（host 可测） | 否 |
+| §3.1 Encoder-Decoder / `future_iterations.md` §3.2 ViT | 需要目标模型（HF 权重 + 导出） | 先定模型与 `config.json` 契约 | 可能（取权重） |
+| `future_iterations.md` §4.1 GroupNorm / InstanceNorm、§4.2 SiLU / SwiGLU | 需要用到它们的模型（CV / LLaMA 系列） | 先接模型，再写 Plugin（`LayerNorm` 一半已作废，见 §5） | 可能 |
+| `future_iterations.md` §6.1 转换工具增强 | 出现新权重来源 | 先定"要支持谁"，再动脚本 | 可能 |
+| `future_iterations.md` §6.2 ONNX custom op | 真做子图替换（§10.2） | 先定替换目标子图 | 否 |
+| `future_iterations.md` §6.3 Nsight 一键 target | 需要按 `G6` 口径做可复现测量 | 先定测量协议（≥3 次构建 / ≥20 次推理、报中位数与极差） | 否 |
+| `future_iterations.md` §6.4 CI | 无前置（本地脚本部分），GitHub Actions 属联网 | 先做本地 `ctest` 脚本，联网部分**先获批** | 部分 |
+| `future_iterations.md` §9.2 Sampler 高性能 kernel | **profile 从未做过** | 先做一次 decode 性能 profile，确认 sampler 占比 | 否 |
+| `future_iterations.md` §9.3 采样器参考数据固化 | 无前置 | 把 `scripts/ref_sampler.py` 输出落成 `.bin` 供 C++ 载入 | 否 |
 | §10.1 ONNX / 原生 I/O 契约统一 | 要让 ONNX 路径接进 `LLMRunner` | 先加 `Cast`（把 `input_ids` 降到 INT32）并补契约用例 | 否 |
 
 ---
@@ -264,8 +289,8 @@
 
 | 条目 | 冻结原因 | 解冻条件 |
 |---|---|---|
-| §1.1 ResNet18 INT8 校准（implicit calibration / `IInt8Calibrator`） | 已被 Q/DQ 显式量化取代；该 API 路线自 TRT 10.12 起弃用 | 若将来某个模型在 Q/DQ 路线上**确实做不到**（例如算子不支持 `QuantizeLinear`），再评估 |
-| §9.1 PagedAttention 的 Prefill 阶段 | 触发条件（"Phase 2 走单引擎"）已被现状否证：`LLMRunner` 收 prefill + decode 两个引擎（`llm_runner.hpp:56`） | 真要合成"单引擎含 Prefill"时 |
+| `future_iterations.md` §1.1 ResNet18 INT8 校准（implicit calibration / `IInt8Calibrator`） | 已被 Q/DQ 显式量化取代；该 API 路线自 TRT 10.12 起弃用 | 若将来某个模型在 Q/DQ 路线上**确实做不到**（例如算子不支持 `QuantizeLinear`），再评估 |
+| `future_iterations.md` §9.1 PagedAttention 的 Prefill 阶段 | 触发条件（"Phase 2 走单引擎"）已被现状否证：`LLMRunner` 收 prefill + decode 两个引擎（`llm_runner.hpp:56`） | 真要合成"单引擎含 Prefill"时 |
 
 **冻结 ≠ 删除**：两个条目及其历史理由都保留（`AGENTS.md` §0.5 / §0.6）。
 
@@ -278,10 +303,10 @@
    `file(GLOB ...)`，GLOB 只在 configure 时求值；漏跑的症状是链接期 `undefined reference to vtable`。
 3. **产物或建图变了先删引擎缓存**：`/tmp/mini_trt_llm_*.engine` 只按路径名区分，不随代码失效。
 4. **真机口径固定**：`MINI_TRT_REQUIRE_GPU=1`（否则 GPU 用例静默跳过，等于白跑）。
-   当前基线（**2026-09-27**）：**沙箱 264 条 / 0 失败；真机整轮全量 264 条 / 1 红 / 1 跳过**
-   （整轮 **449 s**；沙箱含 §11 的 6 项 host 用例与脚本自检、§12 的 8 项、§13 的 2 条 host 自检，
-   GPU / P 层用例在沙箱显式跳过）。真机的红与跳过都按设计（红 = GPT-2 FP16 NaN，§5.11；
-   跳过 = `int8_crosscheck` 缺报告）。**两边总数相同**，差别只在 GPU 用例跑还是跳过。
+   当前基线（**2026-09-27 复跑**）：**沙箱 264 条 / 0 失败；真机整轮全量 264 条 / 1 红 / 0 跳过 / 310 s**
+   （沙箱含 §11 的 6 项 host 用例与脚本自检、§12 的 8 项、§13 的 2 条 host 自检，
+   GPU / P 层用例在沙箱显式跳过）。红按设计（GPT-2 FP16 NaN，`PROGRESS.md` §5.11）；
+   `int8_crosscheck` 报告齐备 → Passed，只在缺报告时按设计跳过。**两边总数相同**，差别只在 GPU 用例跑还是跳过。
    （`AGENTS.md` §7：未跑过的不写"通过"——这一行现在是跑过的。）
 5. **跳过或失败都要显式**：`MINI_TRT_SKIP_IF_NO_CUDA` / ctest 的 77；缺资产 → 跳过并打印探测结果。
 6. **不擅自删旧模块**：`0_resnet18_onnx/`、`1_gpt2_onnx/` 归作者（Phase 5 已永久取消）。
@@ -302,7 +327,7 @@
 
 ---
 
-## 8. 真机执行清单（**待作者执行**；Agent 侧无 GPU，见 `PROGRESS.md` §5.10）
+## 8. [OI-RUNBOOK] 真机执行清单（**已执行**：2026-09-26/27 多轮真机；命令保留供复跑。Agent 侧无 GPU，见 `PROGRESS.md` §5.10）
 
 > 工作区 = 仓库根目录。先构建：`cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=75 && cmake --build build -j$(nproc)`。
 > **顺序不能反**：§8.1（全量）→ §8.2（文本端到端）→ §8.3（INT8 交叉校验）。
@@ -322,7 +347,7 @@ ls 0_resnet18_onnx/calib_data | head -3
 MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 ```
 
-- **期望**：**204 条**，其中：
+- **期望（2026-09-26 快照）**：**204 条**，其中（**现状基线见 `PROGRESS.md` 的「当前基线」：2026-09-27 复跑为 264 条 / 1 红 / 0 跳过 / 310 s**）：
   - **按设计的红 1 条**：`Gpt2GenerateTest.RealGpt2Fp16GreedyMatchesReferenceTokens`（GPT-2 FP16 已知限制）；
   - ~~当前还有 1 条新红待查：`Gpt2OnnxTest.MatchesAcrossProfileShapes`~~ **已结案**（2026-09-26：
     机制 = 两实现差异之下的并列；按方案 B 修正判据后单测真机复跑 PASSED，不可判行 1/713）→ §8.5 / `TROUBLESHOOTING.md` #34.9；
@@ -346,6 +371,9 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
 
 ```bash
 # C-1 产出 artefact（真机 + GPU）
+
+<details><summary>展开：8.3 C：INT8 口径交叉校验（3 步，顺序不能反） 全文</summary>
+
 MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
     --gtest_filter='*DumpsLogitsAndCppReportForCrossCheck*'
 
@@ -363,21 +391,26 @@ ctest --test-dir build -R int8_crosscheck --output-on-failure
 
 - **期望**：C-3 PASSED，并打印"整体 a/b == 整体 a/b、余量子集 12/12 == 12/12、逐桶一致"。
 - **C 为什么用 `--legacy-mode`**：当前的测试图与标定集**同源**（都用 `calib_data`），严格模式下脚本会拒绝。
-  legacy 模式不放松判据，只在报告里写明"**不满足 §1.6 规格、一致率会被高估**，仅用于口径对齐"。
+  legacy 模式不放松判据，只在报告里写明"**不满足 `future_iterations.md` §1.6 规格、一致率会被高估**，仅用于口径对齐"。
 - **C-3 报差异时**：这是口径漂移（真问题）——**先查两侧口径，不许改阈值**（`AGENTS.md` §7）。
+
+</details>
 
 ### 8.4 回填（把结果给我）
 
 把三条命令的关键输出贴回来（§8.1 的总数 / §8.2 的判据 / §8.3 的 C-1 与 C-3 行），
 我据此回填 `PROGRESS.md` §3.5 / §3.0e / §6.5 与两份计划的 §8 / §3。
 
-### 8.5 新红处置：`Gpt2OnnxTest.MatchesAcrossProfileShapes`（seq=512 逐行 argmax）——**已按方案 B 结案（真机复跑通过）**
+### 8.5 [OI-RED-ARGMAX-CASE] 新红处置：`Gpt2OnnxTest.MatchesAcrossProfileShapes`（seq=512 逐行 argmax）——**已按方案 B 结案（真机复跑通过）**
 
 **为什么单开一节**：它不是本次交付引入的（改动面不触及该路径，见 `TROUBLESHOOTING.md` #34.2），
 但它现在是全量报告里除"按设计红"之外的唯一红，必须有人接手——否则下个会话会把它当成噪声。
 
+<details><summary>展开：8.5 [OI-RED-ARGMAX-CASE] 新红处置：`Gpt2OnnxTest.Ma 全文</summary>
+
+
 ```bash
-# 复跑：确认五个形状的"不可判行"与 ExpectedUndecidableRows() 登记表逐行一致（§34.9）
+# 复跑：确认五个形状的"不可判行"与 ExpectedUndecidableRows() 登记表逐行一致（`TROUBLESHOOTING.md` §34.9）
 MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
     --gtest_filter='Gpt2OnnxTest.MatchesAcrossProfileShapes'
 ```
@@ -391,7 +424,9 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
 
 ---
 
-## 9. 执行结果（待回填）
+</details>
+
+## 9. [OI-RUNBOOK-RESULTS] 执行结果（已回填）
 
 > 回填要求：只写"状态 + 产出 + 判据实测值 + 出处（命令 / 日志）"；排查过程写 `docs/TROUBLESHOOTING.md`。
 
@@ -411,7 +446,7 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
 
 ---
 
-## 10. §9.2 Sampler 高性能 kernel（开发计划）
+## 10. [OI-SAMPLER-KERNEL-PLAN] `future_iterations.md` §9.2 Sampler 高性能 kernel（开发计划）
 
 > **本文档是它唯一的正式计划落点**（2026-09-26 作者决定：后续迭代中每个事项的开发/测试计划
 > **都并入 `future_iterations*_plan.md` 家族，不再单独新建 per-item 文件**）。
@@ -421,12 +456,15 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
 
 #### 10.1.1 有没有计划文档
 
+
+<details><summary>展开：10.1 计划对账（AGENTS.md §5 第 0 步） 全文</summary>
+
 **没有。** 覆盖本次工作的只有 `future_iterations.md` §9.2 的条目（背景 / 工作内容 / 触发时机），
 没有开发计划与测试计划。→ 本文件 + 本文件同级的 `future_iterations_test_plan.md` §9 即为它们。
 
-#### 10.1.2 逐条对照：§9.2 的描述 vs 代码现状
+#### 10.1.2 逐条对照：`future_iterations.md` §9.2 的描述 vs 代码现状
 
-| §9.2 的说法 | 代码证据 | 对上了吗 |
+| `future_iterations.md` §9.2 的说法 | 代码证据 | 对上了吗 |
 |---|---|---|
 | "Top-K / Top-P 目前每步都要对整行 `vocab_size` 做一次降序排序" | `src/sampler/sampler_kernels.cu`：`PrepareSortInputKernel`（物化 fp32 key + 下标）→ `cub::DeviceSegmentedRadixSort::SortPairsDescending`（逐行整段排序）→ `TopKSampleKernel` / `TopPSampleKernel` | **一致** |
 | "是明显的性能瓶颈（`vocab_size` 可达 128K）" | 排序 O(V log V) + 物化两份 [B,V] 中间缓冲；Top-P kernel 还要两趟全行扫描 | 一致（但**占比未测**，见 0.3 偏差 1） |
@@ -437,11 +475,11 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
 
 #### 10.1.3 偏差怎么处理（写在前面，动手前先认账）
 
-- **偏差 1：触发条件（decode 性能 profile）至今没测过。** §9.2 原文的触发时机是"先用 `nsys`/`ncu`
+- **偏差 1：触发条件（decode 性能 profile）至今没测过。** `future_iterations.md` §9.2 原文的触发时机是"先用 `nsys`/`ncu`
   定位到 sampler 占比显著"。本次由作者决定直接推进 → 处理方式：把"**先测基线**"作为本计划的第一个任务
   **P9_2-0**，这样既给性能结论一个 before 数，也保留一个合法出口：
   **若基线显示 sampler 占比可以忽略，则只落地"正确性/覆盖"改进（FP16 + 大 vocab 覆盖），不换实现**。
-- **偏差 2：continuous batching 的对接不在本次范围。** 它依赖 §2.3 + 缺口 G2-3；本次只在 kernel 层
+- **偏差 2：continuous batching 的对接不在本次范围。** 它依赖 `future_iterations.md` §2.3 + 缺口 G2-3；本次只在 kernel 层
   保证多行正确（既有能力）。
 
 #### 10.1.4 反向查：文档与代码的矛盾（当场记）
@@ -455,10 +493,15 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
 
 ---
 
+</details>
+
 ### 10.2 目标与范围
 
 **目标（2026-09-26 由 §10.11 收窄，原文保留在下面的"做/不做"里以便追溯）**：
 Top-K 侧把"整行降序排序"换成"每行一个 block 的部分选择（top-M）+ 只对选出的候选排序"；
+
+<details><summary>展开：10.2 目标与范围 全文</summary>
+
 Top-P 侧**保留 CUB 排序**、只把行内数学块内并行化。两者都在**语义不变**的前提下降低每步采样开销；
 同时补齐 FP16 与大 vocab 的覆盖。
 
@@ -481,10 +524,15 @@ Top-P 侧**保留 CUB 排序**、只把行内数学块内并行化。两者都�
 
 ---
 
+</details>
+
 ### 10.3 接口与设计（D1~D4）
 
 **D1｜API 形态不变**：只允许改 `TopKSamplerWorkspaceBytes` / `TopPSamplerWorkspaceBytes` 的**返回大小**
 与注释（调用方只查询大小，见 §0.2 表）。签名、参数结构、错误约定（返回 `cudaError_t`、越界/空指针返回非
+
+<details><summary>展开：10.3 接口与设计（D1~D4） 全文</summary>
+
 `cudaSuccess`）一律保持。
 
 **D2｜算法（每行一个 block）**：
@@ -506,10 +554,16 @@ Top-P 在保留前缀内**重新归一化**——逐条与现状对齐（这些�
 
 ---
 
+</details>
+
 ### 10.4 任务分解（P9_2-0 ~ P9_2-8）
+
+
+<details><summary>展开：10.4 任务分解（P9_2-0 ~ P9_2-8） 全文</summary>
 
 | 任务 | 内容 | 依赖 | 产出 |
 |---|---|---|---|
+
 | **P9_2-0** | **基线测量**：现有实现的采样耗时与占比（`nsys`/`ncu` + 单测微基准），vocab ∈ {50257, 128000}、batch ∈ {1, 8} | 真机 | ✅ **已完成（2026-09-26 真机）**：基线表见 §10.5（4 个形状的中位数）。仪器 = `tests/test_sampler.cpp` 的 `SamplerPerf.ThroughputByShape`（CudaTimer + warmup 3 + 采样 21 次，报中位数/极差/min-max，并给 greedy 作"一趟扫描"参照）。**更正**：原文写的"基线数据待真机运行"已在同日被推翻，该行当时没回改 |
 | P9_2-1 | 固定"语义清单"：把现有实现的语义写成可核对条目（含并列、p 截断、重新归一化、随机数消费） | —— | 测试计划 §3 的判据表 |
 | P9_2-2 | top-M 选择 kernel（含阈值迭代与覆盖率统计） | P9_2-1 | `TopKSelectKernel` + host 可测的覆盖率逻辑 |
@@ -522,10 +576,15 @@ Top-P 在保留前缀内**重新归一化**——逐条与现状对齐（这些�
 
 ---
 
-### 10.5 验收标准（每条都要能回答"凭什么"）
+</details>
+
+### 10.5 [OI-SAMPLER-KERNEL-ACCEPTANCE] 验收标准（每条都要能回答"凭什么"）
 
 1. **语义回归（主判据）**：`tests/test_sampler.cpp` 既有 11 条用例**不改判据、全部通过**；
    另有 `test_e2e_mini_decoder.cpp` 的 Top-K（k=1）与 `test_fp16_paths.cpp` 的 Greedy 用例通过。
+
+<details><summary>展开：10.5 [OI-SAMPLER-KERNEL-ACCEPTANCE] 验收标准（每条都要能 全文</summary>
+
 2. **FP16 覆盖（补 P1.5-a）**：新增 Top-K / Top-P 的 FP16 用例，判据沿用既有分布口径
    （与解析 softmax 概率的 **3σ** 比较，出处：`TopKDistributionMatchesSoftmaxProbabilities` 的注释）。
 3. **大 vocab 覆盖**：vocab = 128000（合成）与 50257（真实形状）下，Top-K 结果必落在解析 top-K 集合内；
@@ -569,6 +628,8 @@ Top-P 在保留前缀内**重新归一化**——逐条与现状对齐（这些�
 
 ---
 
+</details>
+
 ### 10.6 风险与缓解
 
 | 风险 | 影响 | 缓解 |
@@ -585,6 +646,9 @@ Top-P 在保留前缀内**重新归一化**——逐条与现状对齐（这些�
 ### 10.7 破坏性动作清单（**预告 → 2026-09-26 执行结果**）
 
 清单本身不删旧条目（留作追溯），实际落点逐条对照如下——**没有任何文件被删除或改名**：
+
+
+<details><summary>展开：10.7 破坏性动作清单（**预告 → 2026-09-26 执行结果**） 全文</summary>
 
 1. **修改** `mini_trt_llm/src/sampler/sampler_kernels.cu` ✅（P9_2-5 只动了 Top-P：新增
    `TopPParallelSampleKernel`、把 `LaunchTopPSampler` 接到它、并新增 `LaunchTopPSamplerLegacy`
@@ -606,10 +670,15 @@ Top-P 在保留前缀内**重新归一化**——逐条与现状对齐（这些�
 
 ---
 
+</details>
+
 ### 10.8 真机执行清单（**2026-09-27：四步全部已执行**）
 
 > 已执行结果：第 1 步与第 3 步（`ctest` 全量）**228 条 / 226 通过 / 1 红 / 1 跳过**，
 > 红 = 按设计的 FP16 复现器、跳过 = `int8_crosscheck`（缺报告 → 77）。
+
+<details><summary>展开：10.8 真机执行清单（**2026-09-27：四步全部已执行**） 全文</summary>
+
 > 第 2 步（性能）**已单独跑完**：按 §10.5 冻结的基线 **4/4 形状达标**（13.0× ~ 18.9×）；
 > 同 session 口径 `50257×1 = 9.99×`——数字、两个口径的读法与缺口归因见 **§10.9.1**。
 
@@ -631,10 +700,16 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 
 ---
 
-### 10.9 结果回填（待回填）
+</details>
+
+### 10.9 结果回填（已回填）
+
+
+<details><summary>展开：10.9 结果回填（已回填） 全文</summary>
 
 | 任务 | 状态 | 判据实测值 / 出处 |
 |---|---|---|
+
 | P9_2-0 基线测量 | ✅ **完成（2026-09-26 真机）** | 4 个形状的中位数见 §10.5 的基线表；结论 = **换实现**（top-p 131~205× greedy，top-k 7.7~15.5× greedy）。沙箱侧 `SamplerPerf.ThroughputByShape` 显式跳过；全量 216 条 / 0 失败 |
 | P9_2-1 语义清单 | ✅ 完成 | 写在测试计划 §9.4（允许不同 / 必须相同两类） |
 | P9_2-2 ~ P9_2-4 Top-K 快速路径 | ⚠️ **正确性通过、性能未达标（已回退生产接线）** | **P9_2-2 ~ P9_2-4 已实现（2026-09-26，Top-K 快速路径）**：
@@ -714,7 +789,7 @@ warp 级归约/扫描定位精确下标），预期把那 67~129 µs 压到 ~5~1
 
 **观测项（不作判据）**：S-15 打印的"新实现 vs legacy 逐 token 一致率"为
 `50257×1: 2/3、2/3`、`50257×8: 17/24、12/24`、`128000×1: 0/3、0/3`。**词表越大越容易不一致，
-这符合 §9.4 登记的机制**：两条实现对同一行的累计和只差舍入，但采样命中的是"第一个累计 ≥ target
+这符合 `future_iterations_test_plan.md` §9.4 登记的机制**：两条实现对同一行的累计和只差舍入，但采样命中的是"第一个累计 ≥ target
 的**下标**"；12.8 万词表上 nucleus 内相邻台阶只有 ~1e-5·total 的间距，而串行累加 11 万项的舍入误差
 量级是 `ε·√N`（≈1e-5·total）——两者同量级，命中下标因此可能挪 1~2 位，token 标签就换了。
 分布层面这只是一次 ~1e-5 的 CDF 扰动（S-21 在 3σ 下通过、S-15 在带 +1 元素边界的 nucleus 内通过）。
@@ -724,9 +799,14 @@ warp 级归约/扫描定位精确下标），预期把那 67~129 µs 压到 ~5~1
 
 ---
 
-### 10.12 P9_2-5b：把 Top-P 的收尾段也并行化（2026-09-27 立项，同日实施）
+</details>
+
+### 10.12 [OI-SAMPLER-TOPP-TAIL] P9_2-5b：把 Top-P 的收尾段也并行化（2026-09-27 立项，同日实施）
 
 #### 10.12.1 计划对账（AGENTS.md §5 第 0 步）
+
+
+<details><summary>展开：10.12 [OI-SAMPLER-TOPP-TAIL] P9_2-5b：把 Top-P 的 全文</summary>
 
 1. **有没有计划文档**：只有索引（`future_iterations.md` §11 的 P9_2-5b 行）与归因记录
    （`TROUBLESHOOTING.md` #35），**没有**做法 / 判据 / 破坏性清单 → 本节即为它的计划落点。
@@ -760,7 +840,7 @@ warp 级归约/扫描定位精确下标），预期把那 67~129 µs 压到 ~5~1
 #### 10.12.3 判据（每条都要能回答"凭什么"）
 
 1. **正确性不打折**：S-13 / S-15 / S-16 / S-21 真机通过（判据不动）；S-22/S-23/S-24 沙箱通过（去重后：4 条 + 3 条 + 3 条）。
-   §9.4 登记的"允许差异"类别不变（仍只有浮点累加顺序；这次把"分块 + 块间串行合并"扩成
+   `future_iterations_test_plan.md` §9.4 登记的"允许差异"类别不变（仍只有浮点累加顺序；这次把"分块 + 块间串行合并"扩成
    "分块 + 子块 + 元素"三级，属同一类）。
 2. **性能**：同 session 同 harness，`top-p legacy/parallel ≥ 10×`（不可调低），且
    **`top-p − top-k`（= 采样 kernel 净成本）必须明显下降**，实测值连同"哪次运行"回填 §10.9.1。
@@ -861,10 +941,15 @@ warp 级归约/扫描定位精确下标），预期把那 67~129 µs 压到 ~5~1
    需单独确认。
 
 
+</details>
+
 ### 10.10 P9_2-2~4 结果：正确性达标、**性能不达标**（2026-09-26 真机）
 
 **正确性**：`TopKFastMatchesLegacyTokens`（fast vs legacy **逐 token 相同**，4 形状）与
 `TopKFastPoisonsRowsAboveContractLimit` 均真机通过 → 语义等价成立。
+
+<details><summary>展开：10.10 P9_2-2~4 结果：正确性达标、**性能不达标**（2026-09-26 真 全文</summary>
+
 
 **性能（同一 harness，n=21 中位数）——未达 §10.5 第 4 条的 ≥5×：**
 
@@ -899,10 +984,15 @@ warp 级归约/扫描定位精确下标），预期把那 67~129 µs 压到 ~5~1
 - 重做后再跑同一 harness，用**同一把尺子**（≥5×）判定；仍不达标就继续查，不调阈值。
 
 
+</details>
+
 ### 10.11 决策（2026-09-26）：先做 Top-P，且**改用"保留排序、并行化行内数学"的方案**
 
 **作者决定**：跳过 Top-K 重做、直接做 **P9_2-5（Top-P）**——它是基线里的绝对大头（6.6~22 ms，
 是 top-k 的 10 倍量级）。
+
+<details><summary>展开：10.11 决策（2026-09-26）：先做 Top-P，且**改用"保留排序、并行化行内 全文</summary>
+
 
 **方案改了（比 §10.10 的重做方向低一个数量级的风险）**，依据是基线分解：
 
@@ -975,17 +1065,22 @@ O(块数 + 一个块)，量级差 100 倍以上，而省掉了一整套 block sc
 
 ---
 
-## 11. decode 端到端性能画像 + G6 可复现测量方法（开发计划）
+</details>
+
+## 11. [OI-PERF-PROFILE-PLAN] decode 端到端性能画像 + G6 可复现测量方法（开发计划）
 
 > **本文档是它唯一的正式计划落点**（沿用 §10 开头记的规则：后续迭代的每个事项都并入
 > `future_iterations*_plan.md` 家族，不新建 per-item 文件）。
 > 配套测试计划见 `future_iterations_test_plan.md` §10。
 > 条目事实来源：`docs/future_iterations.md` **§6.3**（Nsight 一键 profile target）与 **§11 的 G6**
-> （性能无可复现测量方法）；同时收口 §9.2 留下的"sampler 在整步 decode 里占多少"。
+> （性能无可复现测量方法）；同时收口 `future_iterations.md` §9.2 留下的"sampler 在整步 decode 里占多少"。
 
 ### 11.1 计划对账（AGENTS.md §5 第 0 步）
 
 #### 11.1.1 有没有计划文档
+
+
+<details><summary>展开：11.1 计划对账（AGENTS.md §5 第 0 步） 全文</summary>
 
 **有（就是本节）。** `future_iterations.md` §6.3 与 §11 的 G6 是条目的**唯一事实来源**
 （是什么 / 为什么 / 触发条件）；本节只回答"改哪些文件、分几步、每步怎么自检、哪一步要你批"。
@@ -994,13 +1089,13 @@ O(块数 + 一个块)，量级差 100 倍以上，而省掉了一整套 block sc
 
 | 本次要做的 | 文档原文 | 现状（已核实） | 是否一致 |
 |---|---|---|---|
-| 加 profile target | §6.3："CMake 增加 `profile_gpt2`、`profile_resnet18` 自定义 target；支持 `nsys profile` 与 `ncu` 导出 `.ncu-rep`" | **立项时**（2026-09-27 上午）核实：`rg "profile\|nsys\|ncu"` 在两个 CMakeLists 里**零命中**（现已落地，见 §11.5.1） | 一致；本节补文件级改动面与步序 |
-| 建可复现测量方法 | §11 G6："固定机器状态 + 同一 session 内 ≥3 次构建 / ≥20 次推理，报中位数与极差" | 协议未落成文档、无脚本、无 target | **有偏差**：G6 那一行写在 §9.2 之前，**弱于** §9.2 沉淀的协议（见 11.1.3） |
-| 回答"sampler 在整步 decode 占比" | §0.1 / §0.3 第 1 项："§9.2 的 sampler 侧测量已完成，缺的是它在整步 decode 里的占比" | `PROGRESS.md` §3.0d 的性能数字只有 `CVRunner` benchmark（`mean≈8.4 ms`），**没有任何 decode 画像** | 一致（缺口真实存在） |
+| 加 profile target | `future_iterations.md` §6.3："CMake 增加 `profile_gpt2`、`profile_resnet18` 自定义 target；支持 `nsys profile` 与 `ncu` 导出 `.ncu-rep`" | **立项时**（2026-09-27 上午）核实：`rg "profile\|nsys\|ncu"` 在两个 CMakeLists 里**零命中**（现已落地，见 §11.5.1） | 一致；本节补文件级改动面与步序 |
+| 建可复现测量方法 | §11 G6："固定机器状态 + 同一 session 内 ≥3 次构建 / ≥20 次推理，报中位数与极差" | 协议未落成文档、无脚本、无 target | **有偏差**：G6 那一行写在 `future_iterations.md` §9.2 之前，**弱于** §9.2 沉淀的协议（见 11.1.3） |
+| 回答"sampler 在整步 decode 占比" | §0.1 / §0.3 第 1 项："`future_iterations.md` §9.2 的 sampler 侧测量已完成，缺的是它在整步 decode 里的占比" | `PROGRESS.md` §3.0d 的性能数字只有 `CVRunner` benchmark（`mean≈8.4 ms`），**没有任何 decode 画像** | 一致（缺口真实存在） |
 
 #### 11.1.3 偏差怎么处理：**先改文档，再写代码**
 
-G6 原文只要求"≥3 次构建 / ≥20 次推理 + 中位数与极差"。§9.2 的四次真机实测证明这还不够：
+G6 原文只要求"≥3 次构建 / ≥20 次推理 + 中位数与极差"。`future_iterations.md` §9.2 的四次真机实测证明这还不够：
 
 - **分段 / 单点测量**对"差百分之几"没有判别力（`TROUBLESHOOTING.md` **#37**）；
 - **跨协议 / 跨 session 的差值不能直接比**（#38：同一变体跨 session 漂移 −23.2%）；
@@ -1012,7 +1107,7 @@ G6 原文只要求"≥3 次构建 / ≥20 次推理 + 中位数与极差"。§9.
 
 #### 11.1.4 反向查：文档与现状矛盾之处（当场记）
 
-- **`ncu` 在 WSL2 上的导出策略，现状比 §6.3 的原文更明确。** §6.3 只写"支持 `ncu` 导出 `.ncu-rep`"，
+- **`ncu` 在 WSL2 上的导出策略，现状比 `future_iterations.md` §6.3 的原文更明确。** §6.3 只写"支持 `ncu` 导出 `.ncu-rep`"，
   而 `AGENTS.md` §1 已定：WSL2 上 `ncu` 可能因 performance counter 权限 / 驱动拿不到，
   **无头导出（`-o`）再拷到 Windows 宿主机 GUI 看是主路径**。本节按 `AGENTS.md` §1 写，不按 §6.3 的字面。
 - **`detailed_profiling` 会改变引擎指纹 → 触发重建。** `builder.hpp:83` 的 `detailed_profiling`
@@ -1020,12 +1115,17 @@ G6 原文只要求"≥3 次构建 / ≥20 次推理 + 中位数与极差"。§9.
   → profile 轮次要读逐层信息时，**必须单独一份 engine 路径**，别和生产路径共用
   （与 `export_diagnostics` 是同一类"改 I/O = 改契约"的纪律，见 `PROGRESS.md` §2.15）。
 
+</details>
+
 ### 11.2 目标与范围
 
-**目标（一句话）**：建立"同一 session 内可复现"的性能测量方法（G6）+ 一键 profile target（§6.3），
+**目标（一句话）**：建立"同一 session 内可复现"的性能测量方法（G6）+ 一键 profile target（`future_iterations.md` §6.3），
 并用它把 decode 阶段的时间**分解到可归因的粒度**，回答三个待决问题：
 
-1. **sampler 在整步 decode 里占多少**（补 §9.2 的遗留）；
+<details><summary>展开：11.2 目标与范围 全文</summary>
+
+
+1. **sampler 在整步 decode 里占多少**（补 `future_iterations.md` §9.2 的遗留）；
 2. **attention kernel / KV 写入 / 其余 TRT 算子**各占多少（是 §2.2"attention 分块值不值得"的前置）；
 3. `LLMRunner::Generate` 一次调用里有多少 **host 侧分配**（是 §2.1"显存池值不值得动"的前置）。
 
@@ -1038,13 +1138,18 @@ G6 原文只要求"≥3 次构建 / ≥20 次推理 + 中位数与极差"。§9.
 **范围外（明确不做）**：
 
 - 不实现 attention / MLP 优化（§2.2）、不实现子图替换（§10.2）——本轮只建"尺子"；
-- 不做 continuous batching / 多请求（§2.3）；
+- 不做 continuous batching / 多请求（`future_iterations.md` §2.3）；
 - 不做 `ncu` 的深层 kernel 调优，只保证"能导出、能打开、能读出 kernel 名与耗时"；
 - **不 profile FP16 路径**——GPT-2 FP16 端到端产 NaN（`PROGRESS.md` §5.11），尺子必须架在可用路径上。
+
+</details>
 
 ### 11.3 测量协议（G6 的落地口径，**本节是判据出处**）
 
 #### A. 机器状态固定（能固定的部分）
+
+
+<details><summary>展开：11.3 测量协议（G6 的落地口径，**本节是判据出处**） 全文</summary>
 
 - 一组对照**在同一 session 内**跑完；记录
   `nvidia-smi --query-gpu=temperature.gpu,clocks.sm,clocks.mem,power.draw --format=csv` 的**前后**读数；
@@ -1055,7 +1160,7 @@ G6 原文只要求"≥3 次构建 / ≥20 次推理 + 中位数与极差"。§9.
 
 | 问题类型 | 例子 | 测法 | 报什么 |
 |---|---|---|---|
-| **同二进制内的 A/B**（"改动 X 有没有用"） | `LaunchTopPSamplerTwoLevel` vs 生产版 | 两个变体**编进同一个二进制**，同一轮里正反交替（ABBA）；每个变体每轮测"发射 1 次"与"发射 4 次"两个窗口 | `(T4−T1)/3` = **净成本（斜率）** 的中位数 + p25/p75；现成对照见 §9.2 / `TROUBLESHOOTING.md` #38 |
+| **同二进制内的 A/B**（"改动 X 有没有用"） | `LaunchTopPSamplerTwoLevel` vs 生产版 | 两个变体**编进同一个二进制**，同一轮里正反交替（ABBA）；每个变体每轮测"发射 1 次"与"发射 4 次"两个窗口 | `(T4−T1)/3` = **净成本（斜率）** 的中位数 + p25/p75；现成对照见 `future_iterations.md` §9.2 / `TROUBLESHOOTING.md` #38 |
 | **跨构建对照**（"两条路谁快"） | ONNX vs 原生 prefill | 同一 session 内**各自 ≥3 次独立构建**，每次构建 **≥20 次推理** | 每次构建的中位数 + 全部中位数的**极差**；极差 > 中位数之差 → 判"**未定**" |
 
 #### C. 判别下限（写死，避免事后改口）
@@ -1075,10 +1180,15 @@ G6 原文只要求"≥3 次构建 / ≥20 次推理 + 中位数与极差"。§9.
 profile 前先跑一遍让缓存热起来（确认日志是 `Engine cache hit`）；若要 `detailed_profiling`，
 **新开一条 engine 路径**，不要覆盖生产引擎（它进指纹，会触发重建）。
 
-### 11.4 分解口径（怎么把 kernel 时间归因，避免"看起来像真故障"的数字）
+</details>
+
+### 11.4 [OI-PERF-PROFILE-DECOMPOSITION] 分解口径（怎么把 kernel 时间归因，避免"看起来像真故障"的数字）
 
 TRT 内部 kernel 名（`genericNode_*` / tactic 名）**不携带语义**，硬贴"attention / MLP"标签就是
 `PROGRESS.md` §2.14 C 警告过的"诊断比错对象更危险"。所以本轮只做**能自证的三层**：
+
+<details><summary>展开：11.4 [OI-PERF-PROFILE-DECOMPOSITION] 分解口径（怎么把  全文</summary>
+
 
 | 层 | 成员 | 怎么识别（自证方式） |
 |---|---|---|
@@ -1107,7 +1217,7 @@ TRT 内部 kernel 名（`genericNode_*` / tactic 名）**不携带语义**，硬
   （`src/core/llm_runner.cpp`），所以**每次调用的上下文都是从 prompt 长度重新开始**的，
   prompt 长度直接决定上下文区间——不需要额外改 runner。
 - **实现要点**：prompt ∈ {4, 256, 960}；每个长度按 `(T(32)−T(1))/31` 取每步耗时
-  （与 §9.2 同一套斜率口径）；**只打印，不设阈值**。
+  （与 `future_iterations.md` §9.2 同一套斜率口径）；**只打印，不设阈值**。
   prefill 引擎需要 `max_prefill_seq_len ≥ 992` → **单独一条引擎路径**（不动主用例缓存的两个）；
   decode 引擎与上下文无关，可复用主用例那份（命中缓存）。
 - **边界（必须一起读）**：
@@ -1117,10 +1227,16 @@ TRT 内部 kernel 名（`genericNode_*` / tactic 名）**不携带语义**，硬
      所以横向比较自洽，但绝对值不能与其它用例的引擎直接比；
   3. 仍然只在**同一 session** 内可比（decode 步跨 session 已见 ±27%）。
 
+</details>
+
 ### 11.5 任务分解（P6_3-0 ~ P6_3-7）
+
+
+<details><summary>展开：11.5 任务分解（P6_3-0 ~ P6_3-7） 全文</summary>
 
 | 编号 | 任务 | 层 | 自检点 |
 |---|---|---|---|
+
 | **P6_3-0** | **仪器先行**：确认 WSL2 上 `nsys` / `ncu` 可用，且无头导出能产出可读报告（拿一个平凡进程试，别拿 GPT-2 试） | G | 报告文件存在、能在宿主机打开；`ncu` 若报 counter 权限则记进报告（按 `AGENTS.md` §1 走无头导出） |
 | **P6_3-1** | 协议定稿：把 11.3 / 11.4 写进本节 + 测试计划 §10 | —— | 判据旁能回答"凭什么"（出处 = #37 / #38） |
 | **P6_3-2** | CMake custom target：`profile_gpt2` / `profile_resnet18`（nsys + ncu 无头导出到 `/tmp/mini_trt_llm_profiles/`） | G | target 能跑、输出名带时间戳；**不进默认构建** |
@@ -1277,6 +1393,8 @@ TRT 内部 kernel 名（`genericNode_*` / tactic 名）**不携带语义**，硬
    （decode 步跨 session 已见 ±27%）；② sampler 的 17~20% 是**短上下文**下的比例，
    长上下文下分母变大、它只占 ≈3%；③ "attention ≈80%" 是**随上下文增长的边际部分**。
 
+</details>
+
 ### 11.6 验收判据（每条都要能回答"凭什么"）
 
 | 判据 | 值 / 形式 | 凭什么 |
@@ -1304,6 +1422,9 @@ TRT 内部 kernel 名（`genericNode_*` / tactic 名）**不携带语义**，硬
 
 按 `AGENTS.md` §0.5：下面每条都要单独获批，**不**因为"计划里写了"就自动生效。
 
+
+<details><summary>展开：11.8 破坏性动作清单（**动手前一次性确认**） 全文</summary>
+
 1. **改构建脚本**：修改 `mini_trt_llm/CMakeLists.txt`（和 / 或 `tests/CMakeLists.txt`）新增 profile target；
 2. **新增 profile 输出目录**（默认 `/tmp/mini_trt_llm_profiles/`，**不入库**）；
 3. **可能新增计时入口**：若放在 `tests/` 下（新文件或改 `test_gpt2_generate.cpp`）→ 新增源文件**必须重跑 configure**；
@@ -1315,10 +1436,15 @@ TRT 内部 kernel 名（`genericNode_*` / tactic 名）**不携带语义**，硬
 > 1 / 2 / 3 已落地（见 §11.5.1 的落点表）；4 与 5 属真机动作，**尚未执行**；
 > 6 按"不入库"执行——报告与摘要一律落 `/tmp/mini_trt_llm_profiles/`，`.gitignore` 未改。
 
-### 11.9 真机执行清单（**待作者执行**；Agent 侧无 GPU）
+</details>
+
+### 11.9 真机执行清单（**已执行**：2026-09-27 四步全部跑完；命令保留供复跑。Agent 侧无 GPU）
 
 ```bash
 # 0) 构建（不改产品代码时先跑一遍让引擎缓存热起来）
+
+<details><summary>展开：11.9 真机执行清单（**已执行**：2026-09-27 四步全部跑完；命令保留供复跑。Agent 侧无 GPU） 全文</summary>
+
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=75 -DBUILD_TESTS=ON
 cmake --build build -j$(nproc)
 
@@ -1344,13 +1470,15 @@ nsys profile --stats=true -o /tmp/mini_trt_llm_profiles/gpt2_decode \
 
 ---
 
-## 12. §2.2 长上下文 attention：FlashDecoding 式 split-K（开发计划）
+</details>
+
+## 12. [OI-FLASHDECODING-PLAN] §2.2 长上下文 attention：FlashDecoding 式 split-K（开发计划）
 
 > 条目事实来源：`docs/future_iterations.md` **§2.2**（是什么 / 为什么 / 触发条件）。
 > 本节的唯一职责：**改哪些文件、分几步、每步怎么自检、哪一步要作者批**。
 > 配套测试计划：`future_iterations_test_plan.md` **§11**。
-> **状态：计划已产出、未开工。** 按 `AGENTS.md` §0.7，本文件**不构成开工许可**——
-> 开工需作者点名到具体任务号（P2_2-0 ~ P2_2-9）。
+> **状态：已交付并真机验证（2026-09-27；性能数据与验收逐条对照见本节末的回填表）。**
+> 按 `AGENTS.md` §0.7，计划文档本身**不构成开工许可**——当初的开工由作者点名到 P2_2-0 ~ P2_2-9 才发生。
 > 沿用 §11 的分工：本节不复制 §2.2 的事实与实测值，只写执行安排。
 
 ### 12.1 计划对账（AGENTS.md §5 第 0 步）
@@ -1358,12 +1486,15 @@ nsys profile --stats=true -o /tmp/mini_trt_llm_profiles/gpt2_decode \
 **1) 有没有计划文档**：此前**没有**。§2.2 只有两行"工作内容"级描述，没有文件级改动面、
 没有步序、没有验收判据 → 属于"没有执行计划"。本节 + 测试计划 §11 就是补上的那一份。
 
+<details><summary>展开：12.1 计划对账（AGENTS.md §5 第 0 步） 全文</summary>
+
+
 **2) 是否一致**（逐条对照 §2.2 原文）：
 
 | §2.2 原文 | 现状核实 | 一致？ |
 |---|---|---|
 | "在 `PagedAttentionPlugin` 中把**上下文维**切成多个 block 并行，再做两阶段 softmax 归约" | 现状是 `grid=(num_heads, batch)`、每块 64 线程串行走完 `total_len`（`paged_attention_plugin.cu`）；改动方向与此一致 | ✅ 一致 |
-| "支持 decode 阶段的 batching 优化（与 `G2-3` 的 batch 扩展一起考虑更省事）" | **有偏差**：`PagedAttentionDecodeKernel` 的 `grid.y = args.batch_size`，**kernel 本来就支持任意 batch**，`PagedAttentionKernelTest.MhaMatchesCpuReferenceAcrossMultipleBlocks` 已覆盖 `batch=2`；真正把 batch 卡在 1 的是 `LLMRunner`（缺口 **G2-3**，属 §2.3） | ❌ **偏差** → 按 3) 处理 |
+| "支持 decode 阶段的 batching 优化（与 `G2-3` 的 batch 扩展一起考虑更省事）" | **有偏差**：`PagedAttentionDecodeKernel` 的 `grid.y = args.batch_size`，**kernel 本来就支持任意 batch**，`PagedAttentionKernelTest.MhaMatchesCpuReferenceAcrossMultipleBlocks` 已覆盖 `batch=2`；真正把 batch 卡在 1 的是 `LLMRunner`（缺口 **G2-3**，属 `future_iterations.md` §2.3） | ❌ **偏差** → 按 3) 处理 |
 | "sm_75 无官方实现，仍需自研 kernel" | 与现状一致（无官方 FlashAttention） | ✅ |
 | 触发条件"长上下文 attention 占每步 ~80%" | 出处 PF-9（`PROGRESS.md` §3.0h、测试计划 §10.2 PF-9），三档实测与斜率都在 | ✅ |
 
@@ -1385,10 +1516,15 @@ split-K，不扩 batch**。理由：把 batch 扩展混进来会一次改两个�
   只用到 static shared memory"。split-K 需要一块 partial 缓冲 → **这条注释会过期**，
   必须与实现同批改（否则下一个人会照注释把 workspace 又改回 0）。
 
+</details>
+
 ### 12.2 目标与范围
 
 **目标（一句话）**：把 decode 阶段 PagedAttention 的**上下文维**切开并行
 （FlashDecoding 式 split-K + 两阶段 softmax 归约），**在不放松任何数值判据的前提下**
+
+<details><summary>展开：12.2 目标与范围 全文</summary>
+
 降低长上下文每步 decode 的 attention 边际成本。
 
 **范围内**：FP32 / FP16 的 split-K kernel、workspace 契约、分片策略（host 可测）、
@@ -1396,14 +1532,19 @@ split-K，不扩 batch**。理由：把 batch 扩展混进来会一次改两个�
 
 **范围外（明确不做，防止范围外扩）**：
 
-- **不扩 `LLMRunner` 的 batch**（那是 G2-3 / §2.3）；
-- **不做 PagedAttention 的 prefill 阶段**（§9.1 已冻结：双引擎路径下不需要）；
-- **不改精度口径 / 不碰 Q/DQ**；**不做 CUDA Graph 捕获**；**不动 sampler**（§9.2 已关闭）。
+- **不扩 `LLMRunner` 的 batch**（那是 G2-3 / `future_iterations.md` §2.3）；
+- **不做 PagedAttention 的 prefill 阶段**（`future_iterations.md` §9.1 已冻结：双引擎路径下不需要）；
+- **不改精度口径 / 不碰 Q/DQ**；**不做 CUDA Graph 捕获**；**不动 sampler**（`future_iterations.md` §9.2 已关闭）。
+
+</details>
 
 ### 12.3 设计决策（D1~D5）
 
 **D1　并行维度 = 上下文维（split-K），不是 head 维 / batch 维。**
 GPT-2 decode 的并行度是 `num_heads(12) × batch(1) = 12` 块，本机 **24 SM** → 一半闲置；
+
+<details><summary>展开：12.3 设计决策（D1~D5） 全文</summary>
+
 head / batch 维不缺并行度，缺的是把 976 个位置串行变并行。
 **不选**"再细分 head 维"——block 数翻倍但每块仍要串行走完整段上下文，延迟不减。
 
@@ -1449,17 +1590,23 @@ head / batch 维不缺并行度，缺的是把 976 个位置串行变并行。
 并把"**空分片 → `m=-inf, l=0, acc=0`**"定成显式语义（`PROGRESS.md` §2.12：存在部分写入路径的
 kernel 必须显式处理未覆盖区间——`TROUBLESHOOTING` #4 就是这么来的）。
 **为什么**：分片边界（不整除、`total_len < num_splits`、`context_len=0` + 带当前 token）
-**全是纯逻辑**，能在沙箱裁掉就不该留给真机——真机往返是最贵的资源（§2.13）。
+**全是纯逻辑**，能在沙箱裁掉就不该留给真机——真机往返是最贵的资源（`PROGRESS.md` §2.13）。
 
 **D5　旧单趟 kernel 保留为永久 A/B 入口（不删）。**
-照 §9.2 的 `LaunchTopPSamplerTwoLevel` 先例：kernel 级与 P 层都能**同二进制、同 session、
+照 `future_iterations.md` §9.2 的 `LaunchTopPSamplerTwoLevel` 先例：kernel 级与 P 层都能**同二进制、同 session、
 同轮交替**测两版（`TROUBLESHOOTING` #37 / #38 的教训：跨协议、跨 session 的差值不可直接比）。
 同时它还是 `num_splits == 1` 的生产路径，不是死代码。
 
+</details>
+
 ### 12.4 任务分解（P2_2-0 ~ P2_2-9）
+
+
+<details><summary>展开：12.4 任务分解（P2_2-0 ~ P2_2-9） 全文</summary>
 
 | 编号 | 任务 | 层 | 自检（做完立刻能看见什么） |
 |---|---|---|---|
+
 | **P2_2-0** | **基线复测**：在**未改动的代码**上跑 PF-9（`ContextLengthSweep`），留同 session 基线 | P | 打印三档每步耗时与斜率；与 §11.5.1 的 3.055 / 6.062 / 14.705 ms 对照（**跨 session 不可比**，只作"没跑错"的粗校验） |
 | **P2_2-1** | 设计定稿：workspace 契约、分片策略、空分片语义、FP16 partial 用 float（D2~D4） | —— | 本节 §12.3 落地成代码注释，无产品代码 |
 | **P2_2-2** | `paged_attention_kernel.hpp`：加 `LaunchPagedAttentionSplit`（或 `args.num_splits`）+ 测试用 `SetPagedAttentionNumSplitsOverride`；`PagedAttentionKernelArgs` 增字段 | H（契约） | 头文件编译通过；公开 API 带 Why 注释 |
@@ -1472,7 +1619,7 @@ kernel 必须显式处理未覆盖区间——`TROUBLESHOOTING` #4 就是这么�
 | **P2_2-9** | 性能采集（kernel 级 A/B + PF-9 端到端 A/B，同轮交替）与文档回填 | P | 见 §12.5 与测试计划 §11.3 / §11.5 |
 
 **顺序纪律**：0 → 1 →（2 / 3 可并行）→ 4 → 5 → 6 → 7 → 8 → 9。
-**每轮只改一个变量**（§2.14 C）：先只落 split-K；测完再决定要不要动下面 §12.7 末行那类
+**每轮只改一个变量**（`PROGRESS.md` §2.14 C）：先只落 split-K；测完再决定要不要动下面 §12.7 末行那类
 "block 内组织"的二次优化。
 
 **执行状态（2026-09-27，Agent 侧已做完的部分）**：
@@ -1487,7 +1634,7 @@ kernel 必须显式处理未覆盖区间——`TROUBLESHOOTING` #4 就是这么�
 | P2_2-5 装配 + 图版本 | ✅ | `configurePlugin` 无需新状态（片数由设备端按 `context_lens` 推导）；`kEngineGraphVersion` 1→2 |
 | P2_2-6 单测 | ✅ **真机通过**（修夹具后复跑） | 6 条 `PagedAttentionSplitKernelTest.*`（含护栏区越界检查与 PG-7 诊断）。首轮 3 条 SEGFAULT + 1 条断言失败**根因全在测试侧**（块表行宽不足以放下 `ceil(ctx/block_size)` 个块 → host 参考越界；一条断言把 GQA 比例写反）→ 已加 `MakeLongContextFixture` + `AssertFixtureConsistent` 并修正断言，见 `TROUBLESHOOTING` #44。**产品代码一行未改** |
 | P2_2-7 FP16 | ✅ **真机通过** | `Fp16PathTest.PagedAttentionSplitMatchesFp16Reference`（自适应 2 片 + 强制 8 片）→ **这是 split-K 多片归并的第一份真机数值证据** |
-| P2_2-8 端到端回归 | ✅ **真机通过** | `Gpt2DecodeConsistency.*` 与 `Gpt2GenerateTest`（FP32 8-token 冻结基线）均在通过之列；唯一红是 `RealGpt2Fp16GreedyMatchesReferenceTokens`（**按设计**，§5.11 的 FP16 NaN） |
+| P2_2-8 端到端回归 | ✅ **真机通过** | `Gpt2DecodeConsistency.*` 与 `Gpt2GenerateTest`（FP32 8-token 冻结基线）均在通过之列；唯一红是 `RealGpt2Fp16GreedyMatchesReferenceTokens`（**按设计**，`PROGRESS.md` §5.11 的 FP16 NaN） |
 | P2_2-9 性能采集 + 回填 | ✅ **真机出数并回填** | PP-1（kernel 级）降幅 **88.85%**、PP-2（端到端）降幅 **88.12%**——两把独立尺子互校差约 5%，均远超 F1 的 40%；详见测试计划 §11.5 |
 
 **验收判据逐条对照（§12.6；全部达成，2026-09-27 真机）**：
@@ -1532,6 +1679,8 @@ kernel 必须显式处理未覆盖区间——`TROUBLESHOOTING` #4 就是这么�
 "注释里的祈使句"。**这一步只证明 host 侧护栏有效**；kernel 的 CUDA 取址仍必须靠真机的
 PG-1~PG-7（沙箱无法执行）。
 
+</details>
+
 ### 12.5 测量口径（沿用 §11.3，不新起协议）
 
 - **kernel 级（主）**：在 `tests/` 里用合成数据（GPT-2 形状：`heads=12, head_size=64,
@@ -1554,29 +1703,38 @@ PG-1~PG-7（沙箱无法执行）。
 | 4 | 新旧差异（诊断，非判据） | 打印 `max_abs` / `max_rel`；**先量"与正确性无关的差异"**（float32 累加顺序不同）再谈阈值 | `AGENTS.md` §7"放宽阈值前必须先量无关差异"；观测值若高几个数量级 → **唯一的动作是查** |
 | 5 | 性能（**F1=A，已拍板**） | ctx≈960 档**每步 decode 斜率**相对基线**至少降 40%**（≈1.67×）；ctx≈20 档退化不超过**同 session 实测漂移**。**前提**：PP-2 必须**同时打印它自己的重复测量漂移**（否则"不超过漂移"没有数值锚点） | 阈值出处 = 作者 2026-09-27 拍板（§12.9 F1=A）；40% 相对"并行度 12 块 → 最多 96 块"的理论天花板取值，属**工程取定**而非推导（已如实标注）；漂移参考 = PF-3 同 session 实测 10~18% |
 | 6 | 缓存安全 | bump 图版本后第一次全部 `stale` 重建、第二次 `cache hit` | `PROGRESS.md` §3.0f 的既有观察法 |
-| 7 | 无回归 | 沙箱全量 0 失败；真机全量仍**只有 1 红**（GPT-2 FP16 NaN，按设计） | §3.5 的既有口径 |
+| 7 | 无回归 | 沙箱全量 0 失败；真机全量仍**只有 1 红**（GPT-2 FP16 NaN，按设计） | `PROGRESS.md` §3.5 的既有口径 |
 
 ### 12.7 风险与回退
 
+
+<details><summary>展开：12.7 风险与回退 全文</summary>
+
 | 风险 | 影响 | 缓解 / 回退 |
 |---|---|---|
+
 | **旧 `.engine` 记录的 workspace 是 0，新 kernel 却要往 workspace 写** | **越界写 → 非法访存**（与 `TROUBLESHOOTING` #18 同类，只在真机暴露） | **必须 bump `kEngineGraphVersion`**（§12.8 第 1 条）；保险起见同批 bump plugin version |
 | 分片打破"顺序累加" | 与单趟版有微小数值差异 | 主判据仍是 vs double 参考（#1），不是 vs 旧 kernel；新旧差异按 #4 只作诊断 |
 | 空分片 / 边界算错 | 某些 `total_len` 下结果错或出 NaN | 分片策略 host 可测（D4）+ 空分片显式哨兵（`m=-inf, l=0, acc=0`） |
 | 多一次发射 | 短上下文小回归 | `num_splits==1` 走单趟、不发 stage-2（D2）；短上下文档纳入回归观察 |
 | 动态形状下 `.max` 取错 | workspace 不足 | 用 `DynamicPluginTensorDesc.max`，把"为什么不是 `desc.dims`"写进注释；用例覆盖形变 |
 | FP16 partial 精度 | FP16 下更易丢精度 | partial **一律 float**（与现 kernel 累积精度一致），FP16 只用于读写 |
-| 收益低于判别下限（重踩 #38 的坑） | 白改一轮 | 先跑 P2_2-0 基线 + §12.5 同轮交替；**低于判别下限就不改**（§5.13b），登记为"未获支持" |
+| 收益低于判别下限（重踩 #38 的坑） | 白改一轮 | 先跑 P2_2-0 基线 + §12.5 同轮交替；**低于判别下限就不改**（`PROGRESS.md` §5.13b），登记为"未获支持" |
 | 顺手做"warp-per-position" | 一次改两个变量 → 读数不可归因 | **本轮不做**；若 split-K 之后仍显瓶颈（每位置一次 `BlockReduceSum` + `__syncthreads`），**另起一轮** |
 
 **回退方案**：split-K 全部落在 `paged_attention_plugin.cu` + 一个新头里，`enqueue` 只有一个
 分支点 → 把 `num_splits` 选择退回常量 1（或恢复 `getWorkspaceSize` 返回 0 + 恢复图版本）
 即回到现状；旧单趟 kernel 从未删除，因此回退不需要重写代码。
 
+</details>
+
 ### 12.8 破坏性动作清单（**动手前一次性确认**；批准本节 ≠ 批准这些动作）
 
 > 依据 `AGENTS.md` §0.2 / §0.5 / §0.7 与 `PROGRESS.md` §2.14 B：
 > 计划批准的是**目标**，不是这批动作。
+
+<details><summary>展开：12.8 破坏性动作清单（**动手前一次性确认**；批准本节 ≠ 批准这些动作） 全文</summary>
+
 > **作者决定（2026-09-27）：下面 7 条全部批准**（原话："F1~F4 全按 A，破坏性清单全批"）。
 > 第 6 条仍按"默认不删、靠指纹判 stale"执行——它批的是"必要时可以删"，不是"现在就删"。
 
@@ -1596,23 +1754,28 @@ PG-1~PG-7（沙箱无法执行）。
    指纹机制表现异常时才做；**默认不删**，靠指纹判 stale。
 7. **不做**：不改 `AGENTS.md`、不动 `0_resnet18_onnx/` `1_gpt2_onnx/`、不改其它模块的图版本。
 
+</details>
+
 ### 12.9 待拍板决策（F1~F4）
 
 | 编号 | 决策 | 选项 A（推荐） | 选项 B | 影响 |
 |---|---|---|---|---|
 | **F1** | 性能判据 | **设"斜率至少下降 40%"为达标线**（ctx≈960 档） | 只报观测值、不设阈值 | A 让"做完没有"可判定，但阈值要作者认账；B 与 PF-8 / PF-9 一致，代价是"是否达标"永远悬着 |
 | **F2** | 分片数策略 | **按上下文自适应**：`num_splits = clamp(ceil(total_len / kTargetChunk), 1, kMaxSplits)`，`kMaxSplits=8`、`kTargetChunk=128` | 固定 8；或做成可配置属性 | A 在短上下文不退化成两次发射；B 实现更简单但短上下文恒多一次发射 |
-| **F3** | 是否保留旧单趟 kernel 作 A/B 入口 | **保留**（D5） | 直接替换、不留入口 | A 换来可复核的 A/B（§9.2 先例）；B 更干净，但下次复核只能靠 git |
+| **F3** | 是否保留旧单趟 kernel 作 A/B 入口 | **保留**（D5） | 直接替换、不留入口 | A 换来可复核的 A/B（`future_iterations.md` §9.2 先例）；B 更干净，但下次复核只能靠 git |
 | **F4** | 是否顺带扩 batch（G2-3） | **不做**（范围收敛，见 §12.1） | 一起做 | A 风险可控、可单独验收；B 两变量混在一起，读数不可归因 |
 
 **作者决定（2026-09-27）：F1~F4 全按选项 A** —— 性能达标线 = ctx≈960 斜率至少降 40%；
 分片数按上下文自适应（`kMaxSplits=8` / `kTargetChunk=128`）；保留旧单趟 kernel 作 A/B 入口；
 不扩 batch。**已进入 P2_2-2。**
 
-### 12.10 真机执行清单（**待作者执行**；Agent 侧无 GPU）
+### 12.10 真机执行清单（**已执行**：2026-09-27；命令保留供复跑。Agent 侧无 GPU）
 
 ```bash
 # 0) 编译（新增文件后必须先 configure，见 §12.8 第 5 条）
+
+<details><summary>展开：12.10 真机执行清单（**已执行**：2026-09-27；命令保留供复跑。Agent 侧无 GPU） 全文</summary>
+
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=75 -DBUILD_TESTS=ON
 cmake --build build -j$(nproc)
 
@@ -1656,7 +1819,9 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
 
 ---
 
-## 13. §1.5 P4-INT8-a：per-channel 整网退化根因（开发计划）
+</details>
+
+## 13. [OI-INT8-PERCHANNEL-PLAN] `future_iterations.md` §1.5 P4-INT8-a：per-channel 整网退化根因（开发计划）
 
 > 条目事实来源：`docs/future_iterations.md` §1.5（目标 / 做法 / 验收判据）。
 > 用例安排：`docs/future_iterations_test_plan.md` §3。本节只写"怎么做"。
@@ -1666,12 +1831,15 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
 
 1. **有没有计划文档**：有。`future_iterations.md` §1.5 已写全目标 / 做法（3 步）/ 验收判据 /
    前置依赖 / 成本校准；`future_iterations_development_plan.md` §3.1 已给出"开工硬前置 +
+
+<details><summary>展开：13.1 计划对账（AGENTS.md §5 第 0 步） 全文</summary>
+
    改动面 + 破坏性动作预告"。本轮**不新建** per-item 文件（§0 的文档归位规则），执行细节落进本节。
 2. **是否一致**：逐条对照后**全部对上**，只有两处**细化**（不是偏差）：
-   - §1.5 做法第 1 条写"与 torch **已折叠 BN** 的模型同点对拍"。本轮改成
+   - `future_iterations.md` §1.5 做法第 1 条写"与 torch **已折叠 BN** 的模型同点对拍"。本轮改成
      **用 ONNX 官方参考实现直接执行那张 Q/DQ 图**——仍是"同点对拍"，但**取消了"我去折 BN"这一步**。
      理由见 13.3 D1：上一轮 3 次真机往返里有 2 次就是耗在这个折叠上（#30.5）。
-   - §1.5 做法第 3 条要求覆盖"3 个下采样卷积 + GAP+fc 段"。本轮把 3 个 `1×1/s2` 下采样卷积
+   - `future_iterations.md` §1.5 做法第 3 条要求覆盖"3 个下采样卷积 + GAP+fc 段"。本轮把 3 个 `1×1/s2` 下采样卷积
      （`layer2.0` / `layer3.0` / `layer4.0` 的 `downsample.0`）与 **GAP 输出**一并放进探针清单，
      fc 段由 GAP 输出 + logits 覆盖（13.4 的 P1_5-1）。
 3. **偏差怎么处理**：先改文档再改代码——本节 13.3 与本节的探针清单就是改后的文档，代码随后。
@@ -1684,9 +1852,14 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
    - `future_iterations.md` §1.5 的现状表与 `TROUBLESHOOTING` #29.5 的"顺带否证"段（conv1 死通道
      scale 跨度 1e13、加 1/1024 下限后数值不变）**一致，无矛盾**，不回改。
 
+</details>
+
 ### 13.2 目标与范围
 
-**目标**（= §1.5 的验收，二选一，不允许"下次再看"）：
+**目标**（= `future_iterations.md` §1.5 的验收，二选一，不允许"下次再看"）：
+
+
+<details><summary>展开：13.2 目标与范围 全文</summary>
 
 1. 定位到**从第几层开始分叉**并说明机制（该机制还要能被算子级 / block 级最小复现解释）；
 2. 或证明所有可查方向均已查空，逐条写明"为什么这条路不能再查"。
@@ -1701,10 +1874,15 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
 
 **明确的非目标**：不去"修" TRT；不改 GPT-2 / PagedAttention 侧任何东西。
 
-### 13.3 设计决策（D1~D6）
+</details>
+
+### 13.3 [OI-INT8-PERCHANNEL-DESIGN] 设计决策（D1~D6）
 
 **D1 —— 数值标尺 = ONNX 官方参考实现（`onnx.reference.ReferenceEvaluator`），
 不用"自己折 BN 的 torch 模型"。**
+
+<details><summary>展开：13.3 [OI-INT8-PERCHANNEL-DESIGN] 设计决策（D1~D6） 全文</summary>
+
 
 - 图里 BN **已经折进 Conv**（这份 ONNX 的 42 个张量里没有 running stats）。直接执行这张图，
   就**根本不存在"折叠"这一步** → 从源头消掉 #30.5 那类"探针自身的错"。
@@ -1756,6 +1934,8 @@ diverged(L)  ⟺  PC 臂的 max_abs(L) > kDivergenceFactor × noise_floor
 **探针图下的 256 张余量子集一致率**：仍应看到 PC ≈ 54.5% / PT ≈ 100%（口径与正式产物一致）。
 不复现 → 仪器改变了现象，下一轮退到"单点探针"（一次只挂一层）。
 
+</details>
+
 ### 13.4 任务分解（P1_5-0 ~ P1_5-5）
 
 | ID | 任务 | 交付物 | 层 | 依赖 |
@@ -1765,7 +1945,7 @@ diverged(L)  ⟺  PC 臂的 max_abs(L) > kDivergenceFactor × noise_floor
 | **P1_5-2** | 用参考实现把探针张量落盘（纯 CPU，不联网） | `/tmp/mini_trt_llm_int8_probe/{pc,pt}/` 下每个探针张量一份 `.f32.bin` + `probe_index.txt` + `meta.json`（含 onnx SHA256） | H | P1_5-1 |
 | **P1_5-3** | 真机用例：确定性 + 逐层误差曲线 + 格点自证 + 复现对照 | `mini_trt_llm/tests/test_resnet18_int8_probe.cpp`（B1-1~B1-4） | G | P1_5-2 |
 | **P1_5-4** | **真机执行**（作者，见 13.9） | `/tmp/mini_trt_llm_resnet18_qdq_probe_{pc,pt}.engine`、用例日志、`probe_report.json` | G | P1_5-3 |
-| **P1_5-5** | 回填：结论（第 N 层 + 机制，或"查空"清单）写进 `TROUBLESHOOTING.md` 新节；同步 §1.5 状态与测试计划 §3 的回填表 | 文档 | — | P1_5-4 |
+| **P1_5-5** | 回填：结论（第 N 层 + 机制，或"查空"清单）写进 `TROUBLESHOOTING.md` 新节；同步 `future_iterations.md` §1.5 状态与测试计划 §3 的回填表 | 文档 | — | P1_5-4 |
 
 **每轮只改一个变量**（`PROGRESS.md` §2.14 C）。本轮**不改任何产品代码**——若结论指向产品侧行为，
 那是**下一轮**的事，且按 §0.5 需重新报破坏性动作清单。
@@ -1777,13 +1957,13 @@ diverged(L)  ⟺  PC 臂的 max_abs(L) > kDivergenceFactor × noise_floor
 | 输入 | `0_resnet18_onnx/calib_data/`（500 张，**已归一化**）按文件名排序；前 8 张拼成一个 `batch=8` 张量 |
 | 比较对象 | 同一张图：**TRT 引擎输出** vs **ONNX 参考实现输出**（逐张量、逐元素） |
 | 差异 | `max_abs`（主）+ `max_rel`（辅，分母取 `max\|reference\|`，沿用 `tests/diff_stats.hpp` 的唯一定义） |
-| 逐层曲线 | 按 ONNX 图中的拓扑序（= 用例里的 `probe_index.txt` 顺序）逐行打印，**不做单点比较**（§1.5 做法第 2 条） |
+| 逐层曲线 | 按 ONNX 图中的拓扑序（= 用例里的 `probe_index.txt` 顺序）逐行打印，**不做单点比较**（`future_iterations.md` §1.5 做法第 2 条） |
 | 确定性 | 同一引擎 + 同一输入连跑 2 次，**逐位相同**（先证确定性，再谈误差曲线） |
 | 复现对照 | 与正式产物**同一套**分层口径：`margin ≥ 5` 的余量子集一致率、整体一致率 |
 
 ### 13.6 验收判据
 
-判据的唯一来源是 `docs/future_iterations.md` §1.5 的"二选一"，可执行形式见测试计划 §3。
+判据的唯一来源是 `docs/future_iterations.md` + OI-INT8-PERCHANNEL 的"二选一"，可执行形式见测试计划 §3。
 本节的硬约束只有两条：
 
 1. **仪器不过不取数**：B1-1（格点自证）/ B1-2（确定性）任一不过 → 本轮作废，先修仪器；
@@ -1813,10 +1993,13 @@ diverged(L)  ⟺  PC 臂的 max_abs(L) > kDivergenceFactor × noise_floor
 8. 真机侧：`/tmp/mini_trt_llm_resnet18_qdq_probe_{pc,pt}.engine` 是**新路径**，不会顶掉正式引擎缓存；
    若指纹判定为 stale 而重建，属预期。
 
-### 13.9 真机执行清单（**待作者执行**；Agent 侧无 GPU，见 `PROGRESS.md` §5.10）
+### 13.9 真机执行清单（**已执行**：2026-09-27 B1 四条真机全绿；命令保留供复跑。Agent 侧无 GPU，见 `PROGRESS.md` §5.10）
 
 ```bash
 # 0) 构建（**新增了 .cpp，必须先重新 configure**：GLOB 只在 configure 时求值）
+
+<details><summary>展开：13.9 真机执行清单（**已执行**：2026-09-27 B1 四条真机全绿；命令保留供复跑。Agent 侧无 GPU，见 `PROGRESS 全文</summary>
+
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=75 -DBUILD_TESTS=ON
 cmake --build build -j"$(nproc)"
 
@@ -1869,10 +2052,15 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 - **每轮只改一个变量**；
 - 回填要求：状态 + 实测值 + 出处（命令 / 日志）；排查过程写 `docs/TROUBLESHOOTING.md`。
 
-### 13.10 结果回填（待回填）
+</details>
 
-> 回填要求：只写"状态 + 实测值 + 出处（命令 / 日志）"；排查过程写 `docs/TROUBLESHOOTING.md` #46。
+### 13.10 结果回填（已回填）
+
+> 回填要求：只写"状态 + 实测值 + 出处（命令 / 日志）"；排查过程写 `docs/TROUBLESHOOTING.md` + TS-046。
 > **本节已于 2026-09-27 全部回填**（B1 四条真机全绿）；按纪律，**没有实测过的行不许写"通过"**——
+
+<details><summary>展开：13.10 结果回填（已回填） 全文</summary>
+
 > 若将来复跑出别的结果，改的是这些行，不是判据。
 
 | 项 | 状态 | 实测值 / 出处 |
@@ -1889,14 +2077,19 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 | B1-2 确定性 | ✅ **真机通过**（2026-09-27） | 22 个张量两次运行**逐位相同**（704 ms，引擎 cache hit） |
 | B1-3 逐层曲线 | ✅ **真机通过**（2026-09-27） | 引擎 vs **自己的图**：逐层最大 `max_abs` PT **0.2714**（`layer4.1.conv2`，相对 2.3%）、PC **0.168**；`conv1` 仅差 **8.3e-07**。两臂都**未**越过 `100 × 噪声地板(0.2714)` → **两个引擎都忠实执行了各自的图**（判读已写进用例输出） |
 | B1-4 复现对照 | ✅ **真机通过（硬门）**（2026-09-27） | 256 张、探针图：整体 PT 99 / PC 26；**余量子集（n=12）PT 12/12 = 100%、PC 6/12 = 50%** —— 与正式产物口径（PT 100% / PC 54.5%，同为"6 张对上"）一致 → 探针图是现象的有效模型（尽管它把 `i8i8` 从 4 变成 0，见 #47.2） |
-| **§1.5 验收（二选一）** | ✅ **走分支一：第 0 层 + 机制明确** | 机制 = 权重 scale 取自**未折 BN** 的权重、量化对象是**已折 BN** 的权重；三条独立证据互咬（引擎忠实 / 探针探对对象 / 现象复现）+ 文件级饱和统计 + 改源后 100% |
+| **`future_iterations.md` §1.5 验收（二选一）** | ✅ **走分支一：第 0 层 + 机制明确** | 机制 = 权重 scale 取自**未折 BN** 的权重、量化对象是**已折 BN** 的权重；三条独立证据互咬（引擎忠实 / 探针探对对象 / 现象复现）+ 文件级饱和统计 + 改源后 100% |
 
 ---
 
-### 13.11 产物身份与两件"暂不做"的事项（2026-09-27 作者指示：只钉身份，不动产物）
+</details>
 
-§1.5 结案后留下两个**都不是默认行为**的选择。作者 2026-09-27 决定：**这一轮只把产物的"身份"
+### 13.11 [OI-INT8-PERCHANNEL-ARTIFACTS] 产物身份与两件"暂不做"的事项（2026-09-27 作者指示：只钉身份，不动产物）
+
+`future_iterations.md` §1.5 结案后留下两个**都不是默认行为**的选择。作者 2026-09-27 决定：**这一轮只把产物的"身份"
 钉死，两件都暂不做**。本节把"为什么暂不做"和"将来要做时该连什么一起做"写清楚——否则下个会话
+
+<details><summary>展开：13.11 [OI-INT8-PERCHANNEL-ARTIFACTS] 产物身份与两件"暂 全文</summary>
+
 看到盘上那份 per-channel 图，很可能把它当成"per-channel 的基线"去用。
 
 **产物身份（钉死）**：
@@ -1916,7 +2109,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 
 **触发条件（将来要做时从这里接）**：
 
-1. **先有 §1.6 的验收集**（带真值标签、样本量够）。当前那批判别力不足的图**得不出**"per-channel
+1. **先有 `future_iterations.md` §1.6 的验收集**（带真值标签、样本量够）。当前那批判别力不足的图**得不出**"per-channel
    和 per-tensor 谁更好"，而这正是①②两个决定共同缺的那块证据。
 2. 然后**一次**把"重生成 per-channel + 退役/改写 B1-4 + 重新评估粒度"打包做（细粒度上
    per-channel 理论上不会更差，但要不要切是另一件事，需要新证据）；
@@ -1929,3 +2122,5 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 ---
 
 *本计划只含执行安排与纪律；各条目目标与触发条件的唯一来源仍是 `docs/future_iterations.md`。*
+
+</details>

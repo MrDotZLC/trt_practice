@@ -1,7 +1,7 @@
 // decode 端到端性能画像（`future_iterations.md` §6.3 与 §11 的 G6）。
 //
-// 开发计划：`docs/future_iterations_development_plan.md` §11（P6_3-3）
-// 测试计划：`docs/future_iterations_test_plan.md` §10（PF-3 / PF-6）
+// 开发计划：`docs/future_iterations_development_plan.md` + OI-PERF-PROFILE-PLAN（P6_3-3）
+// 测试计划：`docs/future_iterations_test_plan.md` + OI-PERF-PROFILE-TESTS（PF-3 / PF-6）
 //
 // **本文件只测量、不判定正确性**：P 层用例把观测值打印出来（中位数 / 分位 / 极差 /
 // 斜率），不 assert 任何数值阈值。为什么：这是"回答一问"而不是"达标判据"——
@@ -802,7 +802,7 @@ TEST(Gpt2DecodePerf, ContextLengthSweepSplitVsSinglePass) {
     // "退化 ≤ 2%"，但那个 2% 的唯一数值输入（单次发射 3~6 µs）是拍的、无出处，
     // 且 PP-1 与 PP-2 对这同一笔代价的估计差 1.97× 尚未解释。按 `AGENTS.md` §7，
     // 在没被解释的量上画阈值等于埋问题 → 改为照 PF-8 / PF-9 的先例**只报数**。
-    // 完整账见 `docs/TROUBLESHOOTING.md` #45.1。
+    // 完整账见 `docs/TROUBLESHOOTING.md` + TS-045-DRIFT-ANCHOR。
     const double short_regression = regression_pct_by_prompt.front();
     const double short_anchor = drift_anchor_pct_by_prompt.front();
     const double short_paired = paired_regression_pct_by_prompt.front();

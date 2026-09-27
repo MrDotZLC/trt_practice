@@ -1,6 +1,6 @@
-// P4-INT8-a（`docs/future_iterations.md` §1.5）：per-channel 权重量化的**整网退化根因**。
+// P4-INT8-a（`docs/future_iterations.md` + OI-INT8-PERCHANNEL）：per-channel 权重量化的**整网退化根因**。
 //
-// 设计（D1~D6，出处 `docs/future_iterations_development_plan.md` §13.3）：
+// 设计（D1~D6，出处 `docs/future_iterations_development_plan.md` + OI-INT8-PERCHANNEL-DESIGN）：
 //   · D1 标尺 = **ONNX 官方参考实现**执行同一张 Q/DQ 图（不由本工程折 BN）；
 //   · D2 只比**量化前**的 float 张量（量化后会被 bin 边界 ±1 格噪声淹没，#30.5/#30.6）；
 //   · D3 "探到的是量化前"用 `d_pre ≤ d_post` 自证（TRT 若把量化后再反量化的值交回来，

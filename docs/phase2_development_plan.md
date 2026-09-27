@@ -1,5 +1,9 @@
 # Phase 2 开发计划：GPT-2 原生构建（方案 A）
 
+> **STATUS: ARCHIVED｜冻结于 2026-09-27（所属阶段已交付）**
+> 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
+> 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
+
 > **定位**：打通「真实模型目录（config.json + model.safetensors）→ 原生 TRT network → engine
 > → 推理 → 采样 → 自回归生成」这条完整路径，产出第一个**真实模型**的可运行实现。
 > 组件层（插件 / 采样器 / 权重加载 / 动态 shape / 端到端骨架）已在 Phase 1 / 1.5 交付并真机验证，
@@ -9,7 +13,7 @@
 > `docs/future_iterations.md` §9（Phase 1 明确延后的能力）。
 >
 > **本文档定义的是任务、顺序、产出与验收**；其中 §0 是开工前实测得到的事实核对，
-> §2 是需要在动工前确认的决策项（沿用 Phase 1 §10 的"决策确认清单"形式）。
+> §2 是需要在动工前确认的决策项（沿用 Phase 1 `phase1_development_plan.md` §10 的"决策确认清单"形式）。
 >
 > 状态：**进行中**。§2 决策项已按建议全部确认；执行进展见 §0.6，
 > 其中 **decode 路径出现一个计划外的阻塞项**（§0.6.2），需你确认后再继续。
@@ -339,7 +343,7 @@ LM head 把 `[H,V]`（rank 2）reshape 成 `[1,H,V]` 时，输出第 2 维没有
 | 编号 | 决策项 | 建议方案 | 备选与理由 |
 |---|---|---|---|
 | **D1** | Prefill 注意力实现 | **手搭**（MatMul→mask→Softmax→MatMul） | 备选 `IAttention(causal=true)`：更少的层、可能有融合 kernel，但 Turing 融合支持需真机确认，且出错时无法逐算子定位。逐层对拍的价值在首次建模阶段高于性能 |
-| **D2** | Decode 路径 | **`PagedAttentionPlugin` + 新增 KV 写入 kernel**（按 PROGRESS §6.2 既定方向） | 备选"稠密 KV"（把 K/V 当普通张量在引擎间传递，完全不使用分页）：风险更低、少写两个 kernel，但会让 Phase 1 的 PagedAttention 交付在 GPT-2 上落空，且与设计文档 §2.3.6 的 `PagedKVCache` 成员不一致 |
+| **D2** | Decode 路径 | **`PagedAttentionPlugin` + 新增 KV 写入 kernel**（按 PROGRESS.md §6.2 既定方向） | 备选"稠密 KV"（把 K/V 当普通张量在引擎间传递，完全不使用分页）：风险更低、少写两个 kernel，但会让 Phase 1 的 PagedAttention 交付在 GPT-2 上落空，且与设计文档 §2.3.6 的 `PagedKVCache` 成员不一致 |
 | **D3** | 权重转换产物 | **保持 F32 源 + 运行时按目标精度转换**；LM head 的转置**在图里做**（`IShuffleLayer` 转置 `wte` 常量） | 备选"Python 侧物化 `[768,50257]` 的 `lm_head.weight`"：省掉图内转置，但转换产物多 154 MB（F32）/ 77 MB（F16）冗余，且丢掉了"共享权重"这一事实 |
 | **D4** | 原生 config 的产出方 | **转换工具产出 mini_trt_llm 原生 `config.json`**（`model_type` / `architecture` / `hyper_params` / `weight_map` / `skipped_tensors`），builder 只认这套 | 备选"builder 直接读 HF 原始 config"：省一次转换，但把 HF 字段名写死进 C++，且 `weight_map` 形同虚设。**注意这是"配置文件"层面的改动，按 AGENTS.md §0.2 执行前会先跟你确认** |
 | **D5** | `temperature` | **显式拒绝 `temperature != 1.0`**（返回错误），留待后续用图外 scale kernel 实现 | 备选"静默忽略"：会造成"调参无效但看不出"的静默错误 |
@@ -498,7 +502,7 @@ Phase 2 的测试 prompt 只有 4 token，**先用 512 不改默认值**；把 5
 
 **为什么**：`INormalizationLayer` 的 `axesMask` 语义（LSB = dim 0）和 FP16 下 `eps` 的精度
 是两个"看文档容易看反 / 看漏"的点；GELU 要确认 `kGELU_TANH` 与 HF `gelu_new` 在数值上一致。
-按 §2.13 的约定，**先有唯一参考实现，再谈被测**。
+按 `PROGRESS.md` §2.13 的约定，**先有唯一参考实现，再谈被测**。
 
 **做什么**：
 
@@ -569,7 +573,7 @@ position_ids [B,S] INT32┴─► Gather(wte) + Gather(wpe) → x [B,S,768]
 1. 先建 **FP32** engine（D7），输入 `input_ids=[464,2068,7586,21831]`、
    `position_ids=[0,1,2,3]`，拿 `[1,4,50257]` logits 与 `ref_output.bin` 对比。
 2. 再建 **FP16** engine 跑同一组输入，与 FP32 结果对比（而不是与 ref 对比），
-   这样能把"建模错误"和"精度损失"分开看——这是 §2.13"失败时先看错误从哪个维度边界开始"的具体应用。
+   这样能把"建模错误"和"精度损失"分开看——这是 `PROGRESS.md` §2.13"失败时先看错误从哪个维度边界开始"的具体应用。
 3. 两条都要检查**贪心 token 一致**（D6）：FP32 必须完全一致；FP16 若某个 token 翻转，
    记录首次翻转位置与 logits 差值（这正是判断"差多少才算超标"的数据）。
 
@@ -606,7 +610,7 @@ position_ids [B,S] INT32┴─► Gather(wte) + Gather(wpe) → x [B,S,768]
 - GPU 侧：写入后按"逐元素读回"与源张量对比（`max_abs == 0`，因为只是搬运）；
   覆盖 `S < block_size`、`S == block_size`、`S > block_size` 且不整除、`batch > 1`。
 
-**验收**：GPU 用例真机通过（§2.13：带 batch 维的算子必须覆盖 `batch > 1`）。
+**验收**：GPU 用例真机通过（`PROGRESS.md` §2.13：带 batch 维的算子必须覆盖 `batch > 1`）。
 
 ### 4.9 P2-5：Decode 引擎（`kDecode`）
 
@@ -760,7 +764,7 @@ models/gpt2/                                        # 转换产物（safetensors
 - [ ] `LLMRunner` 贪心 8 token 与 HF 完全一致。
 - [ ] 循环内零 H2D/D2H（代码审查 + 可选 nsys 佐证）。
 - [ ] 文档收口：PROGRESS / TROUBLESHOOTING / 本文档执行结果。
-- [ ] 每个里程碑都走一遍**真机验证**（§2.13：不留给下个阶段）。
+- [ ] 每个里程碑都走一遍**真机验证**（`PROGRESS.md` §2.13：不留给下个阶段）。
 
 ---
 

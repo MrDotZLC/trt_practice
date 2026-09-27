@@ -1,5 +1,9 @@
 # Phase 1.5 测试计划：全流程测试基建与收尾
 
+> **STATUS: ARCHIVED｜冻结于 2026-09-27（所属阶段已交付）**
+> 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
+> 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
+
 > **补记性质（2026-09-25）**：本文件是**事后补写**的。Phase 1.5 当初**有意不写独立测试计划**，
 > 理由是"设计已在 `docs/phase1_test_plan.md`（E1–E4），再写一份只会复述一遍、形成两处来源"
 > （见 `PROGRESS.md` §2.13「唯一来源」）。现在补，是因为那个理由只对"复制设计"成立，而这些信息
@@ -152,7 +156,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build
 
 | 缺口 | 是什么 | 现状 / 触发条件 |
 |---|---|---|
-| **E2 只到"单步 decode"** | 完整自回归循环要等 `LLMRunner`，属 Phase 2 范围（`phase1_5_development_plan.md` §6.5） | Phase 2 已交付并由 `Gpt2GenerateTest.*` 覆盖 |
+| **E2 只到"单步 decode"** | 完整自回归循环要等 `LLMRunner`，属 Phase 2 范围（`phase1_5_development_plan.md` `PROGRESS.md` §6.5） | Phase 2 已交付并由 `Gpt2GenerateTest.*` 覆盖 |
 | **P1.5-4 缩减完成** | 交付了多权重 BF16 路径的数值验证；完整 `RMSNorm → QKV → RoPE → PagedAttention → LM Head` 链路与 `ref_mini_block.py` 有意留后 | 理由与定位见 `phase1_5_development_plan.md` §0.1（该阶段的目的是"组件能组合"，不是"预演某个具体模型"） |
 | **Top-K / Top-P 的 FP16 分支未覆盖** | Greedy 已覆盖 FP16；Top-K/Top-P 同属采样器同一处 dtype 分派 | 风险低；留待真实采样路径（Phase 2 已用 Greedy 覆盖端到端） |
 | **采样器分布级数据未固化** | `scripts/ref_sampler.py` 能打印 HF 风格截断语义，但输出没有固化成数据文件供测试载入 | 见 `future_iterations.md` §9.3（增强项，非组件能力） |

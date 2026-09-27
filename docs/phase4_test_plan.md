@@ -1,5 +1,9 @@
 # Phase 4 测试计划：ResNet18（CV 路径）
 
+> **STATUS: ARCHIVED｜冻结于 2026-09-27（所属阶段已交付）**
+> 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
+> 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
+
 > **状态**：P4-0 产出（2026-09-25）；用例随 P4-1～P4-8 落地后在本文件 §7 回填结果。
 >
 > **与开发计划的分工（唯一来源原则，`PROGRESS.md` §2.13）**：
@@ -35,7 +39,7 @@
 | 编号 | 用例 | 验证点 | 判据 |
 |---|---|---|---|
 | R0.1 | `ResNet18ConfigTest.LoadsCnnConfig` | `models/resnet18/config.json`：`model_type=resnet18`、`architecture=cnn`、`weight_map` 非空 | 解析成功 + 字段值正确 |
-| R0.2 | `ResNet18WeightContractTest.ConvertedArtifactCoversEveryWeight` | **三集合相等**：safetensors 的键 == `weight_map` 的键 == 由 ResNet18 结构推出的 42 个期望名；且每个名字都能经**真实路径**（`WeightLoader::GetWeight`）取到 | 集合全等；`weight_map` 的值 == 键（identity 是本项目当前的产物形态）。⚠️ 反向覆盖要**自己读 safetensors 文件头**（`GetTensorNames()` 是空实现，PROGRESS §5.2），否则只能单向验"map 里的键都存在"，发现不了"文件里多出没人引用的张量" |
+| R0.2 | `ResNet18WeightContractTest.ConvertedArtifactCoversEveryWeight` | **三集合相等**：safetensors 的键 == `weight_map` 的键 == 由 ResNet18 结构推出的 42 个期望名；且每个名字都能经**真实路径**（`WeightLoader::GetWeight`）取到 | 集合全等；`weight_map` 的值 == 键（identity 是本项目当前的产物形态）。⚠️ 反向覆盖要**自己读 safetensors 文件头**（`GetTensorNames()` 是空实现，PROGRESS.md §5.2），否则只能单向验"map 里的键都存在"，发现不了"文件里多出没人引用的张量" |
 | R0.2b | `ResNet18WeightContractTest.ShapesAreSelfConsistent` | 20 个卷积的 weight 必须 4 维、bias 长度 == 输出通道数；`fc.weight` 与 `config.hyper_params.num_classes` 一致 | 全过；`fc.weight = [1000, 512]`（形状错位最难从数值反查） |
 | R0.2c | `ResNet18WeightContractTest.SourceMetadataMatchesReality` | `source` 元数据必须与产物自洽：`opset`/`tensor_count`/`conv_count`/`batch_norm`/`fc_weight_layout`，且布局声明与文件里的实际形状对得上 | 逐字段相等；`fc.weight` 第 0 维 == 1000（与 `out_in_transB` 声明一致） |
 | R0.2d | ctest `resnet18_convert_selftest`（`onnx_to_mini_trt_llm.py --self-test`） | **护栏有没有牙齿**：把真模型按 5 种方式改坏，逐个确认自检会拦（未消费的 initializer / 逻辑名冲突 / bias 长度不符 / 缺 fc / 不支持的带权算子） | 5 条全部"自检生效"；任一条没拦住即失败 |
@@ -91,7 +95,7 @@
 
 ---
 
-## 3. 判据与出处（每条都要能回答"凭什么"）
+## 3. [PH4-CRITERIA] 判据与出处（每条都要能回答"凭什么"）
 
 | 判据 | 出处 | 关键说明 |
 |---|---|---|
@@ -108,7 +112,7 @@
 
 ---
 
-## 4. 输入与基线
+## 4. [PH4-TEST-INPUTS] 输入与基线
 
 | 输入集 | 来源 | 用途 |
 |---|---|---|
@@ -118,7 +122,7 @@
 > **两套输入的归一化状态不同，不能混用**：ramp 未归一化（历史工程直接喂原始值），
 > pixels 需要消费方按 ImageNet mean/std 归一化（D4）。混淆这两者会得到"engine 错了"的假象。
 
-### 4.1 已产出的基线产物（P4-1，2026-09-25）
+### 4.1 [PH4-BASELINE-ARTIFACTS] 已产出的基线产物（P4-1，2026-09-25）
 
 | 产物 | 位置 | 大小 |
 |---|---|---|

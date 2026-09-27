@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """用 **ONNX 官方参考实现**执行 Q/DQ 图并落盘指定张量——P4-INT8-a 的数值标尺
-（`docs/future_iterations.md` §1.5 / 开发计划 §13）。
+（`docs/future_iterations.md` + OI-INT8-PERCHANNEL / future_iterations_development_plan.md + OI-INT8-PERCHANNEL-PLAN）。
 
 ## 为什么标尺是"直接执行这张图"，而不是"自己折 BN 的 torch 模型"
 
-上一轮排查（`docs/TROUBLESHOOTING.md` #30.5）3 次真机往返里有 **2 次**耗在**探针自身的 BN 折叠错**
+上一轮排查（`docs/TROUBLESHOOTING.md` + TS-030-LAYERWISE-PROBE）3 次真机往返里有 **2 次**耗在**探针自身的 BN 折叠错**
 上：ONNX 里 BN 已折进 Conv，"卷积输出"这个张量在折叠前后不是同一个东西，第一版连 per-tensor 的
 首层都差 96%——那不是 TRT 的问题，是在比两个不同的网络。
 

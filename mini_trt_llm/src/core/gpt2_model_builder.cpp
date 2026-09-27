@@ -230,7 +230,7 @@ nvinfer1::ITensor* AddLinear(nvinfer1::INetworkDefinition* network,
 // 那一段。TRT 头文件里 setComputePrecision 的说明正是为这种场景写的
 // （"avoid overflow errors by controlling the normalization computation in mixed
 // precision mode"）——既然它存在，就不该赌默认值。
-// 排查过程见 docs/TROUBLESHOOTING.md #18。
+// 排查过程见 docs/TROUBLESHOOTING.md + TS-018。
 nvinfer1::ITensor* AddLayerNorm(nvinfer1::INetworkDefinition* network,
                                 nvinfer1::ITensor* input, nvinfer1::ITensor* scale,
                                 nvinfer1::ITensor* bias, float eps,
@@ -346,7 +346,7 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
     const bool export_kv = options.stage != BuildStage::kSingle;
     // 诊断输出（第 0 层的中途张量）**只在显式要求时**才挂。它们是排查 FP16 NaN 的一次性仪器，
     // 却会改掉网络的 I/O 契约——曾经默认带上，导致真机上 LLMRunner 与两条建网断言共 6 条用例
-    // 变红（消费方没绑这些输出，enqueueV3 直接拒绝执行）。见 docs/TROUBLESHOOTING.md #19。
+    // 变红（消费方没绑这些输出，enqueueV3 直接拒绝执行）。见 docs/TROUBLESHOOTING.md + TS-019。
     const bool export_diagnostics = options.export_diagnostics && export_kv;
     const nvinfer1::DataType dtype = options.weight_dtype;
     const int32_t hidden = cfg.n_embd;
@@ -695,7 +695,7 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
         // 数值定位用的中途输出（仅第 0 层，且仅在显式打开 export_diagnostics 时）：
         // "某层的 K/V 出现 NaN 时，NaN 是来自本层的注意力还是 MLP" 是排查中反复要回答的问题，
         // 而在图上留两个输出就能直接读出来（成本：每层两份 [B,S,H]，第 0 层可忽略）。
-        // 见 docs/TROUBLESHOOTING.md #18 的定位过程。
+        // 见 docs/TROUBLESHOOTING.md + TS-018 的定位过程。
         if (export_diagnostics && layer == 0) {
             after_attn->setName("attn_res_0");
             hidden_state->setName("mlp_res_0");
@@ -714,7 +714,7 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
             // FP16 引擎里它们都是 FP32。曾经试过在 markOutput 前插 `addCast` 去"钉死"
             // 类型，**实测无效**（重建后仍是 FP32）：弱类型网络下 Cast 只是精度提示，
             // 锁不住 I/O 类型。消费方必须**查询**引擎声明的类型，不能假定。
-            // 排查与证据见 docs/TROUBLESHOOTING.md #18。
+            // 排查与证据见 docs/TROUBLESHOOTING.md + TS-018。
             q_kv[1]->setName(k_name.c_str());
             q_kv[2]->setName(v_name.c_str());
             network->markOutput(*q_kv[1]);

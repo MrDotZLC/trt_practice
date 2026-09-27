@@ -1,5 +1,9 @@
 # Phase 1 开发方案：Plugin 基础
 
+> **STATUS: ARCHIVED｜冻结于 2026-09-27（所属阶段已交付）**
+> 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
+> 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
+
 > 目标：实现 TensorRT-LLM 推理所需的基础自定义 Plugin，跑通 `IPluginV3` 模板、序列化、注册、测试流程，为 Phase 2 GPT-2 原生构建提供算子基础。
 
 ---
@@ -325,7 +329,7 @@ Week 5: 集成测试 + 文档更新
 
 ---
 
-## 9. 风险与应对
+## 9. [PH1-RISKS] 风险与应对
 
 | 风险 | 影响 | 应对 |
 |---|---|---|
@@ -338,7 +342,7 @@ Week 5: 集成测试 + 文档更新
 
 ---
 
-## 10. 关键决策确认清单
+## 10. [PH1-DECISIONS] 关键决策确认清单
 
 > 本节合并自原 `phase1_pending_confirmations.md`。15 项待确认问题已全部确认，无遗留阻塞项，Phase 1 可进入编码。
 

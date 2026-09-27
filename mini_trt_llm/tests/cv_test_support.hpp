@@ -7,7 +7,7 @@
 // （`scripts/ref_resnet18.py`，用来生成基线）。两边一旦漂移，"引擎与基线对不上"就会
 // 伪装成实现 bug——而它们本该是同一套公式。`ResNet18BaselineTest` 里的两条 host 用例
 // 就是这条纪律的 meta-test：拿 C++ 的实现去比 Python 落盘的产物。
-// 见 docs/PROGRESS.md §2.13（参考实现必须唯一、必须有 meta-test）。
+// 见 docs/PROGRESS.md + DEC-TEST-CONVENTIONS（参考实现必须唯一、必须有 meta-test）。
 
 #include <cstdint>
 #include <filesystem>

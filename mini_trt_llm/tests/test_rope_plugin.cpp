@@ -22,7 +22,7 @@ using test_support::WithinTolerance;
 // 浮点入参的薄封装：真正的参考实现在 test_support::ReferenceRoPE（唯一来源）。
 //
 // 之所以不再在本文件里另写一份：曾经存在两份 RoPE 参考实现，其中一份漏了 batch 维度，
-// 而另一份是对的——两处独立维护必然漂移（见 docs/TROUBLESHOOTING.md #9）。
+// 而另一份是对的——两处独立维护必然漂移（见 docs/TROUBLESHOOTING.md + TS-009）。
 void CpuRoPE(const std::vector<float>& input, const std::vector<int32_t>& position_ids,
              int32_t batch_size, int32_t heads, int32_t seq_len, int32_t head_size,
              int32_t rotary_dim, float base, std::vector<float>* output) {

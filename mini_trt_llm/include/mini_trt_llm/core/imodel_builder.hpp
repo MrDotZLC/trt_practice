@@ -35,7 +35,7 @@ struct BuildOptions {
     // 为什么默认关：这**不是调试开关，而是 I/O 契约开关**。多出来的输出每个消费方都要
     // 自己分配并绑定（TRT 要求 enqueueV3 前每个输出都有地址或 allocator），
     // 漏绑会让 enqueue 直接失败——本项目已经因为"默认带上诊断输出"在真机上打挂过
-    // 6 条用例，详见 docs/TROUBLESHOOTING.md #19。
+    // 6 条用例，详见 docs/TROUBLESHOOTING.md + TS-019。
     bool export_diagnostics = false;
 };
 

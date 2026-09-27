@@ -3,7 +3,7 @@
 // 为什么需要它：TensorRT 在**弱类型网络**里自行决定边界张量的类型——实测 FP16 引擎的
 // K/V 与 logits 输出都是 **FP32**，而输入类型则是 `addInput` 时声明的那样（锁得住）。
 // 没有这个工具，"引擎到底声明了什么"只能靠推断，而推断在本项目的记录里已被证伪两次
-// （见 docs/TROUBLESHOOTING.md #18 / #17）。
+// （见 docs/TROUBLESHOOTING.md + TS-018 / TS-017）。
 //
 // 特点：只做 `deserializeCudaEngine` + 读元信息，**不建 context、不推理、不写数据**；
 // 因此它也是"引擎文件能否被当前环境反序列化"的最小探针。

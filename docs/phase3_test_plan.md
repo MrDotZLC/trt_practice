@@ -1,5 +1,9 @@
 # Phase 3 测试计划：GPT-2 ONNX + Plugin（方案 B）
 
+> **STATUS: ARCHIVED｜冻结于 2026-09-27（所属阶段已交付）**
+> 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
+> 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
+
 > **定位**：Phase 3 的**任务与决策**见 `docs/phase3_development_plan.md`；本文档定义
 > **测试分层、用例、判据出处与缺口**。
 >
@@ -67,7 +71,7 @@ ONNX vs HF   : max_abs 9.92e-05 / max_abs÷max|ref| 9.19e-07 / cosine 1
 
 ---
 
-### 3.1 L3 的两次测量（结论不可复现）
+### 3.1 [PH3-L3-MEASUREMENTS] L3 的两次测量（结论不可复现）
 
 | 运行 | 构建 ONNX / 原生 | prefill ONNX / 原生 | ONNX vs HF（max_abs / 相对） |
 |---|---|---|---|
@@ -101,7 +105,7 @@ ONNX vs HF   : max_abs 9.92e-05 / max_abs÷max|ref| 9.19e-07 / cosine 1
 
 ---
 
-## 5. 缺口（尚未覆盖，下一次要做的正是这些）
+## 5. [PH3-GAPS] 缺口（尚未覆盖，下一次要做的正是这些）
 
 | ID | 缺口 | 为什么重要 | 建议做法 |
 |---|---|---|---|

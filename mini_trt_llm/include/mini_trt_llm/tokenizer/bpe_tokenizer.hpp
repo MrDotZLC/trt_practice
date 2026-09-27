@@ -13,7 +13,7 @@ namespace mini_trt_llm {
 //
 // 为什么不用已有的 SentencePiece：GPT-2 的词表与切分规则都不同（byte-level 回退 + BPE merge），
 // 而 SentencePiece 的空白与子词语义与之不一致——混用会让"分词对不对"跟"数值对不对"纠缠在一起
-// （背景见 docs/future_iterations.md §5.1）。
+// （背景见 docs/future_iterations.md + OI-BPE-TOKENIZER）。
 //
 // **判据是"与 HF 逐 token 全等"**：参考实现 = `transformers.GPT2TokenizerFast`，
 // 参考数据 = tests/data/gpt2_tokenizer_golden.json（由 tools/make_tokenizer_golden.py 产出，

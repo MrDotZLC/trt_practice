@@ -1,5 +1,9 @@
 # Phase 3 开发计划：GPT-2 ONNX + Plugin（方案 B）
 
+> **STATUS: ARCHIVED｜冻结于 2026-09-27（所属阶段已交付）**
+> 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
+> 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
+
 > **定位**：让"ONNX → engine"这条路成为一等公民——能一键构建、失败可诊断，并能与
 > Phase 2 的原生构建（方案 A）**交叉验证**。
 >
@@ -10,7 +14,7 @@
 
 ## 0. 开工前的事实核对（实测，非推测）
 
-### 0.1 现有资产
+### 0.1 [PH3-ASSETS] 现有资产
 
 `1_gpt2_onnx/gpt2.onnx`：652 MB，opset 17，输入 `input_ids [batch, seq_len]`（两维皆动态），
 输出 `logits [batch, seq_len, 50257]`（`use_cache=False`，无 past/KV 输入输出）。
@@ -30,7 +34,7 @@ maxdiff = 0.0），Conv1D 同样是 `[in, out]` 约定，LM head 单独物化为
 → **方案 A 与方案 B 用的是同一份数值，因此"两者输出对齐"是一个干净的判据**：
 不需要外部基线，任何不一致都指向实现差异。
 
-### 0.2 与 `mini_trt_llm_design.md` §3 描述的重大不一致
+### 0.2 [PH3-DESIGN-MISMATCH] 与 `mini_trt_llm_design.md` §3 描述的重大不一致
 
 设计文档写的 Phase 3 是"对 `gpt2.onnx` 替换 **RoPE / RMSNorm / Attention** 子图"。
 但实测该图**不含 RMSNorm、也不含 RoPE**（用的是 LayerNormalization 25 处 + 学习式位置编码）。

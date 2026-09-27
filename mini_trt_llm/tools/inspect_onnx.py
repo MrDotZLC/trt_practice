@@ -11,7 +11,7 @@
 
 依赖：onnx（见 requirements.txt）。
 
-注意：`--check` 的基线是**首次实测值**（见 docs/phase3_development_plan.md §0.1），
+注意：`--check` 的基线是**首次实测值**（见 docs/phase3_development_plan.md + PH3-ASSETS），
 不是"随便定的期望"。图变了就让 `--check` 红着，先判断变化是有意为之还是意外。
 """
 

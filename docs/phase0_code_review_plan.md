@@ -1,5 +1,9 @@
 # Phase 0 代码 Review 方案
 
+> **STATUS: ARCHIVED｜冻结于 2026-09-27（所属阶段已交付）**
+> 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
+> 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
+
 > 目标：系统梳理 Phase 0 全部代码，便于逐模块审查骨架质量、风险点与可测试性。
 
 ---

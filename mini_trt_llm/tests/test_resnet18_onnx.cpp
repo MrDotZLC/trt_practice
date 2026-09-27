@@ -47,7 +47,7 @@ std::string FindResNet18ModelDir() {
 // TRT 会把 I/O 声明成 FP32——于是"日志里 input/output 都是 FP32"完全掩盖了内部是 FP16 计算。
 // 第一版这里传了 `Config{}`，拿 FP16 引擎去比 torchvision FP32，量到 max_abs=0.033（rel 3.6e-3，
 // 正是 FP16 的量级），差点被当成"TRT 实现差异大"而放宽阈值。
-// 教训与测量过程见 docs/TROUBLESHOOTING.md #21。
+// 教训与测量过程见 docs/TROUBLESHOOTING.md + TS-021。
 const char* const kFp32EnginePath = "/tmp/mini_trt_llm_resnet18_onnx_fp32.engine";
 
 EngineBuilder::Config Fp32BuilderConfig() {

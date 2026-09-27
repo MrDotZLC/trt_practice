@@ -47,7 +47,7 @@ def main() -> int:
     rotary_dim = 4  # 部分旋转：后 4 维应保持原值
     base = 10000.0
     # **必须覆盖 batch > 1**：曾经有一版 C++ 参考实现漏了 batch 维度，
-    # 而当时的交叉验证只跑了 batch=1，没能拦住（见 docs/TROUBLESHOOTING.md #9）。
+    # 而当时的交叉验证只跑了 batch=1，没能拦住（见 docs/TROUBLESHOOTING.md + TS-009）。
     positions = torch.tensor([[2, 5], [7, 11]])
     batch = positions.shape[0]
     seq = positions.shape[1]

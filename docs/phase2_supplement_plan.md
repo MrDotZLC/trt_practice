@@ -1,5 +1,9 @@
 # Phase 2 补丁计划：诊断输出开关（F2）+ CUDA 环境显式判定
 
+> **STATUS: ARCHIVED｜冻结于 2026-09-27（所属阶段已交付）**
+> 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
+> 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
+
 > **状态**：**P2S-1 ~ P2S-4 已完成并真机复验**（2026-09-25，用户确认"不做 3c / 采纳闸门 / 跑真机全量"）；
 > P2S-5 文档收口已完成；§8 有完整结果。**新增发现**见 §8 的"计划外"一栏。
 >
@@ -60,7 +64,7 @@
 
 | 判据 | 出处 |
 |---|---|
-| 默认构建下 `network->getNbOutputs() == 2 * n_layer + 1`（= 5） | 测试既有断言（`test_gpt2_network_build.cpp:147` / `:274`），来源 `docs/phase2_test_plan.md` §4.6 的 I/O 契约 |
+| 默认构建下 `network->getNbOutputs() == 2 * n_layer + 1`（= 5） | 测试既有断言（`test_gpt2_network_build.cpp:147` / `:274`），来源 `docs/phase2_test_plan.md` `phase2_development_plan.md` §4.6 的 I/O 契约 |
 | 打开开关后多出 4 个输出：`mlp_fc_0` / `mlp_gelu_0` / `attn_res_0` / `mlp_res_0` | `docs/TROUBLESHOOTING.md` #18.1 轮次 3/4（当时的人工读数） |
 | `kSingle` 切面永远是 1 个输出 | `test_gpt2_network_build.cpp:184`（既有对照） |
 | 沙箱内 GPU 用例**允许**跳过 | `PROGRESS.md` §5.7 / §5.10：无 GPU 的 CI 必须能绿，否则真实回归信号被固定噪声淹没 |
@@ -82,7 +86,7 @@
 
 **为什么把开关放在这两处**：本项目所有构建期参数（precision / workspace / profile 范围）
 都已统一走 `Config → BuildOptions` 这条路径；不给 `BuildFromConfig` 再加默认参数，是为了
-不继续膨胀 §2.15 里已冻结的签名。默认值必须是 `false`——它是**契约变更**，默认打开等于
+不继续膨胀 `PROGRESS.md` §2.15 里已冻结的签名。默认值必须是 `false`——它是**契约变更**，默认打开等于
 把"要不要多 4 个输出"这个决定推给每一个调用方。
 
 **验收**：默认构建下 `getNbOutputs() == 5`；打开开关后为 9 且 4 个名字可读。
@@ -127,7 +131,7 @@
    - 有设备且 builder 可用 → 正常建网。
 3. 新增一条**永不跳过**的用例 `GpuEnvProbe.ReportsCudaAvailability`：打印设备数 / 驱动版本 /
    是否设了 `MINI_TRT_REQUIRE_GPU`，让每次 ctest 输出里都有一行明确的环境事实。
-4. 语义边界（写进注释与验收）：**沙箱里 GPU 用例仍然跳过、ctest 仍然全绿**（§5.7 的要求）。
+4. 语义边界（写进注释与验收）：**沙箱里 GPU 用例仍然跳过、ctest 仍然全绿**（`PROGRESS.md` §5.7 的要求）。
    本任务解决的是"跳过要显式、且不能把真故障伪装成跳过"，**不是**"把跳过变红"。
 
 **可选（P2S-3c，待你定）**：给 GPU 套件打 CTest label，便于 `ctest -L gpu`。代价是
@@ -164,13 +168,13 @@ Gpt2GenerateTest.RejectsUnsupportedTemperature                 (对照)
 1. `docs/TROUBLESHOOTING.md` #19：状态改"已修复"，补"回归防护"（哪条用例/断言现在能拦住
    同类改动：`getNbOutputs()` 计数断言 + `MINI_TRT_REQUIRE_GPU` 闸门）。
 2. `docs/PROGRESS.md`：§2.15 增两行"勿回改"约定——**诊断输出必须显式 opt-in、默认关**、
-   **引擎缓存路径不得在两种契约间共用**；同步 §5.11 / §6.5 / 表头第 4 条的失败计数。
+   **引擎缓存路径不得在两种契约间共用**；同步 `PROGRESS.md` §5.11 / `PROGRESS.md` §6.5 / 表头第 4 条的失败计数。
 3. `docs/phase2_test_plan.md`：G2-1 行补"诊断仪器已改为 opt-in"；修正 L1 行与测试注释的矛盾。
 4. 本文件 §8 回填执行结果。
 
 ### P2S-6 修复 #20：`PagedKVCacheTest` 的追加用例与 `AppendDecodeStep` 契约对齐
 
-**状态**：⏳ **待确认**（#20 由真机全量跑出来，不在原计划清单内，按 §0.5 重新列清单）。
+**状态**：⏳ **待确认**（#20 由真机全量跑出来，不在原计划清单内，按 `AGENTS.md` §0.5 重新列清单）。
 
 **问题回顾**（细节见 `TROUBLESHOOTING.md` #20）：用例 `AppendCrossesBlockBoundaryAndAdvancesContextLens`
 的 cache 配置是 2 层（`MakeConfig()`），却只给 `AppendDecodeStep` 传了 1 对 K/V，与该 API
@@ -206,7 +210,7 @@ Gpt2GenerateTest.RejectsUnsupportedTemperature                 (对照)
 | B1 | 真机 `PagedKVCacheTest.*` 全绿（3 条既有 + 1 条新负例） | 该用例文件既有判据 + #16 契约 |
 | B2 | 真机全量从 **2 红 → 1 红**，仅剩 `RealGpt2Fp16Greedy...`（按设计红） | `PROGRESS.md` §6.5 的口径 |
 | B3 | 新负例能抓住"拒绝后长度仍被推进"——即把实现改成先写后校验时它会红 | 反向验证（可选，手工确认一次） |
-| B4 | 沙箱仍 145 条 0 失败（GPU 用法例照常跳过） | §5.7 |
+| B4 | 沙箱仍 145 条 0 失败（GPU 用法例照常跳过） | `PROGRESS.md` §5.7 |
 
 **破坏性动作**：覆盖修改 `mini_trt_llm/tests/test_paged_kv_cache.cpp`（1 处调用 + 1 条新用例）；
 文档 3 处（`TROUBLESHOOTING.md` #20 状态、`phase2_test_plan.md` 的 `PagedKVCacheTest.*` 状态行、
@@ -248,13 +252,13 @@ Gpt2GenerateTest.RejectsUnsupportedTemperature                 (对照)
 | A1 | 默认构建 `getNbOutputs() == 5`；`kSingle` 仍为 1 | 既有断言（§1） |
 | A2 | 打开开关的仪器路径能列出 4 个诊断输出 | #18.1 轮次 3/4 |
 | A3 | 真机 9 条用例**全绿**（6 条先前红 + 3 条对照） | 用户本轮要求 |
-| A4 | 真机 `RealGpt2Fp16Greedy...` 回到"token 全 0"的按设计红，**不再是 enqueue 失败** | #19 / §18.1 |
-| A5 | 沙箱 `ctest` 仍 **0 失败**，且 GPU 跳过条目打印显式探测原因（`cudaGetDeviceCount` 结果） | §5.7 与用户本轮要求 |
+| A4 | 真机 `RealGpt2Fp16Greedy...` 回到"token 全 0"的按设计红，**不再是 enqueue 失败** | #19 / `TROUBLESHOOTING.md` §18.1 |
+| A5 | 沙箱 `ctest` 仍 **0 失败**，且 GPU 跳过条目打印显式探测原因（`cudaGetDeviceCount` 结果） | `PROGRESS.md` §5.7 与用户本轮要求 |
 | A6 | 沙箱内 `createInferBuilder` 失败不再表现为 skip，而是 FAIL | 本计划 P2S-3 |
 
 ---
 
-## 5. 破坏性动作清单（一次性确认，AGENTS.md §2.14 B）
+## 5. 破坏性动作清单（一次性确认，`PROGRESS.md` + `DEC-EVIDENCE-DISCIPLINE`（§2.14 B））
 
 1. **新建** `docs/phase2_supplement_plan.md`（本文件，已落盘等你确认）。
 2. **覆盖修改** §3 表里的 1–8 共 8 个源文件 / 测试文件（其中 #8 是批量机械替换）。
@@ -263,7 +267,7 @@ Gpt2GenerateTest.RejectsUnsupportedTemperature                 (对照)
 5. **不删除任何文件**；**不删 `/tmp` 引擎缓存**（已确认真机无遗留）；**不碰 git 历史**。
 6. 真机回归会**构建新引擎**（写入 `/tmp`，分钟级），并在 `build/` 下重编译。
 
-> 与 §0.5 的关系：批准本计划 = 批准上述**这批具体动作**；执行中若需要新增动作（例如发现
+> 与 `AGENTS.md` §0.5 的关系：批准本计划 = 批准上述**这批具体动作**；执行中若需要新增动作（例如发现
 > 还得改别的文件），我会**停下来重新列清单**，不自行扩大范围。
 
 ---
@@ -274,7 +278,7 @@ Gpt2GenerateTest.RejectsUnsupportedTemperature                 (对照)
 - **不改 `kSingle` 的语义**，不动 `PagedAttention` / 采样器 / KV Cache。
 - **不引入引擎缓存的失效机制**（代码版本/开关参与缓存 key）——本计划只用"换路径"绕开，
   真要根治属于测试基建改造，另开任务。
-- **不把 GPU 用例的跳过整体改成失败**（会破坏 §5.7 的 CI 可绿要求）。
+- **不把 GPU 用例的跳过整体改成失败**（会破坏 `PROGRESS.md` §5.7 的 CI 可绿要求）。
 
 ---
 

@@ -156,7 +156,7 @@ bool EngineBuilder::SetupBuilder(
     }
     // INT8 不需要任何 builder flag：`kINT8` 自 TRT 10.12 起废弃（由 Q/DQ 显式量化取代），
     // 引擎的精度由网络里的 Q/DQ 节点决定。实测（手搓对称 Q/DQ 最小图）：弱类型网络下
-    // Q/DQ 被正常接受，且 Q/DQ 与 Conv 会融合。见 docs/phase4_int8_plan.md §1.3 的 S1-b。
+    // Q/DQ 被正常接受，且 Q/DQ 与 Conv 会融合。见 docs/phase4_int8_plan.md + PH4-INT8-TOOLCHAIN 的 S1-b。
 
     if (config_.detailed_profiling) {
         // 逐层精度只在 DETAILED 下写进引擎；默认（kLAYER_NAMES_ONLY）读不出精度，
@@ -248,7 +248,7 @@ bool EngineBuilder::AddCvOptimizationProfile(nvinfer1::IBuilder* builder,
     NVINFER_CHECK(profile);
 
     // CV Phase 1 只支持动态 batch：只允许第 0 维是动态的。
-    // 动态分辨率属于后续迭代（见 docs/future_iterations.md §2.4），此处明确拒绝而非猜测。
+    // 动态分辨率属于后续迭代（见 docs/future_iterations.md + OI-CV-DYNAMIC-RES），此处明确拒绝而非猜测。
     auto range_for_dim = [this](int32_t dim) -> DimRange {
         if (dim == 0) {
             return DimRange{config_.min_batch, config_.opt_batch, config_.max_batch};

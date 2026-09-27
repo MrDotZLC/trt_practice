@@ -2,7 +2,7 @@
 """生成 / 校验 GPT-2 BPE 的参考数据（golden）。
 
 为什么要有它：`BpeTokenizer` 的正确性判据是"**与 HF 逐 token 全等**"（
-`docs/future_iterations_test_plan.md` §2.1）。参考实现是裁决对错的标尺，标尺必须可复现、
+`docs/future_iterations_test_plan.md` + OI-BPE-TOKENIZER-TESTS）。参考实现是裁决对错的标尺，标尺必须可复现、
 必须自带出处——所以这份脚本把"哪个 tokenizer、哪几个文件、哪一版 transformers"一起固化下来。
 
 **本脚本不联网**：它用 `local_files_only=True` 从本地快照加载；找不到就报错退出，

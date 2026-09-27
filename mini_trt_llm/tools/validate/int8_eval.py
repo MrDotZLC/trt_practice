@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """INT8 判据评估：把"一致率"升级为"带样本量、带真值标签、带分布"的报告。
 
-为什么需要它（背景与判据口径的唯一来源是 `docs/future_iterations.md` §1.6）：
+为什么需要它（背景与判据口径的唯一来源是 `docs/future_iterations.md` + OI-INT8-ABS）：
 当前 INT8 的主判据是"FP32 有余量子集的一致率"，它有三个已知弱点——
 有判别力的样本只有 11~12 张、验收集没有真值标签（只能判"与 FP32 是否一致"、
 判不了"对不对"）、绝对误差界未定。本脚本负责把这三件事变成可复现的报告。
@@ -24,10 +24,10 @@ import tempfile
 from array import array
 
 # 阈值出处：tests/test_resnet18_int8.cpp（kConfidentMargin / kBucketEdges）与
-# docs/phase4_int8_plan.md §4。**改动它们等于改判据**，所以报告里必须回显出处。
+# docs/phase4_int8_plan.md + PH4-INT8-CRITERIA。**改动它们等于改判据**，所以报告里必须回显出处。
 DEFAULT_CONFIDENT_MARGIN = 5.0
 DEFAULT_BUCKET_EDGES = (1.0, 2.0, 5.0, 10.0)
-THRESHOLD_PROVENANCE = "tests/test_resnet18_int8.cpp + docs/phase4_int8_plan.md §4"
+THRESHOLD_PROVENANCE = "tests/test_resnet18_int8.cpp + docs/phase4_int8_plan.md + PH4-INT8-CRITERIA"
 
 # 报告里必须写清的"本判据不覆盖什么"（§1.6 验收判据第 3 条）。
 NOT_COVERED = [
@@ -408,9 +408,9 @@ def evaluate(args):
     }
     if labels is None:
         report["label_note"] = "本报告不含真值标签：只回答'与 FP32 是否一致'，不回答'对不对'（不满足 §1.6 规格）"
-        report["spec_compliance"] = {"requires_truth_labels": False, "ref": "docs/future_iterations.md §1.6"}
+        report["spec_compliance"] = {"requires_truth_labels": False, "ref": "docs/future_iterations.md + OI-INT8-ABS"}
     else:
-        report["spec_compliance"] = {"requires_truth_labels": True, "ref": "docs/future_iterations.md §1.6"}
+        report["spec_compliance"] = {"requires_truth_labels": True, "ref": "docs/future_iterations.md + OI-INT8-ABS"}
     if legacy:
         report["spec_compliance"].update(
             {

@@ -7,7 +7,7 @@
 
 ---
 
-## 0. 优先级定义与排序规则（优先级的唯一排序来源）
+## 0. [OI-PRIORITY-DEF] 优先级定义与排序规则（优先级的唯一排序来源）
 
 > **先纠一个容易误读的地方：章节顺序是主题分类，不是优先级。**
 > 章节内部原本**恰好**大致从高到低写（本次重定前：`§2` 是 P1→P2、`§5` 是 P1→P2→P3），
@@ -34,10 +34,14 @@
 > `docs/future_iterations_development_plan.md` 与 `docs/future_iterations_test_plan.md`**，
 > **不再单独新建 per-item 文件**（例：§9.2 的两份计划已并入 §10 / §9）。
 
-### 0.1 优先级总表（按建议优先级排序）
+### 0.1 [OI-PRIORITY-TABLE] 优先级总表（按建议优先级排序）
+
+
+<details><summary>展开：0.1 [OI-PRIORITY-TABLE] 优先级总表（按建议优先级排序） 全文</summary>
 
 | 建议 | 条目 | 原标签 | 触发条件 vs 现状（依据） | 开工前提 / 备注 |
 |---|---|---|---|---|
+
 | ~~P1~~ **已完成** | §5.1 BPE Tokenizer | P1 | **✅ 已交付（2026-09-26，批次 A1）**；交付内容与实测见 `PROGRESS.md` §3.0e、用例见 `future_iterations_test_plan.md` §2.1（15 条，含"文本 → prompt token"桥接用例）。原触发理由（能力门槛）：`LLMRunner` 只收/还 token id，`tokenizer_` 仅在构造时校验 → 目前没有"文本进 / 文本出"的端到端路径 | 纯 host 代码、可离线、可进 CI。**前置已核实（2026-09-26 更正）**：tokenizer 数据文件在本地 HF 缓存里（`~/.cache/huggingface/hub/models--gpt2/snapshots/607a30d.../{vocab.json,merges.txt,tokenizer.json}`），且 `transformers 4.44.0` 可 `local_files_only=True` 离线加载并给出参考 token → **不需要联网**。（上一版这里写"本地没有、降为 P2"是**错的**：当时只查了 `models/gpt2/`，把"仓库里没有"当成了"机器上没有"） |
 | ~~P1~~ **已完成** | §1.6 的**离线子项**（口径定义：验收集规格 / meta 字段 / 分层统计脚本） | P2（整条） | **✅ 已交付（2026-09-26，批次 A2）**：规格 `tools/validate/README.md`、脚本 `int8_eval.py`（3 项分层数学 + 7 道护栏自检）、ctest 项 `int8_eval_selftest`；C 批已用它在真机完成与 C++ 侧统计的口径交叉校验 | **下载验收集那一半仍是 P2**（需联网，见本表下一档） |
 | **P2** | §1.2 LLM INT8 / INT4 | P2 | 触发 = 需要 LLM 低精度吞吐；未触发 | 前置依赖已核实：`PagedAttentionPlugin` 目前只接受 `kFLOAT` / `kHALF`（`paged_attention_plugin.cu:265`）→ 先要 INT8 KV cache；INT4 需先评估 sm_75 kernel 可行性 |
@@ -72,10 +76,16 @@
 | **冻结** | §1.1 ResNet18 INT8 校准 | **P1 → 冻结** | **触发已消失**：ResNet18 的 INT8 已由 **Q/DQ 显式量化**交付（`PROGRESS.md` §3.0d）；且 TRT 10.12 起 `kINT8` / `IInt8Calibrator` 路线弃用 | `mini_trt_llm` 内**没有任何 calibrator 代码**（已核实），现行路线是 `tools/convert/quantize_resnet18.py`。保留备查：若将来要重拾 implicit calibration，须先重审（`TROUBLESHOOTING.md` #27） |
 | **冻结** | §9.1 PagedAttention 的 Prefill 阶段 | **P1 → 冻结** | **触发条件已被现状否证**：原文说"Phase 2 若走单引擎就必须先补"，而 Phase 2 之后的 `LLMRunner` 构造收 **prefill + decode 两个引擎**（`llm_runner.hpp:56`），双引擎路径一直成立 | 保留备查：只有将来要合成单引擎时才需要补 Prefill kernel |
 
-### 0.2 与旧标签的差异（本次重定，2026-09-26）
+</details>
+
+### 0.2 [OI-LABEL-DIFF] 与旧标签的差异（本次重定，2026-09-26）
+
+
+<details><summary>展开：0.2 [OI-LABEL-DIFF] 与旧标签的差异（本次重定，2026-09-26） 全文</summary>
 
 | 条目 | 旧 | 新 | 理由 |
 |---|---|---|---|
+
 | §1.1 ResNet18 INT8 校准 | P1 | **冻结** | 已被 Q/DQ 路线取代，且该 API 路线在 TRT 10.12 起弃用（详见 §0.1 行） |
 | §1.4 GPT-2 FP16 端到端 | **（缺标签）** | P3 | 文档头声明"每一项标注优先级"，但它漏了 → 补齐；P3 依据是 sm_75 无 Tensor Core |
 | §2.1 显存池 | P1 | P2 | P1 应留给"能力门槛"；本条是性能优化且收益未测。**2026-09-27 补：已测（PF-5）→ 触发不成立 → 不排期**（见 §0.1 与 §2.1 正文） |
@@ -92,10 +102,15 @@
 具体顺序见 **§0.3 执行序列**。
 **每个条目内部的「优先级」行必须与 §0.1 一致**；不一致时以 §0.1 为准并当场改回一致。
 
-### 0.3 执行序列（"按优先级逐个完成"的建议顺序，2026-09-27 刷新）
+</details>
+
+### 0.3 [OI-EXEC-ORDER] 执行序列（"按优先级逐个完成"的建议顺序，2026-09-27 刷新）
 
 排序规则（**同级别内**）：**前置能否立即满足 → 解锁多少下游 → 成本**。
 "需批准"列指按 `AGENTS.md` §0.2 / §0.3 必须先取得许可的动作。
+
+<details><summary>展开：0.3 [OI-EXEC-ORDER] 执行序列（"按优先级逐个完成"的建议顺序，2026- 全文</summary>
+
 
 | # | 事项 | 级别 | 前置 / 成本 | 需批准 |
 |---|---|---|---|---|
@@ -125,12 +140,17 @@
 
 ---
 
+</details>
+
 ## 1. 量化与精度优化
 
-### 1.1 ResNet18 INT8 校准
+### 1.1 [OI-INT8-CALIB] ResNet18 INT8 校准
 
 - **优先级**：**冻结**（原 P1，2026-09-26 重定为冻结，理由见 §0.1）
 - **背景**：现有 `0_resnet18_onnx` 已支持 INT8，含 `calib_data/` 与 `Int8Calibrator`。`mini_trt_llm` 替换后需补齐该能力。
+
+<details><summary>展开：1.1 [OI-INT8-CALIB] ResNet18 INT8 校准 全文</summary>
+
 - **现状更新（2026-09-26）**：本条的"实现 `nvinfer1::IInt8Calibrator` 封装"路线**已被取代**——
   Phase 4 用 **Q/DQ 显式量化**（`tools/convert/quantize_resnet18.py`）交付了 ResNet18 INT8，
   且 TRT 10.12 起 `kINT8` / implicit calibration 路线弃用（`docs/TROUBLESHOOTING.md` #27）。
@@ -141,6 +161,8 @@
   - `EngineBuilder` 增加 INT8 配置路径。
   - 在 `ModelConfig` 中增加 `quantization` 字段描述每层/全局校准策略。
 - **关键依赖**：`0_resnet18_onnx` 的 `calibrator.cpp` 可直接参考。
+
+</details>
 
 ### 1.2 LLM INT8 / INT4 量化
 
@@ -159,14 +181,17 @@
 
 ---
 
-### 1.4 GPT-2 的 FP16 端到端（需要激活缩放 / 关键算子保 FP32）
+### 1.4 [OI-GPT2-FP16] GPT-2 的 FP16 端到端（需要激活缩放 / 关键算子保 FP32）
 
 - **优先级**：P3（2026-09-26 补标签：本条原先漏标；依据 = sm_75 无 Tensor Core，收益有限，
   且触发条件是"真要推进低精度推理"——见 §0.1）
 
+<details><summary>展开：1.4 [OI-GPT2-FP16] GPT-2 的 FP16 端到端（需要激活缩放 / 关 全文</summary>
+
+
 **现状（已实测）**：真实 GPT-2 在本项目的**弱类型 FP16** 引擎下端到端产生 NaN，
 且出现 NaN 的层随构建变化（0/1/2），而激活幅值远未触及 FP16 上限。FP32 端到端完全正确。
-完整证据链与"为什么按政策不修"见 `docs/TROUBLESHOOTING.md` §18.1。
+完整证据链与"为什么按政策不修"见 `docs/TROUBLESHOOTING.md` + TS-018-FP16-NAN。
 
 **要解决它，可行方向**（按成本从低到高）：
 
@@ -179,10 +204,15 @@
 **触发条件**：真要推进 GPT-2 的 FP16/低精度推理性能时（目标硬件无 Tensor Core，
 收益有限，所以不急）。
 
-### 1.5 per-channel 权重量化的整网退化根因（P4-INT8-a 立项）
+</details>
+
+### 1.5 [OI-INT8-PERCHANNEL] per-channel 权重量化的整网退化根因（P4-INT8-a 立项）
 
 > **2026-09-27 状态：根因已定位，并已在本机（CPU）用独立标尺完成"复现 → 修复 → 反证"。**
 > 结论：**根因在产图脚本，不在 TRT** —— `quantize_resnet18.py` 的权重范围取自
+
+<details><summary>展开：1.5 [OI-INT8-PERCHANNEL] per-channel 权重量化的整网退化 全文</summary>
+
 > **未折 BN 的 torchvision 权重**，而 Q/DQ 插在**已折 BN 的 ONNX 权重**上（折叠系数逐通道跨度
 > 实测 **0.05 ~ 19.9**）；per-tensor 只错一个全局倍率（后果轻），per-channel 错的是**逐通道倍率**
 > → 系数 >1 的通道被 clamp 饱和。把 scale 改成取自"**被量化那张张量**"（`--weight-range-source onnx`）
@@ -223,7 +253,7 @@
   即：**算子级与 block 级都证明 per-channel 至少不差，整网级却明显更差**，机制未知。
   已否证 11 条假设（写法错 / 死通道 scale 跨度 / 模拟不忠实 / 残差融合 / `axis` 属性类型 /
   2-D 广播形状 / 权重只留 DQ / 布局 / 舍入方式 / 量化 step 与 scale 不符 / 探针工具自身——详见
-  `docs/TROUBLESHOOTING.md` #29 / #30 / #31）。
+  `docs/TROUBLESHOOTING.md` + TS-029 / #30 / #31）。
   - **2026-09-27 修订**：上表"整网模拟（同批 scale）：余量子集 100% / 100%"这一行是**错的**——
     那个"模拟"拿未折 BN 的权重做量化，与图里被量化的张量不是同一个（#46.3）。
     用 ONNX 官方参考实现直接执行同一张图，per-channel 的余量子集一致率就是 **54.5%**
@@ -263,19 +293,24 @@
 - **成本校准（前次实测）**：全流程是**每轮 1 次真机往返**级别；前次 #30.5 用掉 3 轮，其中 2 轮
   耗在**探针自身的 BN 折叠错**上——这次先修仪器再取数。
 - **出处**：`docs/TROUBLESHOOTING.md` #29.2 / #30（#30.1 否证表、#30.3 未排除方向、#30.5 仪器坑、
-  #30.6 收口决定）；`docs/phase4_int8_plan.md` §7 的 P4-7-3 行。
+  #30.6 收口决定）；`docs/phase4_int8_plan.md` + PH4-INT8-RESULTS 的 P4-7-3 行。
 
-### 1.6 INT8 精度判据与带真值标签的验收集（P4-INT8-b 立项）
+</details>
+
+### 1.6 [OI-INT8-ABS] INT8 精度判据与带真值标签的验收集（P4-INT8-b 立项）
 
 - **优先级**：P2
 - **现状（实测）**：当前判据是**分层的**——主判据 = "FP32 有余量"（`margin >= 5`）子集的
+
+<details><summary>展开：1.6 [OI-INT8-ABS] INT8 精度判据与带真值标签的验收集（P4-INT8- 全文</summary>
+
   top-1 一致率 `>= 90%`（实测 12/12 = 100%）；整体一致率 `>= 30%` 只作"没崩坏"下界（实测 37.9%）。
   三个已知弱点：
   1. `calib_data` 是 **tiny-imagenet 放大图**，分类本身退化（8 张里 5 张同类）——**没有真值标签**，
      所以现在只能判"与 FP32 是否一致"，判不了"对不对"；
   2. 有判别力的样本只有 **11~12 张**，率的分辨力弱（Fisher 精确检验 ≈0.03，勉强算显著）；
   3. **绝对误差界未定**：实测 `max_abs ≈ 21.6` 被少数样本放大，所以**故意不拿它当判据**
-     （`docs/phase4_int8_plan.md` §4 的"数值上界"行）。
+     （`docs/phase4_int8_plan.md` + PH4-INT8-CRITERIA 的"数值上界"行）。
 - **目标**：把 INT8 的验收从"一致率"升级为能回答"凭什么这么定"的两条判据：
   (a) 有样本量依据的 top-1 一致率；(b) 在有判别力样本上量出的绝对 / 相对误差上界。
 - **做法**：
@@ -286,7 +321,7 @@
      （只报率不报 n 的结论不可复核）。
   3. 绝对误差只在余量子集上量 **per-sample `max_abs` / 相对误差的分布**（报 p95 / p99，不报全样本
      max），阈值取该分布的合理倍数，**阈值必须挨着写它的出处**（哪次实测、哪个分位）。
-  4. 阈值定稿后回写 `docs/phase4_int8_plan.md` §4 与 `docs/phase4_test_plan.md` 的 R2.6，
+  4. 阈值定稿后回写 `docs/phase4_int8_plan.md` + PH4-INT8-CRITERIA 与 `docs/phase4_test_plan.md` 的 R2.6，
      并用**同一把尺子**重测一次 per-channel vs per-tensor（这对 §1.5 也是判据输入）。
 - **验收判据**：
   - 每个阈值旁边能回答"凭什么这么定"（本条目实测的分布 + 样本量 + 分层口径）；
@@ -296,12 +331,14 @@
 - **前置依赖**：**需要联网下载数据集**（`AGENTS.md` §0.2：联网操作必须另行单独获批）。
   未获批时可先做本条的"口径定义"部分（验收集规格 + meta 字段 + 分层统计脚本），不下载数据。
 - **不许做的事**：不许为了"绿"而调阈值或删断言（`AGENTS.md` §7）；不许把本条的阈值套到
-  FP16 / FP32 上（那是跨精度复用，见 `docs/PROGRESS.md` §2.14 A）。
-- **出处**：`docs/phase4_int8_plan.md` §4（判据表）/ §5（风险与回退）/ §7 的 P4-7-3 行；
+  FP16 / FP32 上（那是跨精度复用，见 `docs/PROGRESS.md` + DEC-EVIDENCE-DISCIPLINE A）。
+- **出处**：`docs/phase4_int8_plan.md` + PH4-INT8-CRITERIA（判据表）/ §5（风险与回退）/ §7 的 P4-7-3 行；
   `docs/TROUBLESHOOTING.md` #29.4 / #30.5。
 
 > **为什么拆成两条**：§1.5 是**仪器 / 机制**问题（第 1~3 步不依赖新数据），§1.6 是**判据 / 数据**
 > 问题（依赖联网）。两者共用一份验收集，但开工前提不同；合成一条会让"不联网就一步都动不了"。
+
+</details>
 
 ## 2. 性能优化
 
@@ -309,6 +346,9 @@
 
 - **优先级**：P2 → **不排期**（原 P1；2026-09-26 下调为 P2：收益未测、且现行设计已避开 decode
   循环内分配；2026-09-27 **已测（PF-5）→ 触发不成立**，见下表）
+
+<details><summary>展开：2.1 显存池替换简单封装 全文</summary>
+
 - **背景**：Phase 0 的 `DeviceBuffer` 仅封装 `cudaMalloc/cudaFree`，频繁分配有性能开销。
 - **触发条件（2026-09-27 已量，结论 = 不成立）**：原定"先量出分配开销确实显著"。**已量**——
   §11 的 **PF-5** 用 `summarize_nsys.py --api` 在真实 decode 上量到：全程 `cudaMalloc`
@@ -322,10 +362,15 @@
   - 支持按大小分桶、按 stream 隔离。
   - 替换 `DeviceBuffer` 内部实现，保持接口不变。
 
-### 2.2 FlashAttention / FlashDecoding
+</details>
+
+### 2.2 [OI-FLASHDECODING] FlashAttention / FlashDecoding
 
 - **优先级**：**P2**（2026-09-27 上调：触发条件**已由实测成立**——长上下文下 attention 占每步约 80%；
   原 P3 的理由"未量基线"已不成立。见下方"现状"）
+
+<details><summary>展开：2.2 [OI-FLASHDECODING] FlashAttention / FlashD 全文</summary>
+
 - **执行计划（2026-09-27 成文）**：开发计划见 `docs/future_iterations_development_plan.md` **§12**
   （计划对账 / 设计决策 D1~D5 / 任务分解 P2_2-0~9 / 验收判据 / 风险与回退 / 破坏性动作清单 /
   待拍板 F1~F4 / 真机清单），测试计划见 `docs/future_iterations_test_plan.md` **§11**
@@ -333,14 +378,16 @@
   **状态（2026-09-27 收口）：已交付。** 逐条对照见开发计划 §12.4——第 5 条拆成
   5A（斜率降幅，✅ **88.85%（PP-1）/ 88.20%（PP-2，两次复现）**）与
   5B（短上下文退化，**经作者决定改为观测项、不设判据**，实测 +1.877%，见下）。
-  已拍板 F1~F4 全按 A、§12.8 的 7 条破坏性动作全批；P2_2-1 ~ P2_2-7 已落盘
+  已拍板 F1~F4 全按 A、`future_iterations_development_plan.md` §12.8 的 7 条破坏性动作全批；P2_2-1 ~ P2_2-7 已落盘
   （`paged_attention_split.hpp` + 两个 kernel + 17 条新用例，含 PP-1/PP-2 两把同 session 尺子），
   沙箱 **259 条 / 0 失败**（**这是当时（2026-09-27 收口）的套件总数**；现为 **264**，
   多出的是 §1.5 的 2 条 host 自检 + 3 条 `Int8Probe*`，见 `PROGRESS.md` §3.0j），
   图版本已 bump 到 2。
   **真机验证（2026-09-27）**：交付时是 **259 条 / 1 红 / 1 跳过**（当时总数）；
   **同日整轮全量复跑：264 条 / 1 红 / 1 跳过**（449 s，`沙箱同为 264 / 0`），唯一红 = 按设计的
-  `RealGpt2Fp16GreedyMatchesReferenceTokens`（§5.11 的 FP16 NaN）、跳过 = `int8_crosscheck` 缺报告。
+  `RealGpt2Fp16GreedyMatchesReferenceTokens`（`PROGRESS.md` §5.11 的 FP16 NaN）、跳过 = `int8_crosscheck` 缺报告。
+  → **2026-09-27 复跑（provenance 改造成 `路径 + ID` 形式之后）：264 条 / 1 红 / 0 跳过 / 310 s**——
+  先跑 §8.3 的 C-1/C-2 产出报告后，`int8_crosscheck` 执行并通过。
   本轮的新用例**全部通过**：
   ① **FP32 多片**：`PagedAttentionSplitKernelTest.*`（MHA / GQA / MQA / batch>1 / 空片 /
      `context_len=0`）对 double 参考全绿 → **否证了"归并丢片（只算一部分上下文）"**；
@@ -363,7 +410,7 @@
   前两种给出相反结论（而 `max` 那个 12.29% 来自整轮第一档、机器未进稳态，锚点本身不可信）；
   ② 曾议的绝对线"≤2%"其唯一数值输入（单次发射 3~6 µs）**无出处**；③ PP-1（kernel 级推出
   +0.95%）与 PP-2（端到端实测 +1.877%）对同一笔代价差 **1.97× 且未解释**。
-  保留的观测记录：**+1.877%**，机制 = 每层多一次归并 kernel 发射（§12.3 D2 **在拿到数据前**
+  保留的观测记录：**+1.877%**，机制 = 每层多一次归并 kernel 发射（`future_iterations_development_plan.md` §12.3 D2 **在拿到数据前**
   已预估并接受该代价）；若将来要恢复成硬判据，走"**先量后定**"（先单独校出发射开销），
   **不要回头捡那个 2%**。完整账见 `TROUBLESHOOTING` **#45 / #45.1**。
   当前进度明细见开发计划 §12.4 的"执行状态"。
@@ -399,6 +446,8 @@
 - **验收判据**：形式见开发计划 **§12.6**（数值判据**不放宽**·语义不变·长上下文斜率下降），
   其中性能"达标线"的数值待开发计划 §12.9 的 **F1** 拍板；**拍板前只报观测值、不设阈值**。
 
+</details>
+
 ### 2.3 Continuous Batching / In-Flight Batching
 
 - **优先级**：P2
@@ -407,7 +456,7 @@
   - `LLMRunner` 支持多请求队列调度。
   - `PagedKVCache` 支持跨请求动态分配与回收。
 
-### 2.4 CV 动态分辨率
+### 2.4 [OI-CV-DYNAMIC-RES] CV 动态分辨率
 
 - **优先级**：P2
 - **背景**：Phase 0 CV 只支持动态 batch，后续需支持输入分辨率变化。
@@ -486,7 +535,7 @@
 
 ## 5. Tokenizer 扩展
 
-### 5.1 BPE Tokenizer（GPT-2 原生）
+### 5.1 [OI-BPE-TOKENIZER] BPE Tokenizer（GPT-2 原生）
 
 - **优先级**：**已完成**（2026-09-26 批次 A1 交付；原 P1）——交付内容与实测见 `PROGRESS.md` §3.0e，
   用例见 `future_iterations_test_plan.md` §2.1（含"文本 → prompt token"桥接用例）
@@ -532,10 +581,13 @@
   - 提供 PyTorch `torch.onnx.register_custom_op_symbolic` 示例。
   - 或提供 `torch.export` + custom decomposition 脚本。
 
-### 6.3 Nsight 一键 Profile Target
+### 6.3 [OI-NSIGHT-TARGET] Nsight 一键 Profile Target
 
 - **优先级**：**已交付**（2026-09-27；原 P2，理由与状态见 §0.1 与开发计划 **§11.5.2**）
 - **内容**：
+
+<details><summary>展开：6.3 [OI-NSIGHT-TARGET] Nsight 一键 Profile Targe 全文</summary>
+
   - CMake 增加 `profile_gpt2`、`profile_resnet18` 自定义 target。
   - 支持 `nsys profile` 与 `ncu` 导出 `.ncu-rep`。
 - **交付情况（2026-09-27）**：四个 target（`profile_{gpt2,resnet18}[_ncu]`）+ 一键脚本
@@ -551,6 +603,8 @@
 
   > **更正记录（2026-09-27）**：本条本日早些时候加的一句"无头导出（`-o`）+ 宿主机 GUI 是主路径"
   > 已按上条实测**作废**——那份报告里没有 GPU 数据，换查看器救不了（#41）。
+
+</details>
 
 ### 6.4 CI / 自动化测试
 
@@ -596,7 +650,7 @@
 
 ---
 
-## 9. Phase 1 明确延后的能力
+## 9. [OI-PHASE1-DEFERRED] Phase 1 明确延后的能力
 
 以下三项在 Phase 1 实现算子层时**有意**未做，属于"能力延后"而非"漏项"，故从 `docs/PROGRESS.md`
 的下一步计划中迁出、归档到这里。
@@ -615,22 +669,25 @@
   Phase 2 / Phase 3 / Phase 4 全程都是双引擎路径。本条转为冻结备查，
   只有将来真要做"单引擎含 Prefill"时才需要重新评估。
 
-### 9.2 Sampler 的手写高性能 kernel
+### 9.2 [OI-SAMPLER-KERNEL] Sampler 的手写高性能 kernel
 
 - **计划（2026-09-26 成文）**：开发计划见 `docs/future_iterations_development_plan.md` **§10**、
   测试计划见 `docs/future_iterations_test_plan.md` **§9**（含计划对账 / 任务分解 P9_2-0~8 / 验收判据 /
+
+<details><summary>展开：9.2 [OI-SAMPLER-KERNEL] Sampler 的手写高性能 kernel 全文</summary>
+
   破坏性动作预告 / 真机清单）。
   **状态（2026-09-27 收口）：P9_2-0 ~ P9_2-8 全部落地**——
   - **Top-P（P9_2-5，主要收益）**：保留 CUB 排序、把行内数学块内并行；**真机全量 235 条 / 1 红**
-    （唯一红 = 按设计的 GPT-2 FP16 NaN）；**性能对 §10.5 冻结基线 4/4 达标（13.0 / 18.9 / 13.4 / 15.0 ×）**，
+    （唯一红 = 按设计的 GPT-2 FP16 NaN）；**性能对 `future_iterations_development_plan.md` §10.5 冻结基线 4/4 达标（13.0 / 18.9 / 13.4 / 15.0 ×）**，
     同 session 口径 `50257×1 = 9.99×`（差 0.08%，机制已定位 = 收尾段串行重扫的延迟）→
     剩余部分记作可选优化 **P9_2-5b**（见 §11）。
   - **Top-K 快速路径（P9_2-2~4）**：正确性真机通过（与 legacy 逐 token 相同），但**性能不达标**
     （慢 6~9×）→ **已从生产路径撤下**，库内保留待重做（根因与重做方向见开发计划 §10.10）。
   - **判据缺口（P9_2-6/7）**：FP16（S-12/S-13）与大词表（S-14/S-15）覆盖补齐，
     **`§11` 的 P1.5-a 据此关闭**。
-  数据与出处：`docs/future_iterations_development_plan.md` §10.5（基线）/ §10.9.1（复测与两个口径）/
-  `docs/TROUBLESHOOTING.md` #35（性能归因）、#36（一条判据红的定位）。
+  数据与出处：`docs/future_iterations_development_plan.md` + OI-SAMPLER-KERNEL-ACCEPTANCE（基线）/ §10.9.1（复测与两个口径）/
+  `docs/TROUBLESHOOTING.md` + TS-035（性能归因）、#36（一条判据红的定位）。
 - **优先级**：**已关闭 / 已交付**（2026-09-27；原 P1 → P2 → 已交付）。
   **下调时给的触发条件（"profile 从未做过"）已经补上**：sampler 在整步 decode 里的占比
   已由 PF-8 在同 session 内量出并与 `SamplerPerf` 互校一致（greedy **1.25%** /
@@ -644,7 +701,9 @@
   `docs/PROGRESS.md` §3.0d 记录的性能数字只有 `CVRunner` 的 benchmark（`mean≈8.4 ms`），
   没有任何 decode 阶段的 sampler 占比。触发条件"未验证"不等于"已成立"，故不能按 P1 对待。
 
-### 9.3 采样器参考数据固化为数据文件
+</details>
+
+### 9.3 [OI-SAMPLER-REFDATA] 采样器参考数据固化为数据文件
 
 - **优先级**：P2
 - **背景**：D3 要求 Generation 层"对比分布"。Phase 1 已落地两件事：C++ 侧的统计检验
@@ -659,11 +718,14 @@
 
 ## 10. Phase 3 明确延后的能力
 
-### 10.1 ONNX 路径与原生路径的 I/O 契约统一
+### 10.1 [OI-IO-CONTRACT] ONNX 路径与原生路径的 I/O 契约统一
 
 - **优先级**：P2（2026-09-26 补标签：原文漏标；触发条件 = ONNX 路径要接进 `LLMRunner`，见 §0.1）
 
-**现状**（`docs/TROUBLESHOOTING.md` #17）：两条路的输入契约不一致——
+
+<details><summary>展开：10.1 [OI-IO-CONTRACT] ONNX 路径与原生路径的 I/O 契约统一 全文</summary>
+
+**现状**（`docs/TROUBLESHOOTING.md` + TS-017）：两条路的输入契约不一致——
 
 | | 输入张量 | 类型 |
 |---|---|---|
@@ -680,10 +742,15 @@
 **判定依据**：先做前者（Cast）即可让 dtype 一致；是否需要后者，取决于将来是否要把
 ONNX 路径接进 `LLMRunner`（`docs/phase3_development_plan.md` D3 已明确本阶段不做）。
 
-### 10.2 ONNX 图的子图替换（D1=B）
+</details>
+
+### 10.2 [OI-ONNX-SUBGRAPH] ONNX 图的子图替换（D1=B）
 
 - **优先级**：P3（2026-09-26 补标签：原文漏标）。**前置已变更（2026-09-27）**：
   原先写的是"前提取决于缺口 G6 的可复现测量方法"——**测量方法已经就绪**（§11 已关闭，
+
+<details><summary>展开：10.2 [OI-ONNX-SUBGRAPH] ONNX 图的子图替换（D1=B） 全文</summary>
+
   交付了协议 + 工具链），所以真正还缺的是**跑一次 PF-7**（ONNX vs 原生 prefill，
   同 session ≥3 次构建 / ≥20 次推理，报中位数与极差）。PF-7 原本挂在 §11 的收口范围里，
   因为它服务的是本条、而非"decode 时间花在哪"，已于 2026-09-27 移交到这里。
@@ -692,7 +759,7 @@ ONNX 路径接进 `LLMRunner`（`docs/phase3_development_plan.md` D3 已明确�
 **为什么现在还不能判断**（**已修正**：本条原先写的是"ONNX 慢约 22%、故替换无收益"，
 那是从**单次测量**里读出的结论，已被后续运行推翻）：
 
-Phase 3 的两次测量方向相反（`docs/phase3_test_plan.md` §3.1）：
+Phase 3 的两次测量方向相反（`docs/phase3_test_plan.md` + PH3-L3-MEASUREMENTS）：
 
 | 运行 | prefill(4 token) ONNX / 原生 |
 |---|---|
@@ -711,7 +778,9 @@ PF-7 是它的正例，见测试计划 §10.2）。
 它是"图变了要知道"的护栏（含 `absent_ops`：RMSNorm / RoPE / Attention 等一旦出现，
 说明模型或导出路径变了，需要重审结论）。
 
-## 11. 测试覆盖缺口索引（默认不排期，按触发条件决定；已立项的在 §1 / §2）
+</details>
+
+## 11. [OI-COVERAGE-GAPS] 测试覆盖缺口索引（默认不排期，按触发条件决定；已立项的在 §1 / §2）
 
 **说明**：本节**只做索引**，不复制细节——缺口的事实与背景在各阶段的测试计划 / 故障记录里
 （`docs/PROGRESS.md` §2.13「唯一来源」原则）。放在这里的原因：缺口若只留在已过阶段的文档里，

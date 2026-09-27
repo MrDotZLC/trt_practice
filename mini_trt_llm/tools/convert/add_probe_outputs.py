@@ -13,7 +13,7 @@ Q/DQ，再顺手加探针输出"，探针图与产物图就绑在**两次独立�
 **每个 Conv 的原始输出**——也就是它后面那对 `QuantizeLinear` / `DequantizeLinear` 里 `QuantizeLinear`
 的**输入**那个张量。为什么必须是量化前：量化台阶（本图 conv1 是 `0.0796`）会把 FP32 kernel 的
 正常差异（`1e-3` 量级）在桶边界附近放大成 **±1 格**，噪声与待查信号同量级
-（`docs/TROUBLESHOOTING.md` #30.5 / #30.6 已实测）。量化前张量的量级就是 `1e-3`，可直接判读。
+（`docs/TROUBLESHOOTING.md` + TS-030-LAYERWISE-PROBE / TS-030-CLOSURE 已实测）。量化前张量的量级就是 `1e-3`，可直接判读。
 
 再加 `GlobalAveragePool` 的输出（#30.3 第 2 条点名要覆盖的 "GAP + fc" 段的入口）。
 残差 `Add` / `Relu` 的输出**不另挂**：`Add` 是已探两个张量的线性组合、`Relu` 是逐元素裁剪，

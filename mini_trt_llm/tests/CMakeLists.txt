@@ -47,7 +47,7 @@ endif()
 #
 # 为什么进 ctest：转换脚本里有 5 道自检（拒绝未消费的 initializer / 拒绝不支持的带权算子 /
 # 拒绝逻辑名冲突 / 拒绝形状不自洽 / 拒绝缺 fc）。**护栏没有用例证明"它会拦人"就等于没有护栏**——
-# 这个项目已经吃过"声明了却没人核对"的亏（见 docs/phase3_test_plan.md §5 的 G1c）。
+# 这个项目已经吃过"声明了却没人核对"的亏（见 docs/phase3_test_plan.md + PH3-GAPS 的 G1c）。
 # 自检把真模型按 5 种方式改坏，逐个确认每道护栏都会拦。
 #
 # 环境语义：缺 Python / 缺 onnx 包 / 缺 resnet18.onnx 时**跳过**（返回 77），不是失败
@@ -69,7 +69,7 @@ endif()
 # 为什么进 ctest：`int8_eval.py` 里有 7 道护栏（缺 provenance / 标定集重叠 /
 # 类型错 / 清单 sha256 不符 / logits 大小不符 / 只报率不报 n / 率与分子分母不自洽），
 # 外加分层数学的自证。**护栏没有用例证明"它会拦人"就等于没有护栏**——同
-# resnet18_convert_selftest 的理由（docs/phase3_test_plan.md §5 的 G1c）。
+# resnet18_convert_selftest 的理由（docs/phase3_test_plan.md + PH3-GAPS 的 G1c）。
 #
 # 环境语义：不需要 GPU，也不需要任何外部数据（自造合成 fixture）→ 沙箱即可跑，
 # 因此**不用** SKIP_RETURN_CODE：它没跑起来就是真问题，不是"缺环境"。
@@ -127,7 +127,7 @@ endif()
 #
 # 环境语义：两份报告都在真机上才会产生（C++ 侧要 GPU 跑引擎，Python 侧要读那批 logits），
 # **缺报告 → 77 跳过**。跳过不是"通过"：真机执行清单里要求先跑 dump 用例、再跑脚本、
-# 最后跑这一条（顺序见 docs/future_iterations_development_plan.md §9）。
+# 最后跑这一条（顺序见 docs/future_iterations_development_plan.md + OI-RUNBOOK-RESULTS）。
 # ---------------------------------------------------------------------------
 if(Python3_Interpreter_FOUND)
     add_test(NAME int8_crosscheck

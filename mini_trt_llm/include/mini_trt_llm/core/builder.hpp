@@ -45,7 +45,7 @@ class EngineBuilder {
         // opt 取 8（而不是 1）：TRT 针对 kOPT 形状挑最快 kernel，"越接近 kOPT 性能越好"。
         // 历史工程 0_resnet18_onnx/src/builder.cpp 用的就是 min/opt/max = 1/8/16，
         // 沿用 1 会让 batch ≥ 2 的推理走非最优 kernel、性能结论失真。
-        // 见 docs/phase4_development_plan.md §3.5。
+        // 见 docs/phase4_development_plan.md + PH4-CV-PROFILE。
         int min_batch = 1;
         int opt_batch = 8;
         int max_batch = 16;
@@ -78,7 +78,7 @@ class EngineBuilder {
         // **为什么需要它**：`IEngineInspector::getLayerInformation` 在默认的
         // `kLAYER_NAMES_ONLY` 下**只返回层名**，读不出每层的实际精度——那就无法证明
         // "这个引擎真的在跑 INT8"（而不是静默回落 FP16/FP32）。实测与结论见
-        // docs/phase4_int8_plan.md §1.3 的 S3。
+        // docs/phase4_int8_plan.md + PH4-INT8-TOOLCHAIN 的 S3。
         // 默认关的理由：它会增加引擎体积与构建时间，只有"需要自证精度"的场合才开。
         bool detailed_profiling = false;
     };
@@ -133,7 +133,7 @@ class EngineBuilder {
 
     // 写引擎 + 写它的构建指纹 sidecar（`<engine>.fingerprint`）。
     // 指纹必须**随引擎一起落盘**：只有引擎没有指纹时，下次运行无法判断它是否同代
-    // （见 core/engine_cache.hpp 的说明与 docs/TROUBLESHOOTING.md #34）。
+    // （见 core/engine_cache.hpp 的说明与 docs/TROUBLESHOOTING.md + TS-034）。
     bool SerializeAndSave(nvinfer1::IHostMemory* serialized,
                           const std::string& engine_path,
                           const std::string& fingerprint,

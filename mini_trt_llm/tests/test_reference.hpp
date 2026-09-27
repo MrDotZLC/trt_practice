@@ -17,7 +17,7 @@ inline float DeterministicValue(int64_t index) {
 
 // 前置声明：CpuRmsNorm 只是浮点入参的薄封装，唯一实现在下面。
 // 之所以这样组织而不是各写一份：同一算子的两份参考实现必然漂移，
-// 这一点在 RoPE 上已经踩过一次（见 docs/TROUBLESHOOTING.md #9）。
+// 这一点在 RoPE 上已经踩过一次（见 docs/TROUBLESHOOTING.md + TS-009）。
 inline void ReferenceRmsNorm(const std::vector<double>& input,
                              const std::vector<double>& weight, int32_t rows,
                              int32_t hidden, double eps, std::vector<double>* output);
@@ -52,7 +52,7 @@ inline bool WithinTolerance(float reference, float actual, float rel_tol, float 
 //
 // 为什么强调这一点：曾经有一版 ReferenceRoPE 没有 batch 维度，调用方传入
 // batch*seq_len 个位置却只用了前 seq_len 个——编译不报错、运行不报错，
-// 直到真机数值对不上才暴露，白白浪费一次真机往返（见 docs/TROUBLESHOOTING.md #9）。
+// 直到真机数值对不上才暴露，白白浪费一次真机往返（见 docs/TROUBLESHOOTING.md + TS-009）。
 // -----------------------------------------------------------------------------
 
 inline void ReferenceRmsNorm(const std::vector<double>& input,

@@ -57,7 +57,7 @@ std::string Int8EnginePath() {
 const char* const kFp32Engine = "/tmp/mini_trt_llm_resnet18_onnx_fp32.engine";
 const char* const kNativeFp32Engine = "/tmp/mini_trt_llm_resnet18_native_fp32.engine";
 
-// R2.6 的判据（见 docs/phase4_int8_plan.md §4）：**分输入集**，因为 INT8 的固有误差比 FP16 大得多。
+// R2.6 的判据（见 docs/phase4_int8_plan.md + PH4-INT8-CRITERIA）：**分输入集**，因为 INT8 的固有误差比 FP16 大得多。
 //
 // 出处（2026-09-26 实测，先测后定）：
 //   · ramp 输入（合成、确定性、与 legacy 同年口径）：argmax 必须**全一致**；
@@ -121,7 +121,7 @@ EngineBuilder::Config Fp32Config() {
 
 // 建（或用缓存）Q/DQ 的 INT8 引擎。
 // 这里**不自己判断"文件在不在"**：缓存的复用/失效由 `EngineBuilder` 的构建指纹统一决定
-// （见 core/engine_cache.hpp 与 docs/TROUBLESHOOTING.md #34）——测试各自判断存在性正是
+// （见 core/engine_cache.hpp 与 docs/TROUBLESHOOTING.md + TS-034）——测试各自判断存在性正是
 // "缓存不随代码失效"那个老坑的来源。
 void EnsureInt8Engine(EngineBuilder* builder, const std::string& model_dir,
                       const std::string& qdq_onnx) {
@@ -250,7 +250,7 @@ TEST(ResNet18Int8EngineTest, IsActuallyInt8) {
 // 实测 per-channel 权重下 argmax 8/8 不一致、per-tensor 下 0/8。所以它**不能当判据**
 // （既不能要求"必须一致"，也不能假定"必然不一致"），只能记录实测值。
 // FP16/FP32 没有"标定范围"约束，所以它们能用 ramp 判；INT8 不行。
-// 详见 docs/TROUBLESHOOTING.md §29.3。
+// 详见 docs/TROUBLESHOOTING.md + TS-029-RAMP-CRITERIA。
 //
 // 这条用例保留下来做两件事：① 对照组——FP32 引擎在 ramp 上必须仍与基线一致；
 // ② 记录 INT8 在分布外输入上的退化量（供将来决定"要不要对输入做分布检查"）。
@@ -600,7 +600,7 @@ TEST(ResNet18Int8AccuracyTest, DumpsLogitsAndCppReportForCrossCheck) {
         thresholds["confident_margin"] = JsonValue(static_cast<double>(kConfidentMargin));
         thresholds["bucket_edges"] = JsonValue(JsonValue::Array{
             JsonValue(1.0), JsonValue(2.0), JsonValue(5.0), JsonValue(10.0)});
-        thresholds["provenance"] = JsonValue("tests/test_resnet18_int8.cpp + docs/phase4_int8_plan.md §4");
+        thresholds["provenance"] = JsonValue("tests/test_resnet18_int8.cpp + docs/phase4_int8_plan.md + PH4-INT8-CRITERIA");
         report["thresholds"] = JsonValue(thresholds);
 
         JsonValue::Object overall;

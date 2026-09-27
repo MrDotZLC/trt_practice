@@ -384,7 +384,7 @@ def saturation_stats(model: onnx.ModelProto) -> Dict[str, object]:
     （per-channel 就是每个输出通道一个）。若被 clamp 的比例远高于这个数，说明 scale **偏小**——
     而 scale 偏小的典型来源正是"拿另一张张量的 max 当尺子"（P4-INT8-a 的根因）。
 
-    实测（`docs/TROUBLESHOOTING.md` #46）：错源 16.19% / 改源 **0.044%** / per-tensor 产物 3.92%。
+    实测（`docs/TROUBLESHOOTING.md` + TS-046）：错源 16.19% / 改源 **0.044%** / per-tensor 产物 3.92%。
     本函数只**报数**不做断言——"多少算高"没有普适阈值，而这条数字配 #46.2 那张表足以一眼判断。
     """
     saturated = total = channels_saturated = channels = 0
@@ -522,7 +522,7 @@ def main() -> None:
                              "**per-channel 更差的根因已于 2026-09-27 定位**——它配合默认的 "
                              "`--weight-range-source torchvision` 会拿**未折 BN** 的权重算 scale、"
                              "却量化**已折 BN** 的权重；改用 `--weight-range-source onnx` 后 per-channel "
-                             "的余量子集一致率回到 100%（见 docs/TROUBLESHOOTING.md #46）。"
+                             "的余量子集一致率回到 100%（见 docs/TROUBLESHOOTING.md + TS-046）。"
                              "**默认仍保持 per_tensor + torchvision 源**（= 现有正式产物，逐字节不变）")
     parser.add_argument("--weight-range-source", choices=["torchvision", "onnx"],
                         default="torchvision",
@@ -530,7 +530,7 @@ def main() -> None:
                              "torchvision 模型，而 Q/DQ 插在已折 BN 的 ONNX 权重上——**两者不是同一个"
                              "张量**）；`onnx` = 从 ONNX 图里 Conv 实际用的权重上取（**与插入对象一致**）。"
                              "**默认保持 torchvision 以维持正式产物逐位不变**；P4-INT8-a 的根因正是这个"
-                             "不一致（见 docs/TROUBLESHOOTING.md #46 与本函数上方 onnx_weight_ranges 的说明）")
+                             "不一致（见 docs/TROUBLESHOOTING.md + TS-046 与本函数上方 onnx_weight_ranges 的说明）")
     parser.add_argument("--skip-fake-quant", action="store_true")
     parser.add_argument("--fake-quant-images", type=int, default=32,
                         help="fake-quant 预检用多少张图（默认 32）。**别只看这 8 张就下结论**——"
@@ -554,7 +554,7 @@ def main() -> None:
     # **来源自检（P4-INT8-a 的根因护栏）**：算 scale 的那张张量，必须就是**被量化那张**。
     # 两者形状/数值不一致 = "尺子量 A、裁剪 B"——per-tensor 只会整体偏，per-channel 会逐通道错配
     # （系数 >1 的通道直接 clamp 饱和）。这里只**报**不拦：默认路径（torchvision）历史产物必须
-    # 还能逐位复现，是否切换默认要作者拍板（见 docs/TROUBLESHOOTING.md #46.4）。
+    # 还能逐位复现，是否切换默认要作者拍板（见 docs/TROUBLESHOOTING.md + TS-046-IMPACT）。
     mismatch_layers = []
     worst_mismatch = 0.0
     for name, tensor in weights.items():
@@ -616,7 +616,7 @@ def main() -> None:
     if mismatch_layers:
         print(f"  [WARN] scale 的来源与量化对象**不是同一张张量**：{len(mismatch_layers)} 层不一致，"
               f"最大相对差 {worst_mismatch:.4g}")
-        print(f"         → 这正是 P4-INT8-a 的根因（docs/TROUBLESHOOTING.md #46）；"
+        print(f"         → 这正是 P4-INT8-a 的根因（docs/TROUBLESHOOTING.md + TS-046）；"
               f"加 --weight-range-source onnx 可修")
         print(f"  [WARN] 因此本产物**带有 #46 那个缺陷**：它的身份是「**#46 的复现样本**」，"
               f"**不是候选基线**。")

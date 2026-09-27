@@ -398,7 +398,7 @@ TEST(Gpt2GenerateTest, RealGpt2Fp16GreedyMatchesReferenceTokens) {
     // （入口自己比指纹 → `Engine cache hit` 或 `stale`+重建），"文件存在"不等于
     // "引擎还新鲜"。曾经这里有 `if (!exists) {...}` 的门：引擎文件在、但代码或配置
     // 已变时，用例会**安静地拿旧引擎跑**，结论全部作废——那正是指纹要堵的坑。
-    // 见 `docs/TROUBLESHOOTING.md` #40 与 `PROGRESS.md` §3.0f。
+    // 见 `docs/TROUBLESHOOTING.md` + TS-040 与 `PROGRESS.md` + DEC-ENGINE-FINGERPRINT。
     ASSERT_TRUE(builder.BuildFromConfig(dir, prefill_path, BuildStage::kPrefill))
         << "FP16 prefill 引擎构建失败";
     ASSERT_TRUE(builder.BuildFromConfig(dir, decode_path, BuildStage::kDecode))
@@ -592,7 +592,7 @@ TEST(BpeTokenizerWithRunnerTest, TextPromptMatchesReferenceTokens) {
 //
 // 第 3 段的期望文本出处：本机 HF `GPT2TokenizerFast.decode([464, 2068, 7586, 21831, 274, 389,
 // 257, 1049, 835, 284, 651, 257])` 的实测输出（transformers 4.44.0，离线 local_files_only），
-// 命令与结果见 docs/future_iterations_test_plan.md §2.1 的 B 项说明。
+// 命令与结果见 docs/future_iterations_test_plan.md + OI-BPE-TOKENIZER-TESTS 的 B 项说明。
 constexpr const char* kExpectedFullText = "The quick brown foxes are a great way to get a";
 
 TEST(Gpt2GenerateTest, RealGpt2TextPromptEndToEnd) {
