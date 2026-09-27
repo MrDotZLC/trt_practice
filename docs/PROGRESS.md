@@ -1088,16 +1088,18 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 
 - 当前状态（2026-09-27 实测，含 Phase 4 + 批次 A/B/C + `future_iterations.md` §9.2 采样器迭代 + §3.0h 性能画像基建
   + §3.0i 的 §2.2 split-K + **§3.0j 的 `future_iterations.md` §1.5 仪器**）：
-  沙箱内 `ctest` **264 个用例，0 失败**（GPU / P 层用例在沙箱显式跳过）。
+  沙箱内 `ctest` **265 个用例，0 失败**（GPU / P 层用例在沙箱显式跳过）。
   **演进**：242（§3.0h 的 8 项）→ **259**（§3.0i 的 17 项：H 8 + G 7 + P 2）→ **264**
-  （§3.0j 的 5 项：2 条 host 自检 + 3 条 GPU 用例）。
+  （§3.0j 的 5 项：2 条 host 自检 + 3 条 GPU 用例）→ **265**
+  （`EngineCacheTest.SourceFileIdentityIgnoresPathSpelling`，见 `TS-048`）。
   host 侧含 `onnx_graph_probe`、`GpuEnvProbe`、`int8_eval_selftest`、`tokenizer_golden_check`、
   `int8_crosscheck_selftest`、`ArgmaxCriterion*`（6 条）、`EngineCacheTest*`（5 条）、批次 A 的 16 条、
   P9_2-5/5b 的 `NucleusCutoffTest.*` 与 `SamplerReferenceTest.*`、§3.0h 的 5 条 `PerfStatsTest.*`
   与 `profile_summary_selftest`、**§3.0j 的 `qdq_reference_selftest` / `add_probe_outputs_selftest`**。
   真机（`MINI_TRT_REQUIRE_GPU=1`）**整轮全量：2026-09-27 复跑，264 条 / 1 红 / 0 跳过 / 310 s**
-  （**唯一的红 = GPT-2 FP16 NaN 复现器，按设计**，§5.11；`int8_crosscheck` 报告齐备 → Passed）。
-  **沙箱同为 264 条 / 0 失败**——两边总数相同，差别只在 GPU 用例是跑还是跳过。
+  （该次复跑的数；**真机总数随新增的那 1 条变为 265，待下一次真机整轮确认**——未跑过的不写"通过"。
+  **唯一的红 = GPT-2 FP16 NaN 复现器，按设计**，§5.11；`int8_crosscheck` 报告齐备 → Passed）。
+  **沙箱为 265 条 / 0 失败**（原 264 + 上面那条 TS-048 用例）——两边总数相同，差别只在 GPU 用例是跑还是跳过。
   §3.0i 新增的 17 项**全部真机通过**（含 split-K 的数值/性能用例）；§3.0j 新增的 3 条 GPU 用例
   也已随整轮通过（此前按 filter 跑过两遍，见 §3.0j）。
   上一轮跳过的只有 `int8_crosscheck`——那是按"先全量、后跑 C"的顺序做、缺报告 → 77；**跳过 ≠ 通过**。

@@ -35,7 +35,9 @@ cmake --build build -j$(nproc) && ctest --test-dir build
 MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 ```
 
-**当前基线（2026-09-27 复跑）**：**沙箱 264 条 / 0 失败；真机整轮全量 264 条 / 1 红 / 0 跳过 / 310 s**
+**当前基线（2026-09-27 复跑为基础）**：**沙箱 265 条 / 0 失败**（该次复跑为 264，其后新增
+`EngineCacheTest.SourceFileIdentityIgnoresPathSpelling`，见 `TS-048`）；**真机整轮全量 264 条 /
+1 红 / 0 跳过 / 310 s**（该次复跑的数）——**真机总数随之为 265，待下一次真机整轮确认**。
 （红 = 按设计的 `RealGpt2Fp16GreedyMatchesReferenceTokens`，见 `docs/PROGRESS.md` §5.11；
 `int8_crosscheck` 报告齐备 → Passed，只在缺报告时按设计跳过 77）。
 两边**总数相同**，差别只在 GPU 用例是跑还是跳过。
