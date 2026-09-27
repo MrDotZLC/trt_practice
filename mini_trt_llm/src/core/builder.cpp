@@ -28,7 +28,13 @@ namespace {
 // 于是采用"约定 + 指纹里的其他项兜底"：配置、精度、源文件身份、TRT/CUDA 版本都是自动的，
 // 只有"图代码本身的代次"需要人手动声明。忘记 +1 的后果是复用旧引擎——这与本功能之前的行为等价，
 // 不会比现状更差。
-constexpr int32_t kEngineGraphVersion = 1;
+//
+// **1 → 2（2026-09-27）**：`PagedAttentionPlugin` 的 `getWorkspaceSize` 从 0 变成正数
+// （decode 注意力改成上下文维切开 + 两阶段归约），插件版本也提到 "2"。
+// 旧引擎是在"这个插件不需要 workspace"的前提下建的，复用它会**往 0 字节缓冲里写**——
+// 而指纹默认看不见插件源码的变化（它只看模型/配置的 size+mtime），所以这里必须手工声明代次
+// （开发计划 §12.8 第 1 条）。副作用是下次真机第一次会重建全部引擎（分钟级），那是预期的。
+constexpr int32_t kEngineGraphVersion = 2;
 
 const char* StageName(BuildStage stage) {
     switch (stage) {

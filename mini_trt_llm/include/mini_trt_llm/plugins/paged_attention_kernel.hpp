@@ -2,6 +2,7 @@
 
 #include <cuda_runtime_api.h>
 
+#include <cstddef>
 #include <cstdint>
 
 namespace mini_trt_llm {
@@ -50,5 +51,28 @@ struct PagedAttentionKernelArgs {
 // 启动 Decoding 阶段的 PagedAttention kernel。
 // 返回 cudaGetLastError() 的结果，便于插件侧转成错误码而不抛异常。
 cudaError_t LaunchPagedAttention(const PagedAttentionKernelArgs& args, cudaStream_t stream);
+
+// 启动 split-K 版本的 Decoding PagedAttention（上下文维切开 + 两阶段归约）。
+//
+// `workspace` 由调用方（插件）按 `getWorkspaceSize()` 预留，尺寸契约 =
+// `PagedAttentionWorkspaceBytes(batch_size, num_heads, head_size, kPagedAttentionMaxSplits)`
+// ——布局与入参校验都走 `paged_attention_split.hpp` 里那一份实现，这里不重复算。
+//
+// 与单趟版本的**语义完全相同**（同一份 online softmax，只是累加顺序不同）；
+// 保留单趟版本一是为了 `num_splits` 目标下的 A/B（同二进制、同 session 对比），
+// 二是当 workspace 不可用时的兜底路径（见 `PagedAttentionPlugin::enqueue`）。
+cudaError_t LaunchPagedAttentionSplit(const PagedAttentionKernelArgs& args, void* workspace,
+                                      size_t workspace_bytes, cudaStream_t stream);
+
+// 测试用：分片数覆盖。**不是产品开关**——它给三类用法：
+//   ① `> 0`：强制该片数（钳到上限）——用于同轮 A/B 的"多片"档，以及制造空分片的边界用例；
+//   ② `0`：按上下文自适应（生产默认）；
+//   ③ `< 0`：**强制走旧单趟 kernel**——插件的 `enqueue` 会绕过 split 路径、直接调
+//      `LaunchPagedAttention`。这是"同二进制、同 session 对比两版实现"的开关
+//      （`TROUBLESHOOTING` #37/#38：跨 session 的差值不可直接比）。
+// 进程级、非线程安全，仅测试使用；用完必须复位为 0（`tests/paged_attention_test_support.hpp`
+// 的 RAII 守卫就是干这个的）。
+void SetPagedAttentionNumSplitsOverride(int32_t splits) noexcept;
+int32_t PagedAttentionNumSplitsOverride() noexcept;
 
 }  // namespace mini_trt_llm

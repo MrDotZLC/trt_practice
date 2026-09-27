@@ -13,7 +13,11 @@
 namespace mini_trt_llm {
 
 inline constexpr char kPagedAttentionPluginName[] = "MiniTrtLlmPagedAttention";
-inline constexpr char kPagedAttentionPluginVersion[] = "1";
+// **版本 1 → 2（2026-09-27）**：decode 阶段的注意力改成"上下文维切开 + 两阶段归约"，
+// 并且**开始需要 workspace**（`getWorkspaceSize` 从 0 变成正数，见 paged_attention_split.hpp）。
+// 旧引擎记录的 workspace 需求是 0，复用它会变成"往 0 字节缓冲里写" → 非法访存。
+// 提版本让旧引擎在反序列化阶段就直接失败，而不是在运行时炸（开发计划 §12.8 第 2 条）。
+inline constexpr char kPagedAttentionPluginVersion[] = "2";
 
 // PagedAttention，Phase 1 只实现 Decoding 阶段（query 序列长度为 1）。
 //

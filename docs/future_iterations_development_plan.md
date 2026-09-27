@@ -49,6 +49,14 @@
   **两个**文件"这个接口事实，而 `BaseTokenizer::Load` 只有一个路径参数（见 §2.1 的 F2）。
   已在该条目补"接口事实"一行（入参语义 = 目录，不改基类）。这不是矛盾，是缺口——
   但它属于"下个会话照文档做就一定会卡住"的那类缺口，所以当场补而不是留给执行时。
+- **【已修，2026-09-27，§2.2 立项时】** `future_iterations.md` §2.2 的"支持 decode 阶段的
+  batching 优化"与代码现状矛盾——`PagedAttentionDecodeKernel` 的 `grid.y = batch_size`，
+  kernel **本来就支持任意 batch**（`PagedAttentionKernelTest.MhaMatchesCpuReferenceAcrossMultipleBlocks`
+  已覆盖 `batch=2`）；把 batch 卡在 1 的是 `LLMRunner`（缺口 G2-3，属 §2.3）。该句已作废，
+  本条范围收敛为"只做上下文维 split-K"。详见 **§12.1**。
+- **【已登记，未改代码，2026-09-27】** `tests/test_paged_attention_plugin.cpp` 的主判据阈值
+  `1e-4f / 1e-5f` **旁边没有出处**（`AGENTS.md` §7 要求写清出处）→ §2.2 只补出处、不放宽；
+  出处待作者确认。详见 **§12.1**。
 
 ### 0.5 需要你拍板的决策（F1～F4）
 
@@ -1329,6 +1337,318 @@ nsys profile --stats=true -o /tmp/mini_trt_llm_profiles/gpt2_decode \
 - **每轮只改一个变量**（`PROGRESS.md` §2.14 C）；
 - **真机跑全量仍要带 `MINI_TRT_REQUIRE_GPU=1`**；
 - 报告先落 `/tmp`，确认无敏感信息再谈是否入库。
+
+---
+
+## 12. §2.2 长上下文 attention：FlashDecoding 式 split-K（开发计划）
+
+> 条目事实来源：`docs/future_iterations.md` **§2.2**（是什么 / 为什么 / 触发条件）。
+> 本节的唯一职责：**改哪些文件、分几步、每步怎么自检、哪一步要作者批**。
+> 配套测试计划：`future_iterations_test_plan.md` **§11**。
+> **状态：计划已产出、未开工。** 按 `AGENTS.md` §0.7，本文件**不构成开工许可**——
+> 开工需作者点名到具体任务号（P2_2-0 ~ P2_2-9）。
+> 沿用 §11 的分工：本节不复制 §2.2 的事实与实测值，只写执行安排。
+
+### 12.1 计划对账（AGENTS.md §5 第 0 步）
+
+**1) 有没有计划文档**：此前**没有**。§2.2 只有两行"工作内容"级描述，没有文件级改动面、
+没有步序、没有验收判据 → 属于"没有执行计划"。本节 + 测试计划 §11 就是补上的那一份。
+
+**2) 是否一致**（逐条对照 §2.2 原文）：
+
+| §2.2 原文 | 现状核实 | 一致？ |
+|---|---|---|
+| "在 `PagedAttentionPlugin` 中把**上下文维**切成多个 block 并行，再做两阶段 softmax 归约" | 现状是 `grid=(num_heads, batch)`、每块 64 线程串行走完 `total_len`（`paged_attention_plugin.cu`）；改动方向与此一致 | ✅ 一致 |
+| "支持 decode 阶段的 batching 优化（与 `G2-3` 的 batch 扩展一起考虑更省事）" | **有偏差**：`PagedAttentionDecodeKernel` 的 `grid.y = args.batch_size`，**kernel 本来就支持任意 batch**，`PagedAttentionKernelTest.MhaMatchesCpuReferenceAcrossMultipleBlocks` 已覆盖 `batch=2`；真正把 batch 卡在 1 的是 `LLMRunner`（缺口 **G2-3**，属 §2.3） | ❌ **偏差** → 按 3) 处理 |
+| "sm_75 无官方实现，仍需自研 kernel" | 与现状一致（无官方 FlashAttention） | ✅ |
+| 触发条件"长上下文 attention 占每步 ~80%" | 出处 PF-9（`PROGRESS.md` §3.0h、测试计划 §10.2 PF-9），三档实测与斜率都在 | ✅ |
+
+**3) 偏差怎么处理**：**先改文档再改代码**。§2.2 的"batching 优化"一句**已在
+`future_iterations.md` §2.2 当场作废**（保留删除线 + 理由），本条**范围收敛为：只做上下文维
+split-K，不扩 batch**。理由：把 batch 扩展混进来会一次改两个变量，读数不可归因
+（`PROGRESS.md` §2.14 C"每轮只改一个变量"）。
+
+**4) 反向查（文档与代码矛盾处，当场修；修不了的登记）**：
+
+- **【本轮已修，文档】** §2.2 的 batching 一句与 `grid.y = batch_size` 直接冲突 → 已改；
+  改动原因写进 `future_iterations.md` §2.2 与本节。
+- **【本轮登记，未改代码】** `tests/test_paged_attention_plugin.cpp` 的
+  `ExpectMatchesReference` 里阈值 `1e-4f / 1e-5f` **旁边没有出处**，而 `AGENTS.md` §7 要求
+  "每个数值阈值旁边必须写清出处"。它是本条的**主判据** → 本轮**只补出处、不放宽**；
+  出处需作者确认（拟：Phase 1 算子层对 double 参考的既有口径，自 PE1 起沿用）。
+  **未获批准前不动代码。**
+- **【本轮登记】** `PagedAttentionPlugin::getWorkspaceSize()` 现返回 0，注释写"online softmax
+  只用到 static shared memory"。split-K 需要一块 partial 缓冲 → **这条注释会过期**，
+  必须与实现同批改（否则下一个人会照注释把 workspace 又改回 0）。
+
+### 12.2 目标与范围
+
+**目标（一句话）**：把 decode 阶段 PagedAttention 的**上下文维**切开并行
+（FlashDecoding 式 split-K + 两阶段 softmax 归约），**在不放松任何数值判据的前提下**
+降低长上下文每步 decode 的 attention 边际成本。
+
+**范围内**：FP32 / FP16 的 split-K kernel、workspace 契约、分片策略（host 可测）、
+插件装配、引擎缓存安全（bump 图版本）、A/B 入口、kernel 级与端到端 P 层测量。
+
+**范围外（明确不做，防止范围外扩）**：
+
+- **不扩 `LLMRunner` 的 batch**（那是 G2-3 / §2.3）；
+- **不做 PagedAttention 的 prefill 阶段**（§9.1 已冻结：双引擎路径下不需要）；
+- **不改精度口径 / 不碰 Q/DQ**；**不做 CUDA Graph 捕获**；**不动 sampler**（§9.2 已关闭）。
+
+### 12.3 设计决策（D1~D5）
+
+**D1　并行维度 = 上下文维（split-K），不是 head 维 / batch 维。**
+GPT-2 decode 的并行度是 `num_heads(12) × batch(1) = 12` 块，本机 **24 SM** → 一半闲置；
+head / batch 维不缺并行度，缺的是把 976 个位置串行变并行。
+**不选**"再细分 head 维"——block 数翻倍但每块仍要串行走完整段上下文，延迟不减。
+
+**D2　两阶段结构（stage-1 分片 → stage-2 归约），不用块间原子合并。**
+
+- stage-1（`grid = (num_heads, batch, num_splits)` 或等价的展平）：每个 block 负责一段
+  连续逻辑位置，算局部 `m_i / l_i / acc_i[d]`（**一律按 float 累积**），写进 workspace；
+- stage-2（`grid = (num_heads, batch)`）：`M = max m_i`，再
+  `l = Σ l_i·exp(m_i−M)`、`acc = Σ acc_i·exp(m_i−M)`，输出 `acc / l`。
+
+**为什么不用原子合并**：原子累加无法保序 → 结果不可复现，与本项目的可复现判据冲突。
+**`num_splits == 1` 时直接走原单趟 kernel**（连 stage-2 都不发）→ 短上下文不退化成两次发射。
+
+> **落地修正（2026-09-27，P2_2-1 设计定稿时发现）**：上面那句"`num_splits == 1` 时直接走原单趟
+> kernel"**在宿主侧判不出来**——`llm_runner.cpp:303` 把 `block_tables` 的形状钉成固定的
+> `[batch, max_blocks_per_seq]`，`context_lens` 只在设备上，插件 `enqueue` 拿到的运行期形状
+> 里**没有任何字段能反映"当前上下文有多长"**。要拿到它只有两条路：① 一次 4 字节 D2H + sync
+> ——**被 `AGENTS.md` §3.A.3 明令禁止**（decode 循环内零 H2D/D2H）；② 改 `LLMRunner` 让
+> `block_tables` 按当前需要收窄——**超出 §12.2 的范围**（那会动引擎 profile 语义，且要同步改
+> ONNX 路径）。
+> **改为**：stage-1 的 grid **恒为 `kMaxSplits`**，每个 block 用自己那份 `context_lens[b]`
+> 算出 `effective_splits`，`split_idx >= effective_splits` 的 block **立即返回、不读不写**；
+> stage-2 的每个 block 同样只读自己 `effective_splits` 范围内的 partial。
+> **代价**：短上下文也多发一次（每层 1 次、12 层 → 每步多 12 次发射；按单次 ≈3~6 µs 估
+> ≈36~72 µs/步，相对 ctx≈20 档的 3.055 ms 是 **1~2%**）→ 由 §12.6 第 5 条的 B 半句
+> （"退化不超过同 session 漂移"，实测漂移 10~18%）吸收。
+> **为什么不做"一次发射 + 原子 ticket 由最后一个 block 归约"**：它能省掉这次发射，但引入
+> 跨 block 的内存序依赖，属于"看运气"的缺陷类别（本项目 #4 / #5 / #8 / #10 / #15 全是数值
+> 正确性问题）→ **先落最简、可复核的两段式**；若将来实测确认这次发射是瓶颈，再单独立项。
+
+**D3　workspace 必须走 `getWorkspaceSize()`，尺寸按动态形状的 `.max` 上界给。**
+
+- `AGENTS.md` §3.B.3 禁止在 `enqueue` 里分配；分片缓冲
+  （`kMaxSplits × batch × heads × (2 + head_size)` 个 float）在 `getWorkspaceSize` 里报**上界**；
+- `DynamicPluginTensorDesc` 带 `min / opt / max` 三组形状 → **用 `.max` 求上界**，
+  **不是**用构建期的 `desc.dims`（那时动态轴可能是 -1，会让 workspace 偏小 → 越界写）。
+  这条要写进注释，否则下一个人很可能"顺手"用 `desc.dims`。
+- **契约**：`getWorkspaceSize()` 报的上界必须 ≥ `enqueue` 实际用到的量——
+  这是 workspace 版的"按对方查询，不按配置假定"（`PROGRESS.md` §2.15）。
+
+**D4　分片策略做成 `__host__ __device__` 纯函数，host 侧可裁决。**
+照 `sampler/nucleus_cutoff.hpp` 的先例：`PlanSplits(total_len, split_idx, num_splits) → {begin, end}`，
+并把"**空分片 → `m=-inf, l=0, acc=0`**"定成显式语义（`PROGRESS.md` §2.12：存在部分写入路径的
+kernel 必须显式处理未覆盖区间——`TROUBLESHOOTING` #4 就是这么来的）。
+**为什么**：分片边界（不整除、`total_len < num_splits`、`context_len=0` + 带当前 token）
+**全是纯逻辑**，能在沙箱裁掉就不该留给真机——真机往返是最贵的资源（§2.13）。
+
+**D5　旧单趟 kernel 保留为永久 A/B 入口（不删）。**
+照 §9.2 的 `LaunchTopPSamplerTwoLevel` 先例：kernel 级与 P 层都能**同二进制、同 session、
+同轮交替**测两版（`TROUBLESHOOTING` #37 / #38 的教训：跨协议、跨 session 的差值不可直接比）。
+同时它还是 `num_splits == 1` 的生产路径，不是死代码。
+
+### 12.4 任务分解（P2_2-0 ~ P2_2-9）
+
+| 编号 | 任务 | 层 | 自检（做完立刻能看见什么） |
+|---|---|---|---|
+| **P2_2-0** | **基线复测**：在**未改动的代码**上跑 PF-9（`ContextLengthSweep`），留同 session 基线 | P | 打印三档每步耗时与斜率；与 §11.5.1 的 3.055 / 6.062 / 14.705 ms 对照（**跨 session 不可比**，只作"没跑错"的粗校验） |
+| **P2_2-1** | 设计定稿：workspace 契约、分片策略、空分片语义、FP16 partial 用 float（D2~D4） | —— | 本节 §12.3 落地成代码注释，无产品代码 |
+| **P2_2-2** | `paged_attention_kernel.hpp`：加 `LaunchPagedAttentionSplit`（或 `args.num_splits`）+ 测试用 `SetPagedAttentionNumSplitsOverride`；`PagedAttentionKernelArgs` 增字段 | H（契约） | 头文件编译通过；公开 API 带 Why 注释 |
+| **P2_2-3** | 新头 `paged_attention_split.hpp`：`PlanSplits` 纯函数 + num_splits 选择策略 | H | **host 用例**（沙箱可跑）覆盖边界，见测试计划 §11.2 的 H 组 |
+| **P2_2-4** | `paged_attention_plugin.cu`：stage-1 / stage-2 kernel（FP32 / FP16 各一套实例化）、`getWorkspaceSize` 改报上界、`enqueue` 按 `num_splits` 选路径 | G | 沙箱编译通过；真机单测见 §11.2 的 G 组 |
+| **P2_2-5** | 插件装配：`configurePlugin` / `onShapeChange` 刷新分片状态；**bump `kEngineGraphVersion`**（安全必需，见 §12.8 第 1 条） | G | 真机日志出现 `Engine cache stale → 重建`，第二次运行出现 `cache hit` |
+| **P2_2-6** | 单测扩展 `test_paged_attention_plugin.cpp`：split-K vs CPU double 参考（MHA / GQA / MQA、`batch>1`、跨多块、`context_len=0`、带当前 token、`total_len < num_splits`）+ 新旧 kernel 同二进制对照 | G | 判据 = §12.6 第 1 / 2 / 4 条 |
+| **P2_2-7** | FP16 覆盖 `test_fp16_paths.cpp`：split-K 的 FP16 分支对原有 FP16 参考 | G | 同 §11.2 的 G-3 |
+| **P2_2-8** | 端到端回归：`test_gpt2_decode_consistency` + `test_gpt2_generate` 的 8-token 基线 | G | **逐 token 与既有基线一致**（"改 kernel 没改语义"的硬判据） |
+| **P2_2-9** | 性能采集（kernel 级 A/B + PF-9 端到端 A/B，同轮交替）与文档回填 | P | 见 §12.5 与测试计划 §11.3 / §11.5 |
+
+**顺序纪律**：0 → 1 →（2 / 3 可并行）→ 4 → 5 → 6 → 7 → 8 → 9。
+**每轮只改一个变量**（§2.14 C）：先只落 split-K；测完再决定要不要动下面 §12.7 末行那类
+"block 内组织"的二次优化。
+
+**执行状态（2026-09-27，Agent 侧已做完的部分）**：
+
+| 任务 | 状态 | 落地内容 / 证据 |
+|---|---|---|
+| P2_2-0 基线复测 | ⬜ **未做（属作者真机）** | 按 §12.3 D2 的落地修正，基线可在实现后**同一 session 内**用旧 kernel 的 A/B 入口一起量 |
+| P2_2-1 设计定稿 | ✅ | D2 记了落地修正（宿主拿不到 `total_len`）；F1~F4 已按 A 拍板、7 条破坏性动作已批 |
+| P2_2-2 头文件 | ✅ | `paged_attention_kernel.hpp` 增 `LaunchPagedAttentionSplit` + override 读写；`kPagedAttentionPluginVersion` 1→2 |
+| P2_2-3 分片策略纯函数 | ✅ | 新头 `paged_attention_split.hpp`（`ResolveSplits` / `SplitRange` / `WorkspaceSlotOffset` / `WorkspaceBytes`）；`tests/test_paged_attention_split.cpp` 8 条 host |
+| P2_2-4 kernel | ✅（沙箱只验编译） | `paged_attention_plugin.cu` 增 `PagedAttentionSplitKernel` / `PagedAttentionMergeKernel`（FP32+FP16）、`getWorkspaceSize` 改按 `.max` 报上界、`enqueue` 走 split 路径 + 无 workspace 时兜底单趟 |
+| P2_2-5 装配 + 图版本 | ✅ | `configurePlugin` 无需新状态（片数由设备端按 `context_lens` 推导）；`kEngineGraphVersion` 1→2 |
+| P2_2-6 单测 | ✅ **真机通过**（修夹具后复跑） | 6 条 `PagedAttentionSplitKernelTest.*`（含护栏区越界检查与 PG-7 诊断）。首轮 3 条 SEGFAULT + 1 条断言失败**根因全在测试侧**（块表行宽不足以放下 `ceil(ctx/block_size)` 个块 → host 参考越界；一条断言把 GQA 比例写反）→ 已加 `MakeLongContextFixture` + `AssertFixtureConsistent` 并修正断言，见 `TROUBLESHOOTING` #44。**产品代码一行未改** |
+| P2_2-7 FP16 | ✅ **真机通过** | `Fp16PathTest.PagedAttentionSplitMatchesFp16Reference`（自适应 2 片 + 强制 8 片）→ **这是 split-K 多片归并的第一份真机数值证据** |
+| P2_2-8 端到端回归 | ✅ **真机通过** | `Gpt2DecodeConsistency.*` 与 `Gpt2GenerateTest`（FP32 8-token 冻结基线）均在通过之列；唯一红是 `RealGpt2Fp16GreedyMatchesReferenceTokens`（**按设计**，§5.11 的 FP16 NaN） |
+| P2_2-9 性能采集 + 回填 | ✅ **真机出数并回填** | PP-1（kernel 级）降幅 **88.85%**、PP-2（端到端）降幅 **88.12%**——两把独立尺子互校差约 5%，均远超 F1 的 40%；详见测试计划 §11.5 |
+
+**验收判据逐条对照（§12.6；全部达成，2026-09-27 真机）**：
+
+| # | 判据 | 结果 |
+|---|---|---|
+| 1 | 对 CPU double 参考 rel < 1e-4 / abs < 1e-5（**不放宽**） | ✅ PG-1/2/4/5/6 全绿 |
+| 2 | 边界覆盖（MHA/GQA/MQA、batch>1、跨多块、`ctx=0`、带当前 token、空分片） | ✅ 每条都有对应用例且通过 |
+| 3 | 语义不变（decode 一致性 + 8-token 冻结基线逐 token 一致） | ✅ `Gpt2DecodeConsistency.*` 与 FP32 8-token 基线通过；PP-2 三档 **token 一致=是** |
+| 4 | 新旧差异只作诊断 | ✅ `max_abs=3.58e-07` / `max_rel=1.52e-06`（比判据低 ~65×）→ 无需放宽任何阈值 |
+| 5A | 性能：ctx≈960 斜率至少降 40% | ✅ **88.85%（PP-1）/ 88.20%（PP-2，两次复现：88.12 / 88.20）** |
+| 5B | ~~性能：ctx≈20 档退化不超过同 session 漂移~~ → **观测项，不设判据**（作者 2026-09-27 决定） | 只报数：实测 **+1.877%**（端到端），机制 = 每层多一次归并发射（D2 在拿到数据前已预估并接受）。原判据作废的三个理由：① "漂移"有 `max`/`min`/配对差三种读法、前两种结论相反；② 曾议的"退化 ≤2%"唯一数值输入（单次发射 3~6 µs）**无出处**；③ PP-1 与 PP-2 对同一笔代价差 **1.97×** 且未解释。见 `TROUBLESHOOTING` #45 / #45.1 |
+| 6 | 缓存安全：bump 后首次 stale 重建、次次 cache hit | ✅ 真机日志 `Engine cache stale → 重建`（627/475 MB）后复跑复用 |
+| 7 | 无回归：真机只剩按设计的 1 红 | ✅ 259 条 / 1 红（FP16 NaN）/ 1 跳过（`int8_crosscheck` 缺报告） |
+
+**F1-B 最终定为"观测项、不设判据"（作者 2026-09-27 决定）。** 原措辞是"ctx≈20 档退化不超过
+**同 session 实测漂移**"，它在真机数据面前暴露了三重问题，导致这个判据无法成立：
+
+1. **"漂移"有歧义，且两种读法结论相反**：绝对漂移取 `max` = 12.29% → 判"通过"；
+   取 `min` = 0.97% → 判"不通过"（配对差口径的更严格读法还要再测）。而那个 12.29% 来自
+   **整轮第一档、机器未进稳态**（单趟臂两块之差；同档 split 臂只漂 0.97%，其余档两臂都
+   在 0.03~2%）→ 宽松那个锚点本身就不可信。
+2. **改写成绝对线也不行**：曾议"退化 ≤2%"，但那个 2% 的唯一数值输入（单次发射 3~6 µs）
+   是**拍的、无出处**，而 `AGENTS.md` §7 要求每个阈值都能回答"凭什么"。
+3. **两把尺子对同一笔代价差 1.97× 且未解释**：PP-1 kernel 级推出 **+0.95%**
+   （(0.025764−0.023600)×12/2.724），PP-2 端到端实测 **+1.877%**。在没被解释的量上画阈值
+   等于把问题埋起来。
+
+**故降级为观测项**（照 PF-8 / PF-9 的先例只报数），保留的记录是：短上下文（ctx≈20）退化
+**+1.877%**，机制 = 每层多一次归并 kernel 发射（**D2 在拿到数据之前就预估并接受了这笔代价**）。
+代码相应地打印 `max`/`min` 绝对锚点 + 配对差，并**不做任何自动判定**。
+完整账见 `TROUBLESHOOTING` #45 / **#45.1**；若将来要恢复成硬判据，路径是**先量后定**
+（把单次发射开销单独校出来，使 `12×launch/步长` 成为推导），**不要回头捡那个 2%**。
+
+**沙箱实测（2026-09-27）**：`ctest --test-dir build` → **257 条 / 0 失败**
+（原 242 + 新增 15：H 组 8 条实跑通过、GPU 组 7 条显式跳过）。
+**注意**：新用例的 ctest 序号会随用例数继续漂移——文档只记用例名。
+
+**护栏自证（`PROGRESS.md` §2.13"护栏必须有用例证明它会拦人"）**：把
+`PagedAttentionSplitRange` 的"余数摊给前几片"临时改成"不摊"，4 条 host 用例
+（PS-1 / PS-2 / PS-3 / PS-8）**当场转红**，复原后 8/8 绿——证明这批 host 用例不是
+"注释里的祈使句"。**这一步只证明 host 侧护栏有效**；kernel 的 CUDA 取址仍必须靠真机的
+PG-1~PG-7（沙箱无法执行）。
+
+### 12.5 测量口径（沿用 §11.3，不新起协议）
+
+- **kernel 级（主）**：在 `tests/` 里用合成数据（GPT-2 形状：`heads=12, head_size=64,
+  block_size=16, batch=1`，`context_len ∈ {32, 256, 1024}`）直接调单趟与 split 两个入口，
+  **同二进制、同轮交替（ABBA）**，每档取"发射 1 次 / 发射 N 次"的**斜率**扣掉每窗口固定开销；
+- **端到端（从）**：复用 PF-9 的 `Gpt2DecodePerf.ContextLengthSweep`，用 override 切两版，
+  **同一 session 内交替**；**沿用同一条** `..._ctxsweep_{prefill,decode}.engine` 路径，
+  **不新增路径**（否则重踩 §11.4.1 那个"两用例交替判对方过期、来回重建"的坑）；
+- 报数一律：**中位数 + p25/p75**、n、温度 / 时钟、引擎 `cache hit/stale`（§11.3 D）；
+- **判别下限**：整步 decode 量级**不能**套采样器的 ±400~600 µs（`TROUBLESHOOTING` #39 的教训）
+  ——同 session 漂移已见 10~18%，跨 session 见过 ±27%。
+
+### 12.6 验收判据（每条都要能回答"凭什么"）
+
+| # | 判据 | 值 / 形式 | 凭什么 |
+|---|---|---|---|
+| 1 | 正确性（主） | 生产路径对 CPU **double** 参考仍满足 **rel < 1e-4 / abs < 1e-5** | 沿用 `test_paged_attention_plugin.cpp` 的既有算子口径（**出处待作者确认后补注**，见 §12.1 反向查）。**本轮不放宽** |
+| 2 | 边界覆盖 | MHA / GQA / MQA、`batch>1`、跨多块、`context_len=0`、带当前 token、`total_len < num_splits`（空分片）**每项有用例** | `PROGRESS.md` §2.12（部分写入路径要显式处理）+ §2.13（带 batch 的算子必须覆盖 `batch>1`） |
+| 3 | 语义不变（硬） | GPT-2 decode 一致性用例通过 + 8-token 贪心输出与既有基线**逐 token 一致** | `PROGRESS.md` §3.0a 的冻结基线 |
+| 4 | 新旧差异（诊断，非判据） | 打印 `max_abs` / `max_rel`；**先量"与正确性无关的差异"**（float32 累加顺序不同）再谈阈值 | `AGENTS.md` §7"放宽阈值前必须先量无关差异"；观测值若高几个数量级 → **唯一的动作是查** |
+| 5 | 性能（**F1=A，已拍板**） | ctx≈960 档**每步 decode 斜率**相对基线**至少降 40%**（≈1.67×）；ctx≈20 档退化不超过**同 session 实测漂移**。**前提**：PP-2 必须**同时打印它自己的重复测量漂移**（否则"不超过漂移"没有数值锚点） | 阈值出处 = 作者 2026-09-27 拍板（§12.9 F1=A）；40% 相对"并行度 12 块 → 最多 96 块"的理论天花板取值，属**工程取定**而非推导（已如实标注）；漂移参考 = PF-3 同 session 实测 10~18% |
+| 6 | 缓存安全 | bump 图版本后第一次全部 `stale` 重建、第二次 `cache hit` | `PROGRESS.md` §3.0f 的既有观察法 |
+| 7 | 无回归 | 沙箱全量 0 失败；真机全量仍**只有 1 红**（GPT-2 FP16 NaN，按设计） | §3.5 的既有口径 |
+
+### 12.7 风险与回退
+
+| 风险 | 影响 | 缓解 / 回退 |
+|---|---|---|
+| **旧 `.engine` 记录的 workspace 是 0，新 kernel 却要往 workspace 写** | **越界写 → 非法访存**（与 `TROUBLESHOOTING` #18 同类，只在真机暴露） | **必须 bump `kEngineGraphVersion`**（§12.8 第 1 条）；保险起见同批 bump plugin version |
+| 分片打破"顺序累加" | 与单趟版有微小数值差异 | 主判据仍是 vs double 参考（#1），不是 vs 旧 kernel；新旧差异按 #4 只作诊断 |
+| 空分片 / 边界算错 | 某些 `total_len` 下结果错或出 NaN | 分片策略 host 可测（D4）+ 空分片显式哨兵（`m=-inf, l=0, acc=0`） |
+| 多一次发射 | 短上下文小回归 | `num_splits==1` 走单趟、不发 stage-2（D2）；短上下文档纳入回归观察 |
+| 动态形状下 `.max` 取错 | workspace 不足 | 用 `DynamicPluginTensorDesc.max`，把"为什么不是 `desc.dims`"写进注释；用例覆盖形变 |
+| FP16 partial 精度 | FP16 下更易丢精度 | partial **一律 float**（与现 kernel 累积精度一致），FP16 只用于读写 |
+| 收益低于判别下限（重踩 #38 的坑） | 白改一轮 | 先跑 P2_2-0 基线 + §12.5 同轮交替；**低于判别下限就不改**（§5.13b），登记为"未获支持" |
+| 顺手做"warp-per-position" | 一次改两个变量 → 读数不可归因 | **本轮不做**；若 split-K 之后仍显瓶颈（每位置一次 `BlockReduceSum` + `__syncthreads`），**另起一轮** |
+
+**回退方案**：split-K 全部落在 `paged_attention_plugin.cu` + 一个新头里，`enqueue` 只有一个
+分支点 → 把 `num_splits` 选择退回常量 1（或恢复 `getWorkspaceSize` 返回 0 + 恢复图版本）
+即回到现状；旧单趟 kernel 从未删除，因此回退不需要重写代码。
+
+### 12.8 破坏性动作清单（**动手前一次性确认**；批准本节 ≠ 批准这些动作）
+
+> 依据 `AGENTS.md` §0.2 / §0.5 / §0.7 与 `PROGRESS.md` §2.14 B：
+> 计划批准的是**目标**，不是这批动作。
+> **作者决定（2026-09-27）：下面 7 条全部批准**（原话："F1~F4 全按 A，破坏性清单全批"）。
+> 第 6 条仍按"默认不删、靠指纹判 stale"执行——它批的是"必要时可以删"，不是"现在就删"。
+
+1. **`src/core/builder.cpp`：`kEngineGraphVersion` 1 → 2** —— **安全必需**：workspace 需求
+   从 0 变正数，复用旧引擎会让新 kernel 往 0 字节 workspace 里写。
+   影响：所有已缓存引擎判 `stale`，**下次真机第一次重建全部引擎**（GPT-2 主引擎 623 / 709 MB、
+   ctxsweep 627 / 475 MB → 分钟级）。
+2. **`paged_attention_plugin.hpp`：`kPagedAttentionPluginVersion` `"1"` → `"2"`** ——
+   让旧引擎反序列化直接失败（这是**想要**的安全网），代价是残留 `.engine` 必须重建。
+3. **`paged_attention_kernel.hpp`：`PagedAttentionKernelArgs` 增字段** —— 改的是**公开结构体**，
+   所有调用点（插件 + 测试）同批改。
+4. **`getWorkspaceSize()`：0 → 正数**，并删掉"只用 static shared memory"那条注释。
+5. **新增头文件 `paged_attention_split.hpp`** —— `mini_trt_llm/CMakeLists.txt` 用 `file(GLOB)`，
+   **必须重跑 `cmake -B build ...`**，否则症状是链接期 `undefined reference to vtable`
+   （`TROUBLESHOOTING` #24.2，已踩两次）。
+6. **可能需要删 `/tmp/mini_trt_llm_gpt2_*.engine` 与 `..._ctxsweep_*.engine`** —— 只在
+   指纹机制表现异常时才做；**默认不删**，靠指纹判 stale。
+7. **不做**：不改 `AGENTS.md`、不动 `0_resnet18_onnx/` `1_gpt2_onnx/`、不改其它模块的图版本。
+
+### 12.9 待拍板决策（F1~F4）
+
+| 编号 | 决策 | 选项 A（推荐） | 选项 B | 影响 |
+|---|---|---|---|---|
+| **F1** | 性能判据 | **设"斜率至少下降 40%"为达标线**（ctx≈960 档） | 只报观测值、不设阈值 | A 让"做完没有"可判定，但阈值要作者认账；B 与 PF-8 / PF-9 一致，代价是"是否达标"永远悬着 |
+| **F2** | 分片数策略 | **按上下文自适应**：`num_splits = clamp(ceil(total_len / kTargetChunk), 1, kMaxSplits)`，`kMaxSplits=8`、`kTargetChunk=128` | 固定 8；或做成可配置属性 | A 在短上下文不退化成两次发射；B 实现更简单但短上下文恒多一次发射 |
+| **F3** | 是否保留旧单趟 kernel 作 A/B 入口 | **保留**（D5） | 直接替换、不留入口 | A 换来可复核的 A/B（§9.2 先例）；B 更干净，但下次复核只能靠 git |
+| **F4** | 是否顺带扩 batch（G2-3） | **不做**（范围收敛，见 §12.1） | 一起做 | A 风险可控、可单独验收；B 两变量混在一起，读数不可归因 |
+
+**作者决定（2026-09-27）：F1~F4 全按选项 A** —— 性能达标线 = ctx≈960 斜率至少降 40%；
+分片数按上下文自适应（`kMaxSplits=8` / `kTargetChunk=128`）；保留旧单趟 kernel 作 A/B 入口；
+不扩 batch。**已进入 P2_2-2。**
+
+### 12.10 真机执行清单（**待作者执行**；Agent 侧无 GPU）
+
+```bash
+# 0) 编译（新增文件后必须先 configure，见 §12.8 第 5 条）
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=75 -DBUILD_TESTS=ON
+cmake --build build -j$(nproc)
+
+# 1) 沙箱可跑：分片策略 host 用例（Agent 自检）
+ctest --test-dir build -R 'PagedAttentionSplit*'
+
+# 2) 真机：算子单测（GPU 用例跳过即失败）
+#    **`ctest -R` 收的是正则，不是 gtest 的过滤器**——写成 'A.*:B.*'（gtest 语法）
+#    会一条都不匹配，ctest 打 "No tests were found!!!" 且**退出码仍是 0**
+#    （2026-09-27 真机踩过，见 TROUBLESHOOTING #43）。要么用下面这种正则，
+#    要么直接调二进制并用 --gtest_filter。
+MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure -R 'PagedAttention'
+# 等价写法（更贴近意图，且能看到逐条 [ OK ]）：
+# MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
+#     --gtest_filter='PagedAttention*:Fp16PathTest.PagedAttention*'
+
+# 3) 真机：端到端回归（图版本 bump 后第一次会重建引擎，分钟级，属预期）
+MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure \
+    -R 'Gpt2DecodeConsistency|Gpt2Generate'
+
+# 3b) 推荐：直接跑全量（一次把"有没有漏跑"这件事也验掉；过滤集最容易静默空跑）
+MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
+
+# 4) 真机：性能——kernel 级同 session A/B（PP-1，不建引擎，最快）
+MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
+    --gtest_filter='PagedAttentionSplitPerf.*'
+
+# 5) 真机：性能——端到端同 session A/B（PP-2，复用 ctxsweep 引擎；含 token 一致性打印）
+MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
+    --gtest_filter='Gpt2DecodePerf.ContextLengthSweepSplitVsSinglePass'
+
+# 6) 真机：PF-9 单点观测（跨 session，只作对照，不可与 5) 相减——见 #38）
+MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
+    --gtest_filter='Gpt2DecodePerf.ContextLengthSweep'
+```
+
+- 真机跑全量仍要带 `MINI_TRT_REQUIRE_GPU=1`；
+- **引擎重建是预期**（§12.8 第 1 条），不要当成故障；
+- **每轮只改一个变量**；
+- 回填要求：状态 + 实测值 + 出处（命令 / 日志）；排查过程写 `docs/TROUBLESHOOTING.md`。
 
 ---
 

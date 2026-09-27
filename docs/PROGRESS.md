@@ -1,27 +1,40 @@
 # mini_trt_llm 项目进度交接文档
 
-> 最后更新：2026-09-27（**decode 性能画像基建落地**：profile target ×4（`profile_gpt2` /
-> `profile_resnet18` 与各自的 `_ncu`）、`tools/profile/run_profile.sh`（一键 nsys/ncu + 温度时钟 +
-> 自动导出摘要）、`tools/profile/summarize_nsys.py`（三层分桶 + `--api` 分配统计）、
-> `tests/test_decode_perf.cpp`（`Gpt2DecodePerf` 计时入口）；计划 = 开发计划 **§11** / 测试计划 **§10**，
-> 落点见 **§3.0h**。沙箱 **242 条 / 0 失败**；**`profile_gpt2` 真机已跑通并出数**
-> （decode **2.847 ms/步**、prefill≈2.100 ms；同 session 漂移 10~18%），
-> 但 **两条 CLI profiling 路径都拿不到 kernel 时间线**（nsys 无 kernel 数据、ncu 报
-> `Unknown Error on device 0`；"拷到 Windows"救不了——数据没被采集，见 **#41**）→
-> **sampler 占比已用"同 session 比值法"（PF-8）出数并与 `SamplerPerf` 互校一致**
-> （greedy **1.25%** / top-k **17.7%** / top-p **20.1%**；首版全零输入导致的 2.5× 偏差
-> 已定位为退化输入，见 **#42**）；
-> **attention 的占比已由"上下文扫描"回答**（长上下文下 ≈ 每步 80% → `§2.2` 触发成立、升 P2）；
-> **逐 kernel 分解**仍缺（profiler 不可用），但它**不再挡 §2.2**；`§10.2`（ONNX 子图替换）仍挂着。
-> 同轮还补齐了 §3.0f 漏改的 **3 处"存在性门"**（`test_gpt2_generate.cpp`，见 `TROUBLESHOOTING.md` #40））。
+> 最后更新：2026-09-27（**decode 性能画像这条线收口：§11 已关闭**，结论见 **§3.0h**）。
+> 交付：profile target ×4（`profile_{gpt2,resnet18}[_ncu]`）、`tools/profile/run_profile.sh`
+> （一键 nsys/ncu + 温度时钟 + 日志落文件只回摘要）、`tools/profile/summarize_nsys.py`
+> （三层分桶 + `--api` 分配统计 + 自检）、`tests/test_decode_perf.cpp`（两个 P 层用例）；
+> 计划 = 开发计划 **§11** / 测试计划 **§10**。
+> **它要回答的三个问题都有答案**：sampler 占比（PF-8：greedy **1.25%** / top-k **17.7%** /
+> top-p **20.1%**，与 `SamplerPerf` 同 session 互校一致）、attention 占比（PF-9：长上下文
+> ≈ **每步 80%** → `§2.2` 触发成立、**P3 → P2**）、显存分配（`§2.1` 触发**未获支持**）。
+> **两条边界**：① 本机（WSL2）**拿不到 GPU kernel 时间线**（nsys 只有 API / OSRT / NVTX、
+> ncu 报 `Unknown Error on device 0`、加 sudo 与显式 `--trace=cuda` 都无效、"拷到 Windows"
+> 也救不了，见 **#41**）→ 逐 kernel 分解记为**能力边界**（工具与自检都在，换机器即可用），
+> 本机改用"同 session 比值 + 上下文扫描"；② **PF-7**（ONNX vs 原生 prefill 的跨构建对照）
+> **已移交 §10.2**，不在 §11 账上。
+> 同轮补齐 §3.0f 漏改的 **3 处"存在性门"**（`test_gpt2_generate.cpp`，见 **#40**），
+> 并把 `future_iterations.md` 的 **§5.1 / §6.3 / §9.2** "优先级"行与 §0.1 对齐。
+> 沙箱 **242 条 / 0 失败**；**真机复跑应为 243 条**（P9_2-5b 之后全量一直没复跑）。
+> —— **这一段已被紧接下来的 §2.2 交付说明取代**（全量已复跑：259 条 / 1 红 / 1 跳过）。
 >
-> 同日：**§9.2 采样器迭代收口并关闭**：Top-P 改成"保留 CUB 排序 + 行内并行
-> 三级定位"、判据缺口 S-12/S-14 补齐；**P9_2-5b 经同二进制 A/B 判定"效果无显著差异"、P9_2-5c 不做**；
-> 真机 **235 条 / 1 红**（唯一红 = 按设计的 GPT-2 FP16 NaN；**该全量是 P9_2-5b 之前、
-> 也是 §3.0h 新增 7 项之前**），
-> 沙箱 **242 条 / 0 失败**（§3.0h 之后）；**P9_2-5b 之后真机只跑过 `Sampler*:Fp16PathTest*` 过滤集与
-> `*SamplerPerf*`（均通过）→ 全量待下一次真机顺带复跑**；
-> 推荐的下一条工作 = **decode 端到端性能画像 + `§6.3` 的 profile target**，见 §6）。
+> **更新（同日稍后）：§2.2「长上下文 attention」已交付并真机验证**，见 **§3.0i** ——
+> 斜率降幅 **88.85%（PP-1 kernel 级）/ 88.20%（PP-2 端到端，两次复现 88.12 / 88.20）**、
+> 三档 prompt 的生成 token 与单趟**完全一致**、`max_abs=3.58e-07 / max_rel=1.52e-06`。
+> 图版本 bump 到 **2**、`kPagedAttentionPluginVersion` **1 → 2**（旧引擎全部失效一次，**属预期**）。
+> **沙箱 259 条 / 0 失败；真机 259 条 / 1 红 / 1 跳过**（唯一红 = 按设计的 GPT-2 FP16 NaN；
+> 跳过 = `int8_crosscheck` 缺报告）。F1 的 B 半句（短上下文退化）**经作者决定改为观测项、
+> 不设判据**——理由与账目见 `TROUBLESHOOTING.md` **#45 / #45.1**。
+>
+> 同日：**§9.2 采样器迭代收口并关闭**（Top-P 改"保留 CUB 排序 + 行内并行"；P9_2-5b 判"无显著
+> 差异"、P9_2-5c 不做）。**真机最近一次全量 235 条 / 1 红**（唯一红 = 按设计的 GPT-2 FP16 NaN；
+> 该全量在 P9_2-5b 之前、也在本轮新增 8 项之前）→ ~~全量待复跑~~ **已复跑**：
+> 259 条 / 1 红 / 1 跳过（见上）。
+>
+> **开工纪律（2026-09-27 收紧，见 `AGENTS.md` §0.1 / §0.7）**：改 `AGENTS.md` 需要口令
+> **"授权修改AGENTS.md一次"**；**其他任何工作**（写文档 / 改代码 / 跑实验 / 真机任务）都要作者
+> **点名到具体条目**才开工，笼统的"开始吧"不算批准。**为什么**：作者要控制节奏与验收范围——
+> 抢跑产生的改动一旦落盘，评审与回滚成本由他承担。
 > 2026-09-26：**Phase 4 收口**（CV 路径打通 + INT8 落地）。
 > 当前阶段：**Phase 4 已完成**（ResNet18：ONNX 路径 / 原生路径 / `CVRunner` / 转换工具 / FP16 / INT8）；
 > **没有下一阶段**——**Phase 5（清理旧模块）已永久取消**，旧模块由作者自行处理（见 §6.6）。
@@ -30,15 +43,17 @@
 > 1. **GPT-2 的推荐精度是 FP32** —— FP16 端到端数值不稳定（NaN，层数随构建变化），
 >    按政策不修，见 §5.11 与 `docs/TROUBLESHOOTING.md` §18.1；
 > 2. Phase 2 的残余缺口（含已定位的已知限制）见 §5.12 与 `docs/phase2_test_plan.md` §5；
-> 3. Phase 3 仅剩 G5/G6 两项按触发条件处理的缺口，见 `docs/future_iterations.md` §11。
-> 4. **真机：235 条 / 1 红**（2026-09-27，**P9_2-5b 之前、且本轮新增 7 项之前**的全量；
->    跳过项只有 `int8_crosscheck`——
->    ctest 级的"缺报告 → 77"，设计如此）：
+> 3. Phase 3 的缺口只剩 **G5**（ONNX 子图识别只做计数）——**G6 的"可复现测量方法"已于
+>    2026-09-27 交付并随 §11 关闭**（见 §3.0h / 开发计划 §11.5.2）；`docs/future_iterations.md` §11。
+> 4. **真机：259 条 / 1 红 / 1 跳过**（2026-09-27，**已含 §3.0h 的 8 项与 §3.0i 的 17 项**；
+>    沙箱同为 **259 条 / 0 失败**——两边**总数相同**，差别只在 GPU 用例是跑还是跳过；
+>    本节原先写的"235 条 / 1 红、复跑应为 243"**是 §2.2 之前的历史快照，已作废**）：
+>    跳过项只有 `int8_crosscheck`（ctest 级"缺报告 → 77"，设计如此）；
 >    **唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`**（GPT-2 FP16 NaN 的**按设计红**，§5.11）；
->    本轮新增的 6 条 GPU 用例（S-12/S-13/S-14/S-15/S-16/S-21）**全部真机通过**。
->    沙箱侧 **242 条 / 0 失败**（**§3.0h 新增 8 项之后**；此前是 234）；ResNet18 侧没有红。
->    **P9_2-5b（改的是 Top-P kernel 内部）之后**真机只跑过 `--gtest_filter='Sampler*:Fp16PathTest*'`
->    与 `'*SamplerPerf*'`（都通过）→ **全量建议在下一次真机时顺带复跑**（与 decode profile 同批最省）。
+>    §3.0i 新增的 17 项（split-K 的 H/G/P 三组）**全部真机通过**。
+>    **历史（§2.2 之前，保留备查）**：那时是 **235 条 / 1 红**、沙箱 242 / 0 失败；
+>    §9.2 的 6 条 GPU 用例（S-12/S-13/S-14/S-15/S-16/S-21）全部真机通过；
+>    P9_2-5b 之后真机只跑过过滤集，**全量已在 2026-09-27 的 259 条那次补齐**。
 >    过程红两条都已结案且**都不是产品缺陷**：`Gpt2OnnxTest.MatchesAcrossProfileShapes`
 >    （两实现差异之下的并列 → 判据钉行号，§5.13 / #34）与 S-14 首版（参考在并列行上不良定义 → 换
 >    `TopKSetByValue`，`TROUBLESHOOTING.md` #36）。
@@ -308,6 +323,28 @@
   加仪器之前先问："我现在能看见哪几层／哪几个量？"
 - **每轮只改一个变量**：被否证的改动不是白做（LN 精度那次排除了一整个方向），
   但同时改多个变量会让读数无法归因。
+
+### 2.16 协作与权限规则（2026-09-27 收紧）
+
+- **改 `AGENTS.md`**：必须由作者**原话**给出许可口令 **"授权修改AGENTS.md一次"**（`AGENTS.md` §0.1）。
+  含糊的表达（"编辑一条规则""顺手改一下"）**不构成**许可——Agent 只出草稿，等口令。
+- **其他任何工作**（**写计划文档 / 改代码 / 跑实验 / 真机任务**）：必须由作者**点名到具体条目**
+  （条目号 / 文件 / 任务号）才开工（`AGENTS.md` §0.7）；笼统的"开始吧 / 继续"不算批准；
+  **批准范围不外扩**（批准写计划 ≠ 批准改代码；批准改代码 ≠ 批准 bump 图版本 / 删缓存 / 跑真机）。
+- **为什么**：作者要控制节奏与验收范围。抢跑产生的改动一旦落盘（尤其产品代码与文档结论），
+  评审与回滚成本由作者承担。
+
+### 2.17 §2.2 确立的接口约定（同 §2.12 / §2.15 的性质：**勿按"更自然"的写法改回去**）
+
+| 约定 | 为什么（写错会怎样） |
+|---|---|
+| **片数由设备端按各自 `context_lens[b]` 推导**，stage-1 的 grid z 恒为上限、超出有效片数的 block 立即返回不读不写 | 宿主侧**拿不到**当前上下文长度（`block_tables` 形状固定、`context_lens` 在设备上）→ 想在宿主侧判"要不要切"只能走被禁止的 D2H 或改 runner / profile 语义。写成"宿主判定"会让 split 路径永远走分支的另一侧 |
+| **`getWorkspaceSize()` 按 `DynamicPluginTensorDesc.max` 报上界**，不是 `desc.dims` | 动态轴在 `desc.dims` 里是 **-1**（TRT 头文件原话）→ 按它算出的 workspace 偏小、kernel 照写 → **越界写**（与 #18 同类，只在真机暴露） |
+| **分片切法与 workspace 布局只有一份实现**（`paged_attention_split.hpp`），`getWorkspaceSize` 与 kernel 都调它 | 两边各写一份 → "改了片数 / 改了 head_size"后静默错位，而这类错在真机之前看不出来 |
+| **`SetPagedAttentionNumSplitsOverride`：`>0` 强制片数（钳到上限）、`0` 自适应、`<0` 强制旧单趟路径** | `<0` 是**同二进制 A/B 开关**（#37 / #38：跨 session 的差值不可直接比）。把负数钳成 0 会让 A/B 静默失效 |
+| **旧单趟 kernel 永久保留**（A/B 入口 + workspace 不可用时的兜底） | 删掉它 → ① A/B 只能靠 git；② workspace 拿不到时没有"正确但慢"的退路 |
+| **`kPagedAttentionPluginVersion` 与 `kEngineGraphVersion` 同批 bump** | workspace 需求由 0 变正数，复用旧引擎 = 往 0 字节缓冲里写。指纹**看不见插件源码的变化**（只看模型/配置的 size+mtime）→ 必须手工声明代次 |
+| **短上下文多一次归并发射是已知代价**（实测 +1.877%，观测项） | 它来自上面那条"宿主判定不可行"；想消掉得先解决宿主可见性，不是"顺手优化" |
 
 ---
 
@@ -660,6 +697,61 @@ FP32、greedy、prompt 4 token、生成 32、n=15 + warmup 3、每轮 ABBA）：
   缺的只是有 GPU 跟踪能力的机器（#41）。**别在下一轮把它当欠账去补**。
 - **PF-7 移交 §10.2**（ONNX 子图替换的前置），不再算 §11 的尾巴。
 
+### 3.0i §2.2 长上下文 attention 交付（FlashDecoding 式 split-K，2026-09-27）
+
+**计划落点**：`future_iterations.md` **§2.2**；开发计划 **§12**（12.1 计划对账 → 12.10 真机执行清单）；
+测试计划 **§11**（H 组 PS-* / G 组 PG-* / P 组 PP-*）。
+
+| 落点 | 说明 |
+|---|---|
+| `plugins/paged_attention_split.hpp`（新） | **分片规则 + workspace 布局的唯一实现**（`ResolveSplits` / `SplitRange` / `WorkspaceSlotOffset` / `WorkspaceBytes`），全部 `__host__ __device__` → kernel 与 host 用例共用一份 |
+| `plugins/paged_attention_plugin.cu` | 新增 `PagedAttentionSplitKernel`（stage-1，按 `(head,batch,split)` 出局部 `m/l/acc`）+ `PagedAttentionMergeKernel`（stage-2，max-trick 归约，**保序、不用原子累加**）；`getWorkspaceSize()` 由 0 改为按 `.max` 报上界；`enqueue` 走 split 路径、workspace 不可用时兜底单趟；单趟/ split 共用同一份入参校验 |
+| `plugins/paged_attention_kernel.hpp` | `LaunchPagedAttentionSplit`；`SetPagedAttentionNumSplitsOverride`（`>0` 强制片数 / `0` 自适应 / **`<0` 强制旧单趟路径** = 同二进制 A/B 开关，测试用） |
+| `plugins/paged_attention_plugin.hpp` | `kPagedAttentionPluginVersion` **"1" → "2"**（旧引擎反序列化直接失败，见 §12.8 第 2 条） |
+| `core/builder.cpp` | `kEngineGraphVersion` **1 → 2**（**安全必需**：workspace 由 0 变正数，复用旧引擎会"往 0 字节缓冲里写"） |
+| 用例 | H 8 条（`PagedAttentionSplitPlanTest.*`，纯函数 + 分解数学自洽）+ G 7 条（`PagedAttentionSplitKernelTest.*` + `Fp16PathTest.PagedAttentionSplitMatchesFp16Reference`）+ P 2 条（`PagedAttentionSplitPerf.SlopeByContextLength`、`Gpt2DecodePerf.ContextLengthSweepSplitVsSinglePass`） |
+
+**真机实测（2026-09-27）**：**259 条 / 1 红 / 1 跳过**（唯一红 = 按设计的 GPT-2 FP16 NaN，
+§5.11；跳过 = `int8_crosscheck` 缺报告）。
+
+| 量 | 结果 |
+|---|---|
+| **斜率降幅**（F1 的 5A，判据 ≥40%） | **88.85%**（PP-1，kernel 级，同二进制）／**88.20%**（PP-2，端到端同 session 同引擎；前一次 88.12% → **两次复现**） |
+| 每步 decode（PP-2） | prompt 4 → **2.775 / 2.724 ms**（split / 单趟）；256 → **3.629 / 5.491**；960 → **3.993 / 13.044**（**3.27×**） |
+| 每层每步（PP-1，heads=12/head_size=64） | ctx 32 → 0.025764 / 0.023600 ms（**split 慢 9.2%**）；256 → 0.094844 / 0.174143（1.84×）；1024 → 0.125568 / 0.918948（**7.32×**） |
+| 语义不变 | 三档 prompt 的生成 token 与单趟**完全一致**（PP-2 打印）；`Gpt2DecodeConsistency.*` 与 FP32 8-token 冻结基线通过 |
+| 新旧差异（诊断） | `max_abs=3.57628e-07`、`max_rel=1.52484e-06` —— 比算子判据（rel<1e-4）低约 65×，**没有任何阈值被放宽** |
+| 两把尺子互校 | PP-1 单趟 ctx=1024 0.918948×12 = **11.03 ms/步** vs PP-2 单趟斜率 10.795×0.976 = **10.5 ms/步**（差约 5%） |
+| 机制证据 | PP-1 的比值随上下文：0.916× → 1.836× → 7.318×，正是"越长的上下文切开越划算"的交叉曲线，7.3× 贴近 8 片并行度上限 |
+| 缓存行为 | 图版本 bump 后真机首次 `Engine cache stale → 重建`（627/475 MB），之后复用 → 指纹机制按设计生效 |
+
+**关键设计（详见开发计划 §12.3 D1~D5，勿按"更自然"的写法改回去）**：
+
+- **并行维度取上下文维**（不是 head/batch 维）：改动前每层只有 `num_heads × batch = 12` 个 block、
+  每块串行走完上下文，而本机 24 SM → 一半闲置、有效带宽仅约峰值 3%；
+- **两阶段归约、不用原子累加**（原子加无法保序 → 结果不可复现）；
+- **片数由设备端按各自 `context_lens[b]` 推导**（**落地修正**：`block_tables` 形状固定、
+  `context_lens` 在设备上 → 宿主侧拿不到"当前上下文多长"；要拿到只能走被禁止的 D2H，
+  或改 runner/profile 语义。代价是短上下文每层多发一次归并 kernel，**已在动手前预估并接受**）；
+- **workspace 按 `DynamicPluginTensorDesc.max` 报上界**（`desc.dims` 在动态轴上是 -1）；
+- **分片策略与 workspace 布局只有一份实现**（`paged_attention_split.hpp`），`getWorkspaceSize`
+  与 kernel 都调它；`AssertFixtureConsistent` 之类的护栏同理；
+- **旧单趟 kernel 保留为永久 A/B 入口 + 兜底路径**（F3=A；同时消掉了"跨 session 比性能"这个坑）。
+
+**验收判据（开发计划 §12.6）**：7 条里 **6 条达成**；第 5 条拆成
+**5A（斜率降幅，✅）** 与 **5B（短上下文退化）——经作者决定改为"观测项、不设判据"**：
+实测退化 **+1.877%**，机制 = 每层多一次归并发射；原判据"不超过同 session 漂移"因
+三重理由作废（"漂移"有 `max`/`min`/配对差三义且前两种结论相反、曾议的"≤2%"唯一数值输入无出处、
+PP-1 与 PP-2 对同一笔代价差 1.97× 未解释）→ 见 `TROUBLESHOOTING.md` **#45 / #45.1**。
+**这不是放宽阈值换绿，而是判据被证伪后不假装它成立**（`AGENTS.md` §7）。
+
+**本轮过程问题（全部已结案，产品代码零改动）**：**#43**（计划里的 `ctest -R` 写成了 gtest
+过滤器语法 → **一条用例都没跑且退出码为 0** 的静默空跑）、**#44**（3 条 SEGFAULT + 1 条断言失败
+全是用例夹具/断言写错：块表行宽不足以放下 `ceil(ctx/block_size)` 个块 → host 参考越界；
+一条断言把 GQA 比例写反）、**#45 / #45.1**（漂移锚点的"宽松/保守"写反 + 阈值来路不明）。
+**开放观察（不是缺陷）**：PP-1 的 kernel 级预测（+0.95%）与 PP-2 的端到端实测（+1.877%）
+差约 2×，**差因未查**。
+
 ### 3.1 目录与构建
 
 - `mini_trt_llm/CMakeLists.txt`：C++17 + CUDA C++17、`sm_75`、static library、第三方依赖接入。
@@ -701,21 +793,24 @@ FP32、greedy、prompt 4 token、生成 32、n=15 + warmup 3、每轮 ABBA）：
 
 - `mini_trt_llm/tests/test_*.cpp`：Utils / Core 骨架（cuda_check、logger、timer、memory_pool、io、
   model_config、model_registry、safetensors_loader、engine）+ Phase 1 算子 + Phase 1.5 端到端。
-- 当前状态（2026-09-27 实测，含 Phase 4 + 批次 A/B/C + §9.2 的采样器迭代 + §3.0h 的性能画像基建）：
-  沙箱内 `ctest` **242 个用例，0 失败**
+- 当前状态（2026-09-27 实测，含 Phase 4 + 批次 A/B/C + §9.2 采样器迭代 + §3.0h 性能画像基建
+  + **§3.0i 的 §2.2 split-K**）：
+  沙箱内 `ctest` **259 个用例，0 失败**
   （**100 条跳过、141 条实际执行**，含 `onnx_graph_probe`、`GpuEnvProbe`、
   `int8_eval_selftest`、`tokenizer_golden_check`、`int8_crosscheck_selftest`、`ArgmaxCriterion*`（6 条）、
   `EngineCacheTest*`（5 条）、批次 A 的 16 条 host 用例、P9_2-5/5b 的 4 条 `NucleusCutoffTest.*`
   与 5 条 `SamplerReferenceTest.*`、P9_2-5b 的 3 条 `NucleusCutoffTest.ThreeLevel*`、
   以及 §3.0h 的 5 条 `PerfStatsTest.*` 与 `profile_summary_selftest`）。
-  真机（`MINI_TRT_REQUIRE_GPU=1`）**最近一次全量：2026-09-27，235 条 / 1 红**（含 S-12/S-14；
-  **注意这是 §3.0h 新增 8 项之前的数**，复跑应为 243；
-  **唯一的红 = GPT-2 FP16 NaN 复现器，按设计**）。**注意**：该全量在 **P9_2-5b 之前**；
-  P9_2-5b（Top-P kernel 内部改动）之后只跑过 `Sampler*:Fp16PathTest*` 与 `*SamplerPerf*`（均通过），
-  **全量待复跑**。
+  **§3.0i 新增 17 项**（H 8 + G 7 + P 2）→ 242 → **259**。
+  真机（`MINI_TRT_REQUIRE_GPU=1`）**最近一次全量：2026-09-27，259 条 / 1 红 / 1 跳过**
+  （**唯一的红 = GPT-2 FP16 NaN 复现器，按设计**，§5.11；跳过 = `int8_crosscheck` 缺报告）。
+  本轮新增的 17 项**全部真机通过**（含 §3.0i 的 split-K 数值/性能用例）。
   跳过的只有 `int8_crosscheck`——顺序上先跑全量、后跑 C，缺报告 → 77，**跳过 ≠ 通过**。
-  历史快照（勿当现状）：2026-09-26 那次是 215 条 / 1 红，更早是 204 条 / 2 红；
-  2026-09-27 首批新增用例时是 228 条 / 1 红，第二次（首次跑 S-12/S-14）是 **233 条 / 2 红**。
+  **历史快照（勿当现状）**：更早的 235 条 / 1 红是 **§3.0h 新增 8 项之前、且 P9_2-5b 之前**的数，
+  当时笔记写"复跑应为 243"——**那个外推也不准**（ctest 总数沙箱与真机是同一个数，
+  差异只在"GPU 用例跑还是跳过"；见测试计划 §11.1 的更正）。
+  更早：2026-09-26 是 215 条 / 1 红，再早是 204 条 / 2 红；2026-09-27 首批新增用例时是
+  228 条 / 1 红，第二次（首次跑 S-12/S-14）是 **233 条 / 2 红**。
   **本轮（P9_2-5~7）新增的 6 条 GPU 用例（S-12 / S-13 / S-14 / S-15 / S-16 / S-21）已全部真机通过**；
   性能数字见 §3.0g。第二次真机那条多出来的红 S-14 已定位为"参考在并列行上不良定义"，
   **只改测试参考**（产品代码一行未改，见 `TROUBLESHOOTING.md` #36），**复跑后绿**。
@@ -843,8 +938,15 @@ FP32、greedy、prompt 4 token、生成 32、n=15 + warmup 3、每轮 ABBA）：
 ## 4. 进行中 / 未完成的部分
 
 **当前没有进行中的阶段，也没有进行中的迭代**：Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成（§4.1 ~ §4.5），
-Phase 5 已永久取消（§4.6），**Phase 之后唯一的工作流 §9.2（采样器高性能 kernel）也于 2026-09-27 收口并关闭**
-（见 §3.0g）。下面各节保留的是**各阶段当时的交付与残余缺口快照**；仍然活着的开放项一律看 §6.6 的索引
+Phase 5 已永久取消（§4.6）。**Phase 之后的三条工作流都已于 2026-09-27 收口**：
+
+| 工作流 | 状态 | 结论在哪 |
+|---|---|---|
+| **§9.2 采样器高性能 kernel** | 已关闭（P9_2-5b 判"无显著差异"、5c 不做） | §3.0g |
+| **§6.3 / G6 decode 性能画像**（含 profile target 与可复现测量方法） | 已关闭（逐 kernel 分解记为**能力边界**；PF-7 移交 §10.2） | §3.0h |
+| **§2.2 长上下文 attention（split-K）** | **已交付并真机验证**（斜率降幅 88.85% / 88.20%） | **§3.0i**（关键设计 §2.17） |
+
+下面各节保留的是**各阶段当时的交付与残余缺口快照**；仍然活着的开放项一律看 §6.6 的索引
 （唯一事实来源 = `future_iterations.md` §11）。
 
 ### 4.1 Phase 1：Plugin 基础（已完成）
@@ -863,7 +965,9 @@ Phase 1 明确不在本次范围内、留待后续的项：
 - PagedAttention 的 **Prefill 阶段**（query 序列长度 > 1）——需要因果 mask 与分块，与 Decode 路径 kernel 结构差异大。
 - 采样器分布级对比（D3）已落地为两件事：C++ 侧的统计检验（词频收敛到解析 softmax 概率），以及
   `scripts/ref_sampler.py` 打印的 HF 风格截断语义；尚未做的是把 Python 输出固化成数据文件供测试载入。
-- Sampler 的手写高性能 kernel（Phase 1 用 CUB 分段排序保证正确性）。
+- ~~Sampler 的手写高性能 kernel~~ **已于 2026-09-27 交付**（§3.0g：Top-P 改"保留 CUB 排序 +
+  行内并行"；Top-K 快速路径正确但性能不达标、已撤出生产）。剩下的是把采样器参考数据固化成数据文件
+  = `future_iterations.md` §9.3（P2，纯 host）。
 
 ### 4.2 Phase 1.5：全流程测试基建与收尾（已完成）
 
@@ -1082,6 +1186,17 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 - **完整路径与判读规则**：`docs/TROUBLESHOOTING.md` **#34**；执行入口见
   `docs/future_iterations_development_plan.md` §8.5。
 
+### 5.14 §2.2 过程中沉淀的三条操作类坑（2026-09-27，**结论在此，过程见 TROUBLESHOOTING**）
+
+这三条都**不是产品缺陷**（产品代码一行未改），但每一条都能让"验证"这件事静默失效，
+所以按 §6 的要求只在此留结论、把定位路径指向故障记录：
+
+| 坑 | 结论（一句话） | 影响 / workaround | 出处 |
+|---|---|---|---|
+| **`ctest -R` 静默空跑** | `ctest -R` 收**正则**、`--gtest_filter` 收**过滤器**；写成 `'A.*:B.*'` 会**一条都不匹配**，ctest 打 `No tests were found!!!` 且**退出码仍是 0** | "全绿"里可能什么都没跑。**判据是"输出了几行 `Test #N`"，不是退出码**；拿不准就直接调二进制 + `--gtest_filter` | `TROUBLESHOOTING` **#43** |
+| **长上下文夹具自相矛盾** | 块表行宽 < `ceil(context_len / block_size)` 时，`block_table[t/block_size]` 越界 → **host 参考 SEGFAULT**（不是 CUDA 错误） | 症状是 `Exception: SegFault` 而非断言失败。已加 `MakeLongContextFixture`（宽度由上下文反推）+ `AssertFixtureConsistent`（把夹具写错变成可读失败）。**另外：越界夹具也可能侥幸"通过"，那种通过没有信息量** | `TROUBLESHOOTING` **#44** |
+| **"同 session 漂移"与阈值来路** | ① 我曾把"锚点取 max 更保守"写反（取 max 是**宽松**）；② 曾议的"退化 ≤2%"其唯一数值输入（单次发射 3~6 µs）**无出处**，且 PP-1/PP-2 对同一笔代价差 **1.97× 未解释** → 该判据**改为观测项、不设阈值** | 判据里出现"漂移"必须钉死是**哪一种**（绝对 max/min 还是配对差）；**预估里的每个数值输入都要有出处**，否则几轮后会被当成阈值引用 | `TROUBLESHOOTING` **#45 / #45.1** |
+
 ## 6. 下一步计划
 
 **没有下一阶段。** Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成，**Phase 5（清理旧模块）已永久取消**（§4.6）。
@@ -1093,26 +1208,24 @@ B 触发即做 / C 需外部前置 / D 冻结；含文件级改动面、步序�
 
 **当前建议的下一步（按 `future_iterations.md` §0.3 的排序规则 = 前置可否立即满足 → 解锁广度 → 成本）**：
 
-1. **decode 端到端性能画像（`nsys`，按 G6 口径）+ 落地 §6.3 的 profile target** —— 一次性解锁
-   §2.2（attention 分块值不值得）、§10.2/§6.2（子图替换要的可复现测量方法）、§2.1（显存分配开销
-   该不该动），并补上 §9.2 留下的那一问（**sampler 在整步 decode 里占多少**）。
-   **计划与基建已就位（2026-09-27，见 §3.0h；开发计划 §11 / 测试计划 §10）**：
-   `cmake --build build --target profile_gpt2`（nsys 一键；报告 + 三层分桶落
-   `/tmp/mini_trt_llm_profiles/`，**不入库**）；`profile_resnet18` / `*_ncu` 同理。
-   **进度（2026-09-27）**：`profile_gpt2` **已跑通并出数**（decode 2.847 ms/步、
-   prefill≈2.100 ms、同 session 漂移 10~18%），已回填 §3.0h / 开发计划 §11.5.1 / 测试计划 §10.5。
-   **这一步已经做完，§11 已于 2026-09-27 关闭**（开发计划 §11.5.2）：四个 target + 协议 + 工具链
-   都跑通并被实际使用；**三个问题都有了答案**——sampler 占比（PF-8）、attention 占比（PF-9
-   上下文扫描）、显存分配（§2.1 触发**未获支持**）。
-   **两条遗留**：① **逐 kernel 分解**在本机做不到（nsys 采不到 GPU 活动、ncu 报错、加 sudo 与
-   显式 trace 都无效，#41）→ 记为**能力边界**（工具与自检都在，换机器即可用），不阻塞任何判断；
-   ② **PF-7**（ONNX vs 原生 prefill 的跨构建对照）**已移交 §10.2**——它回答的是"要不要做子图替换"，
-   不属于"decode 时间花在哪"。
-2. **§9.3 采样器参考数据固化**（`scripts/ref_sampler.py` 输出落成 `.bin`）—— 纯 host、无外部前置，
+> **上一批（decode 性能画像 / §6.3 / G6）已于 2026-09-27 完成并关闭**，结论见 §3.0h 与开发计划
+> §11.5.2：三个问题都有答案（sampler 占比、attention 占比、显存分配够不够贵）；逐 kernel 分解记为
+> **能力边界**（本机拿不到 GPU 时间线，#41）；**PF-7 移交 §10.2**。**原第 1 条与第 4 条都已做完**。
+>
+> **紧接着的 §2.2（长上下文 attention / split-K）也已同日交付并真机验证**，结论见 **§3.0i**：
+> 斜率降幅 **88.85% / 88.20%**、token 与单趟一致、图版本与插件版本各 bump 一次。
+> **原清单里的第 4 条到此结清**（它曾是"唯一有实测支撑、收益最大的产品代码改动"）。
+> 剩下的排序**没有变化**，仍是下面 1→3；`future_iterations.md` §0.3 的第 14 项已标记为已交付。
+
+1. **§9.3 采样器参考数据固化**（`scripts/ref_sampler.py` 输出落成 `.bin`）—— 纯 host、无外部前置，
    是 §9.2 的自然收尾。
-3. **§10.1 ONNX / 原生 I/O 契约统一**（ONNX 侧加 `Cast` 把 `input_ids` 降到 INT32）—— 无外部前置，
+2. **§10.1 ONNX / 原生 I/O 契约统一**（ONNX 侧加 `Cast` 把 `input_ids` 降到 INT32）—— 无外部前置，
    为"ONNX 路径接进 `LLMRunner`"铺路。
-4. **§2.1 显存池——先量分配开销**（最好与第 1 条同一次真机顺带量），量完再决定要不要动实现。
+3. **要碰 §10.2（ONNX 子图替换）就先跑 PF-7**（ONNX vs 原生 prefill 的可复现对照）——它是 §10.2
+   的前置，命令见开发计划 §11.9 / 测试计划 §10.2。
+4. ~~**§2.2（长上下文 attention）**~~ **已交付**（2026-09-27，见 §3.0i）；若还想沿这条线继续，
+   开发计划 §12.7 末行列了唯一没做的二次优化方向（block 内组织改 "warp-per-position"），
+   但**必须先有测量支撑**——当前瓶颈分析与证据在 §3.0i / 开发计划 §12.3 D1。
 
 若你想要"无新需求时推进一件有实质结论的实事"，`future_iterations.md` §0.1 点名的是
 **§1.5（P4-INT8-a：per-channel 整网退化根因）**——唯一无外部前置的**已立项**条目（做法 / 验收 /
@@ -1240,15 +1353,31 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 | **ResNet18 本地产物（四类）** | `models/resnet18/` | ① P4-1 基线：`ref_{ramp,pixels}_b8.bin` + `inputs/*.f32.bin` + `.meta.json`（14.5 MB）；② 原生路径权重：`model.safetensors`（42 张量 / 46.7 MB）+ `config.json`（入库）；③ INT8 图：`resnet18_qdq.onnx`（**13.3 MB**，`prequant_dq` 形态）+ `.meta.json`；④ `config.json` 入库，其余 `.bin`/`.safetensors`/`.onnx` 按 `.gitignore` **不入库**。再生命令见 §7 |
 | ResNet18 引擎缓存 | `/tmp/mini_trt_llm_resnet18_*.engine` + `.fingerprint` | 含 fp32（ONNX / 原生）、fp16（ONNX / 原生）、qdq_int8；**复用由构建指纹决定**（stage / 精度 / 源文件身份 / 建图参数 / 开关 / TRT·CUDA 版本 / 手工图版本） |
 | 引擎 I/O 探针 | **`mini_trt_llm/tools/inspect_engine.cpp`**（已入库，手动编译） | 反序列化任意 `.engine` 并打印其 I/O 契约（名字 / 方向 / **声明精度** / 维数）——**不建 context、不推理、不写数据**。用途见 `docs/TROUBLESHOOTING.md` #18：它是把"TRT 在弱类型 FP16 网络里把 K/V 与 logits 的输出定成 FP32"这件事**读出来**的工具（在此之前只能靠推断，而推断被证伪过两次）。编译命令写在文件头（工具不进构建流程，故无 CMake 目标）。**限制**：反序列化需要 CUDA 初始化，只能在真机跑（沙箱报 `error 35`）；实测无 GPU 时它会干净报错退出而不是崩溃 |
+| **性能画像报告**（**不入库**） | `/tmp/mini_trt_llm_profiles/` | `profile_*` target 的产物：`.nsys-rep`、`.app.log`、`*.kern_sum.csv`、`*.api_sum.csv`。**报告默认不入库**（作者 2026-09-27 决定）。**注意**：本机的 `.nsys-rep` **不含 GPU kernel 数据**（只有 API/OSRT/NVTX，见 #41）→ 不能用它做逐 kernel 分解 |
+| **上下文扫描专用引擎** | `/tmp/mini_trt_llm_gpt2_ctxsweep_{prefill,decode}.engine` | `Gpt2DecodePerf.ContextLengthSweep` **与 `ContextLengthSweepSplitVsSinglePass`** 共用。prefill 的 `max_prefill_seq_len=992` 与主用例不同 → **必须独立路径**：引擎指纹覆盖**整个** `EngineBuilder::Config`，共用一条路径会让两个用例**交替**把对方的引擎判为过期、来回重建（分钟级）；这个坑在真机上当场暴露过（开发计划 §11.5.1） |
+
+> **引擎缓存现状（2026-09-27，§3.0i 之后）**：`kEngineGraphVersion` 1→2 且
+> `kPagedAttentionPluginVersion` 1→2，**所有旧引擎在真机上被判 `stale` 并重建过一次**
+> （GPT-2 主引擎 623 / 709 MB、ctxsweep 627 / 475 MB，分钟级）——这是**预期行为**，不是故障
+> （§12.8 第 1 条：workspace 需求由 0 变正数，复用旧引擎会往 0 字节缓冲里写）。
+> 重建后指纹稳定、后续运行命中 `cache hit`。**新会话不要把这些引擎的"已重建"当成异常。**
 
 **已知会失败/跳过的测试**（避免新会话误判为回归）：
 
-- 真机（`MINI_TRT_REQUIRE_GPU=1`，**2026-09-27 最近一次全量：235 条 / 1 红
-  （P9_2-5b 之前、且 §3.0h 新增 7 项之前）**；
+- 真机（`MINI_TRT_REQUIRE_GPU=1`，**2026-09-27 最近一次全量：259 条 / 1 红 / 1 跳过**
+  （已含 §3.0h 的 8 项与 §3.0i 的 17 项）；
   唯一跳过 = `int8_crosscheck`（缺报告 → ctest 级 77，设计如此）；
-  沙箱 **242 条 / 0 失败**——含全部 GPU 用例；
-  **P9_2-5b 只改 kernel 内部；§3.0h 新增 7 项（其中 `Gpt2DecodePerf` 是真机用例）→
-  真机复跑应为 243 条**（P9_2-5b 之后真机只跑过过滤集，全量一直没复跑））：
+  沙箱同为 **259 条 / 0 失败**——两边**总数相同**，区别只在 GPU 用例是跑还是跳过）：
+  - 新增的两条 P 层用例（`Gpt2DecodePerf.StepLatencyByPhase` / `ContextLengthSweep`）在**沙箱里
+    显式跳过**、只在真机跑；它们**只打印、不 assert 数值**（"凭什么通过"的答案就是它不判正确性，
+    与 `Fp16PrefillOutputsDiagnostic` 同理）——别看到它们"通过"就以为验过数值。
+  - `Gpt2DecodePerf.ContextLengthSweep` 首次运行会**新建两条引擎**（prefill 627 MB + decode 475 MB），
+    分钟级；之后复用。
+  - **§3.0i 新增的 3 条"只打印"用例同理**：`Gpt2DecodePerf.ContextLengthSweepSplitVsSinglePass`
+    （PP-2，端到端 A/B，约 25 s）、`PagedAttentionSplitPerf.SlopeByContextLength`（PP-1，kernel 级
+    A/B，约 0.3 s）、`PagedAttentionSplitKernelTest.MatchesSinglePassKernelDiagnostic`（PG-7，只打印
+    `max_abs`/`max_rel`）。**它们"通过"不含达标信息**——判据（若作者定了）要看 stdout。
+    PP-1/PP-2 都会先把 `SetPagedAttentionNumSplitsOverride` 复位，防止开关泄漏到后续用例。
   - `RealGpt2Fp16GreedyMatchesReferenceTokens`：FP16 已知限制的**按设计红**（NaN → token 不符）。
     这是**当前唯一的红**；P9_2-5~7 的 6 条新 GPU 用例（S-12 / S-13 / S-14 / S-15 / S-16 / S-21）
     与其余全部用例都通过。
@@ -1284,7 +1413,9 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 | **P4-INT8-a** | **权重 per-channel 量化在整网上比 per-tensor 差**（余量子集 54.5% vs 100%），而单卷积与最小残差 block 上它**不差**——原因未知；已排除 11 条假设（`TROUBLESHOOTING.md` #28/#29/#30/#31） | 需要更高 INT8 精度时。**已立项：`future_iterations.md` §1.5**（做法 = 探**量化前**的 float 张量，量化后的会被 bin 边界 ±1 格噪声淹没） |
 | **P4-INT8-b** | INT8 的**绝对数值界未定**（当前只用"FP32 余量子集一致率"判，阈值 ≥90%，实测 12/12；验收集无真值标签） | 需要给出 INT8 绝对误差保证时。**已立项：`future_iterations.md` §1.6**（前置 = 联网下载带标签验收集，须先获批） |
 | **P4-FP16-a** | **FP16 路径仍用已废弃的 `BuilderFlag::kFP16`**（TRT 10.12 起废弃、指向 strong typing）；实测可用 | 真要迁到强类型网络时（两条 builder 的每个算子都要显式设类型） |
-| **G5 / G6** | ONNX 子图识别只做计数（未做拓扑级）／ONNX 性能无可复现测量方法 | 真要做子图替换 / 真要优化 ONNX 路径性能时（`future_iterations.md` §10.2） |
+| **G5** | ONNX 子图识别只做计数（未做拓扑级）；~~G6 性能无可复现测量方法~~ **已于 2026-09-27 交付并随 §11 关闭**（协议 + 工具链见开发计划 §11.3 / §11.5.2） | 真要做子图替换时（`future_iterations.md` §10.2） |
+| ~~**§2.2 长上下文 attention**~~ **已交付** | **长上下文下 attention 占 decode 每步 ≈80%**（PF-9 实测 3.055 / 6.062 / 14.705 ms）；机制 = 每层只有 **12 个 block / 24 个 SM**、每块串行扫完上下文（有效带宽 ≈ 峰值 3%） | **2026-09-27 交付并真机验证**：上下文维 split-K + 两阶段归约，斜率降幅 **88.85%（kernel 级）/ 88.20%（端到端）**、token 与单趟一致、`max_rel=1.5e-06`。见 **§3.0i**（含关键设计 §2.17、图版本 / 插件版本 bump、短上下文 +1.877% 观测项的决定） |
+| **PF-7（= §10.2 的前置）** | ONNX vs 原生 prefill 的**跨构建对照**没跑（≥3 次构建 / ≥20 次推理）；跑之前"ONNX 更快还是更慢"仍是未定（两次测量方向相反） | 要碰 §10.2（ONNX 子图替换）时**先跑它**；命令见开发计划 §11.9 / 测试计划 §10.2。**已从 §11 移交过来**（§11 已关闭） |
 | **G2-3 / G2-4** | `LLMRunner` 只支持 `batch = 1`（有意限定）／EOS 无法在循环内早停（语义正确、多算） | 需要批处理 / 需要真早停时 |
 | **P1.5-b ~ P1.5-d** | E2 完整链路留后；E3 未验多 profile 切换；采样器分布数据未固化 | 见 `future_iterations.md` §11（各有触发条件）。**P1.5-a 已于 2026-09-27 关闭**（Top-K/Top-P 的 FP16 分支真机通过，见 §3.0g） |
 | ~~**P9_2-5b**~~ | Top-P 收尾段并行化：**已实施**（重扫长度 197→13 / 500→32），同二进制 A/B 判定 **效果无显著差异**（中位数 +4.8/+27.3/−330.5/−81.3 µs，p25/p75 全跨 0） | **已关闭**：代码保留、`LaunchTopPSamplerTwoLevel` 留作永久对照入口（`TROUBLESHOOTING.md` #38） |

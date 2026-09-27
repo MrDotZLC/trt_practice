@@ -1,7 +1,10 @@
 #include "mini_trt_llm/plugins/paged_attention_kernel.hpp"
 #include "mini_trt_llm/plugins/paged_attention_plugin.hpp"
+#include "mini_trt_llm/plugins/paged_attention_split.hpp"
 #include "mini_trt_llm/utils/cuda_check.hpp"
 #include "mini_trt_llm/utils/memory_pool.hpp"
+#include "paged_attention_test_support.hpp"
+#include "perf_stats.hpp"
 #include "test_gpu_guard.hpp"
 #include "test_reference.hpp"
 
@@ -11,6 +14,7 @@
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -168,7 +172,60 @@ AttentionFixture MakeFixture(int32_t batch_size, int32_t num_heads, int32_t num_
     return fixture;
 }
 
+// 按"上下文长度"构造**自洽**夹具：块表宽度与物理块数都由 `context_lens` 反推。
+//
+// 为什么需要它：`AttentionFixture` 里 `max_blocks_per_seq` 与 `context_lens` 是两个独立入参，
+// 手写时极易给出"上下文 300 个位置、块表只够 48 个位置"这种自相矛盾的组合——此时
+// `block_table[t / block_size]` 会读出行宽之外，**host 参考直接 SEGFAULT**
+// （2026-09-27 真机 #121~#123 三条崩溃全是这么来的，见 `TROUBLESHOOTING` #44）。
+// **长上下文的夹具一律走这个 helper**；短上下文的老夹具保持原样（它们的宽度本来就够）。
+AttentionFixture MakeLongContextFixture(int32_t batch_size, int32_t num_heads,
+                                        int32_t num_kv_heads, int32_t head_size,
+                                        int32_t block_size,
+                                        const std::vector<int32_t>& context_lens) {
+    int32_t max_blocks = 1;
+    for (int32_t context_len : context_lens) {
+        const int32_t needed = (context_len + block_size - 1) / block_size;
+        max_blocks = std::max(max_blocks, needed);
+    }
+    const int32_t num_blocks = std::max(batch_size * max_blocks, 1);
+    std::vector<int32_t> tables(static_cast<size_t>(batch_size) * max_blocks, 0);
+    for (size_t i = 0; i < tables.size(); ++i) {
+        // 物理块顺序刻意打乱：确保 kernel 真的走块表，而不是顺序读缓存
+        tables[i] = static_cast<int32_t>((i * 7 + 3) % static_cast<size_t>(num_blocks));
+    }
+    return MakeFixture(batch_size, num_heads, num_kv_heads, head_size, block_size, context_lens,
+                       tables, max_blocks, num_blocks);
+}
+
+// 夹具自洽性检查（把"夹具写错"变成一条可读失败，而不是看运气的崩溃）。
+//
+// 判据：块表行宽 ≥ ceil(context_len / block_size)，且行内实际会被读到的块号落在物理块数内。
+// 为什么放在用例里：`PROGRESS.md` §2.13 —— 崩溃/静默跳过比失败更贵；一次 SEGFAULT 会连带
+// 让整条 ctest 记录失去可用信息（`Exception: SegFault` 之外什么都没有）。
+void AssertFixtureConsistent(const AttentionFixture& fixture) {
+    ASSERT_EQ(fixture.block_tables.size(),
+              static_cast<size_t>(fixture.batch_size) * fixture.max_blocks_per_seq);
+    for (int32_t b = 0; b < fixture.batch_size; ++b) {
+        const int32_t context_len = fixture.context_lens[b];
+        const int32_t blocks_needed =
+            (context_len + fixture.block_size - 1) / fixture.block_size;
+        ASSERT_LE(blocks_needed, fixture.max_blocks_per_seq)
+            << "夹具不合格：batch=" << b << " 需要 " << blocks_needed << " 个块，块表只有 "
+            << fixture.max_blocks_per_seq << " 列（见 TROUBLESHOOTING #44）";
+        const int32_t* row =
+            fixture.block_tables.data() + static_cast<size_t>(b) * fixture.max_blocks_per_seq;
+        for (int32_t k = 0; k < blocks_needed; ++k) {
+            ASSERT_GE(row[k], 0) << "batch=" << b << " 第 " << k << " 个块号为负";
+            ASSERT_LT(row[k], fixture.num_blocks)
+                << "夹具不合格：batch=" << b << " 第 " << k << " 个块号 " << row[k]
+                << " 超出物理块数 " << fixture.num_blocks;
+        }
+    }
+}
+
 void RunKernel(const AttentionFixture& fixture, std::vector<float>* output) {
+    AssertFixtureConsistent(fixture);
     const size_t query_bytes = fixture.query.size() * sizeof(float);
     const size_t cache_bytes = fixture.key_cache.size() * sizeof(float);
     const size_t table_bytes = fixture.block_tables.size() * sizeof(int32_t);
@@ -255,6 +312,134 @@ void ExpectMatchesReference(const AttentionFixture& fixture) {
                       has_current ? &fixture.value_new : nullptr);
     std::vector<float> actual;
     RunKernel(fixture, &actual);
+
+    ASSERT_EQ(expected.size(), actual.size());
+    for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_TRUE(WithinTolerance(expected[i], actual[i], 1e-4f, 1e-5f))
+            << "index " << i << " expected=" << expected[i] << " actual=" << actual[i];
+    }
+}
+
+// split-K 路径的启动封装（与 RunKernel 同构，多一块 workspace）。
+//
+// `guard_floats` 会额外多分配一段"护栏区"并填成 `kGuardSentinel`：kernel 若越过了
+// workspace 契约（写了 slot 下标 >= kMaxSplits），护栏区会被改写 → 断言能抓到。
+// 这类越界在真机上通常表现为"某些形状下偶发数值错/非法访存"，靠事后归因极难定位。
+using test_support::kWorkspaceGuardSentinel;
+using test_support::ScopedSplitsOverride;
+
+void RunSplitKernel(const AttentionFixture& fixture, std::vector<float>* output,
+                    bool check_guard = false) {
+    AssertFixtureConsistent(fixture);
+    const size_t query_bytes = fixture.query.size() * sizeof(float);
+    const size_t cache_bytes = fixture.key_cache.size() * sizeof(float);
+    const size_t table_bytes = fixture.block_tables.size() * sizeof(int32_t);
+    const size_t lens_bytes = fixture.context_lens.size() * sizeof(int32_t);
+    const size_t output_bytes =
+        static_cast<size_t>(fixture.batch_size) * fixture.num_heads * fixture.head_size *
+        sizeof(float);
+    const size_t workspace_bytes = PagedAttentionWorkspaceBytes(
+        fixture.batch_size, fixture.num_heads, fixture.head_size, kPagedAttentionMaxSplits);
+    ASSERT_GT(workspace_bytes, 0u);
+    const size_t guard_floats = check_guard ? 64 : 0;
+    const size_t workspace_alloc = workspace_bytes + guard_floats * sizeof(float);
+
+    DeviceBuffer d_query(query_bytes);
+    DeviceBuffer d_key_cache(cache_bytes);
+    DeviceBuffer d_value_cache(cache_bytes);
+    DeviceBuffer d_block_tables(table_bytes);
+    DeviceBuffer d_context_lens(lens_bytes);
+    DeviceBuffer d_output(output_bytes);
+    DeviceBuffer d_workspace(workspace_alloc);
+    if (!d_query.Allocate(query_bytes) || !d_key_cache.Allocate(cache_bytes) ||
+        !d_value_cache.Allocate(cache_bytes) || !d_block_tables.Allocate(table_bytes) ||
+        !d_context_lens.Allocate(lens_bytes) || !d_output.Allocate(output_bytes) ||
+        !d_workspace.Allocate(workspace_alloc)) {
+        throw std::runtime_error("PagedAttention split test: failed to allocate buffers");
+    }
+
+    std::vector<float> workspace_host(workspace_alloc / sizeof(float),
+                                      kWorkspaceGuardSentinel);
+    CUDA_CHECK(cudaMemcpy(d_workspace.data(), workspace_host.data(), workspace_alloc,
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_query.data(), fixture.query.data(), query_bytes,
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_key_cache.data(), fixture.key_cache.data(), cache_bytes,
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_value_cache.data(), fixture.value_cache.data(), cache_bytes,
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_block_tables.data(), fixture.block_tables.data(), table_bytes,
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_context_lens.data(), fixture.context_lens.data(), lens_bytes,
+                          cudaMemcpyHostToDevice));
+
+    DeviceBuffer d_key_new;
+    DeviceBuffer d_value_new;
+    const bool has_current = !fixture.key_new.empty();
+    if (has_current) {
+        const size_t new_bytes = fixture.key_new.size() * sizeof(float);
+        if (!d_key_new.Allocate(new_bytes) || !d_value_new.Allocate(new_bytes)) {
+            throw std::runtime_error("PagedAttention split test: failed to allocate token");
+        }
+        CUDA_CHECK(cudaMemcpy(d_key_new.data(), fixture.key_new.data(), new_bytes,
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_value_new.data(), fixture.value_new.data(), new_bytes,
+                              cudaMemcpyHostToDevice));
+    }
+
+    PagedAttentionKernelArgs args;
+    args.query = d_query.data();
+    args.key_cache = d_key_cache.data();
+    args.value_cache = d_value_cache.data();
+    args.block_tables = static_cast<const int32_t*>(d_block_tables.data());
+    args.context_lens = static_cast<const int32_t*>(d_context_lens.data());
+    args.output = d_output.data();
+    args.batch_size = fixture.batch_size;
+    args.num_heads = fixture.num_heads;
+    args.num_kv_heads = fixture.num_kv_heads;
+    args.head_size = fixture.head_size;
+    args.block_size = fixture.block_size;
+    args.max_blocks_per_seq = fixture.max_blocks_per_seq;
+    args.scale = fixture.scale;
+    args.is_half = false;
+    if (has_current) {
+        args.key_new = d_key_new.data();
+        args.value_new = d_value_new.data();
+        args.has_current_token = true;
+    }
+    CUDA_CHECK(LaunchPagedAttentionSplit(args, d_workspace.data(), workspace_bytes, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    output->resize(output_bytes / sizeof(float));
+    CUDA_CHECK(cudaMemcpy(output->data(), d_output.data(), output_bytes,
+                          cudaMemcpyDeviceToHost));
+
+    if (check_guard) {
+        // 只回读护栏区：契约内的槽位是 kernel 该写的地方，不参与这条判据。
+        std::vector<float> tail(guard_floats);
+        CUDA_CHECK(cudaMemcpy(tail.data(),
+                              static_cast<const char*>(d_workspace.data()) + workspace_bytes,
+                              tail.size() * sizeof(float), cudaMemcpyDeviceToHost));
+        for (size_t i = 0; i < tail.size(); ++i) {
+            EXPECT_FLOAT_EQ(tail[i], kWorkspaceGuardSentinel)
+                << "workspace 契约被越过：护栏区第 " << i << " 个 float 被改写";
+        }
+    }
+}
+
+// split-K 与单趟共用的参考对拍：判据与 `ExpectMatchesReference` **完全相同**
+// （rel < 1e-4 / abs < 1e-5，对 CPU double 参考）——改动不允许放松这条尺子。
+void ExpectSplitMatchesReference(const AttentionFixture& fixture, bool check_guard = false) {
+    std::vector<float> expected;
+    const bool has_current = !fixture.key_new.empty();
+    CpuPagedAttention(fixture.query, fixture.key_cache, fixture.value_cache,
+                      fixture.block_tables, fixture.context_lens, fixture.batch_size,
+                      fixture.num_heads, fixture.num_kv_heads, fixture.head_size,
+                      fixture.block_size, fixture.max_blocks_per_seq, fixture.scale,
+                      &expected, has_current ? &fixture.key_new : nullptr,
+                      has_current ? &fixture.value_new : nullptr);
+    std::vector<float> actual;
+    RunSplitKernel(fixture, &actual, check_guard);
 
     ASSERT_EQ(expected.size(), actual.size());
     for (size_t i = 0; i < expected.size(); ++i) {
@@ -544,6 +729,316 @@ TEST(PagedAttentionPluginTest, DeserializedPluginRejectsCacheBlockMismatch) {
     inputs[3].dims = nvinfer1::Dims{2, {1, 4}};
     inputs[4].dims = nvinfer1::Dims{1, {1}};
     EXPECT_EQ(deserialized.onShapeChange(inputs, 5, nullptr, 1), 1);
+}
+
+// =============================================================================
+// split-K（上下文维切开 + 两阶段归约）
+//
+// 判据与单趟版本**完全相同**（对 CPU double 参考 rel < 1e-4 / abs < 1e-5）：
+// 改的是并行方式与累加顺序，不是"允许更松"。新旧两版的差异另有一条**只打印**的诊断用例
+// （PG-7）——那条回答"差多少"，不负责判对错。
+// =============================================================================
+
+// PG-1：MHA、跨多个物理块、自适应分片。
+TEST(PagedAttentionSplitKernelTest, MhaMatchesCpuReferenceAcrossMultipleBlocks) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    const std::vector<int32_t> context_lens{300, 700};  // 两档都会切成多片
+    // 块表宽度必须由上下文反推：700 个位置 / block_size=16 → 44 个块
+    AttentionFixture fixture =
+        MakeLongContextFixture(/*batch=*/2, /*heads=*/4, /*kv_heads=*/4, /*head_size=*/8,
+                               /*block_size=*/16, context_lens);
+    ExpectSplitMatchesReference(fixture, /*check_guard=*/true);
+}
+
+// PG-2：GQA（多个 query head 共享 kv head）与 MQA（1 个 kv head）。
+// 两种都必须覆盖：切分只动上下文维，但 kv_head 的映射错了会"能跑、数值错"。
+TEST(PagedAttentionSplitKernelTest, GqaAndMqaShareKvHeads) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    {
+        const std::vector<int32_t> context_lens{260};
+        AttentionFixture fixture =
+            MakeLongContextFixture(/*batch=*/1, /*heads=*/4, /*kv_heads=*/2, /*head_size=*/16,
+                                   /*block_size=*/8, context_lens);
+        ExpectSplitMatchesReference(fixture);
+    }
+    {
+        const std::vector<int32_t> context_lens{150};
+        AttentionFixture fixture =
+            MakeLongContextFixture(/*batch=*/1, /*heads=*/4, /*kv_heads=*/1, /*head_size=*/16,
+                                   /*block_size=*/8, context_lens);
+        ExpectSplitMatchesReference(fixture);
+    }
+}
+
+// PG-4：batch > 1 且两条序列的上下文长度不同。
+//
+// 为什么这条必测：片数是**按各自 `context_lens[b]` 推导**的，两条序列的有效片数不同是常态
+// （`PROGRESS.md` §2.13：带 batch 维的算子必须覆盖 batch > 1）。
+TEST(PagedAttentionSplitKernelTest, MultiBatchWithDifferentContextLens) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    const std::vector<int32_t> context_lens{130, 5};  // 2 片 vs 1 片
+    AttentionFixture fixture =
+        MakeLongContextFixture(/*batch=*/2, /*heads=*/2, /*kv_heads=*/2, /*head_size=*/8,
+                               /*block_size=*/16, context_lens);
+    ExpectSplitMatchesReference(fixture);
+}
+
+// PG-5：`context_len == 0` 的两种形态——
+//   ① 不连接当前 token：整段注意力没有任何位置 → 必须输出 0（不能除零、不能 NaN）；
+//   ② 连接当前 token：只有 1 个位置、softmax 权重恒为 1 → 输出必须**逐元素等于 value_new**。
+// ② 是分片路径上"当前 token 到底有没有被算进最后一片"的最强判据。
+TEST(PagedAttentionSplitKernelTest, ZeroContextLengthProducesZeros) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    {
+        const std::vector<int32_t> context_lens{0};
+        const std::vector<int32_t> block_tables{0};
+        AttentionFixture fixture = MakeFixture(/*batch=*/1, /*heads=*/2, /*kv_heads=*/2,
+                                               /*head_size=*/8, /*block_size=*/16,
+                                               context_lens, block_tables, /*max_blocks=*/1,
+                                               /*num_blocks=*/1);
+        std::vector<float> actual;
+        RunSplitKernel(fixture, &actual);
+        for (float value : actual) {
+            EXPECT_FLOAT_EQ(value, 0.0f);
+        }
+    }
+    {
+        const std::vector<int32_t> context_lens{0};
+        const std::vector<int32_t> block_tables{0};
+        AttentionFixture fixture = MakeFixture(/*batch=*/1, /*heads=*/2, /*kv_heads=*/2,
+                                               /*head_size=*/8, /*block_size=*/16,
+                                               context_lens, block_tables, /*max_blocks=*/1,
+                                               /*num_blocks=*/1);
+        fixture.key_new.resize(static_cast<size_t>(fixture.num_kv_heads) * fixture.head_size);
+        fixture.value_new.resize(fixture.key_new.size());
+        for (size_t i = 0; i < fixture.key_new.size(); ++i) {
+            fixture.key_new[i] = DeterministicValue(static_cast<int64_t>(i) + 7);
+            fixture.value_new[i] = DeterministicValue(static_cast<int64_t>(i) + 900);
+        }
+        std::vector<float> actual;
+        RunSplitKernel(fixture, &actual);
+        ASSERT_EQ(actual.size(),
+                  static_cast<size_t>(fixture.num_heads) * fixture.head_size);
+        // num_heads == num_kv_heads == 2，所以 kv_head == h：**每个 head 用自己的那一段
+        // value_new**，不是共用同一段（写这条断言时把 GQA 的比例搞反过，见 TROUBLESHOOTING #44）
+        for (int32_t h = 0; h < fixture.num_heads; ++h) {
+            const int32_t kv_head = h / (fixture.num_heads / fixture.num_kv_heads);
+            for (int32_t d = 0; d < fixture.head_size; ++d) {
+                EXPECT_TRUE(WithinTolerance(
+                    fixture.value_new[static_cast<size_t>(kv_head) * fixture.head_size + d],
+                    actual[static_cast<size_t>(h) * fixture.head_size + d], 1e-5f, 1e-6f));
+            }
+        }
+    }
+}
+
+// PG-6：强制片数**超过**位置数 → 制造空片。空片必须被显式写哨兵并安全跳过。
+//
+// 没有这条，`PagedAttentionSplitRange` 的空片语义就只在 host 侧被验证过，
+// "kernel 真的处理了空片"没有被任何用例裁决过（那种差异只在特定长度下暴露）。
+TEST(PagedAttentionSplitKernelTest, ExplicitEmptyChunksAreSkippedSafely) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    ScopedSplitsOverride override_splits(kPagedAttentionMaxSplits);  // 8 片对 1 / 3 个位置
+    {
+        const std::vector<int32_t> context_lens{1};
+        const std::vector<int32_t> block_tables{0};
+        AttentionFixture fixture = MakeFixture(/*batch=*/1, /*heads=*/2, /*kv_heads=*/2,
+                                               /*head_size=*/8, /*block_size=*/16,
+                                               context_lens, block_tables, /*max_blocks=*/1,
+                                               /*num_blocks=*/1);
+        ExpectSplitMatchesReference(fixture, /*check_guard=*/true);
+    }
+    {
+        const std::vector<int32_t> context_lens{3};
+        const std::vector<int32_t> block_tables{0};
+        AttentionFixture fixture = MakeFixture(/*batch=*/1, /*heads=*/2, /*kv_heads=*/2,
+                                               /*head_size=*/8, /*block_size=*/16,
+                                               context_lens, block_tables, /*max_blocks=*/1,
+                                               /*num_blocks=*/1);
+        ExpectSplitMatchesReference(fixture);
+    }
+}
+
+// PG-7：新旧两版 kernel 的差异（**诊断，不是判据**）。
+//
+// 只打印 `max_abs` / `max_rel`：它回答"切分带来的与正确性无关的差异有多大"（float32 累加
+// 顺序不同）。按 `AGENTS.md` §7，要放宽任何数值判据之前，必须先把这类差异量出来；
+// 观测值若比它高几个数量级，说明另有原因——那时的动作是**查**，不是改阈值。
+TEST(PagedAttentionSplitKernelTest, MatchesSinglePassKernelDiagnostic) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    const std::vector<int32_t> context_lens{500, 137};
+    AttentionFixture fixture =
+        MakeLongContextFixture(/*batch=*/2, /*heads=*/2, /*kv_heads=*/2, /*head_size=*/16,
+                               /*block_size=*/8, context_lens);
+    std::vector<float> single_pass;
+    std::vector<float> split;
+    RunKernel(fixture, &single_pass);
+    RunSplitKernel(fixture, &split);
+    ASSERT_EQ(single_pass.size(), split.size());
+
+    float max_abs = 0.0f;
+    float max_rel = 0.0f;
+    for (size_t i = 0; i < single_pass.size(); ++i) {
+        const float diff = std::fabs(single_pass[i] - split[i]);
+        max_abs = std::max(max_abs, diff);
+        const float denom = std::fabs(single_pass[i]);
+        if (denom > 1e-6f) {
+            max_rel = std::max(max_rel, diff / denom);
+        }
+    }
+    std::cout << "[split-K A/B] max_abs=" << max_abs << " max_rel=" << max_rel
+              << " (只打印，不判定)" << std::endl;
+}
+
+// PP-1：kernel 级同 session A/B（**P 层，只打印**）。
+//
+// 为什么必须是"同二进制 + 同 session + 同轮交替"：`TROUBLESHOOTING` #37（分段测量没有判别力）
+// 与 #38（跨协议、跨 session 的差值不可直接比）。F3=A 保留了旧单趟 kernel，所以两版都在
+// **同一个二进制**里，交替跑即可——不需要建引擎、不占真机往返预算。
+//
+// **计时口径**：每轮把同一版**连续发射 kLaunchesPerRound 次、只同步一次**，再除以次数。
+// 为什么不用"单发 + 同步"：单发口径下 `cudaDeviceSynchronize` 与事件开销和几十 µs 的 kernel
+// 同量级，测到的是尺子不是 kernel——这与 §9.2 用 (T4−T1)/3 扣掉每窗口固定开销是同一个理由。
+//
+// **只打印**：给 F1 的"斜率至少降 40%"提供**同 session** 的分子与分母（判定口径见测试计划 §11.3）。
+TEST(PagedAttentionSplitPerf, SlopeByContextLength) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    constexpr int32_t kHeads = 12;  // GPT-2 真实规模
+    constexpr int32_t kHeadSize = 64;
+    constexpr int32_t kBlockSize = 16;
+    constexpr int32_t kLaunchesPerRound = 32;
+    constexpr int32_t kRounds = 7;
+    constexpr int32_t kWarmup = 2;
+    const std::vector<int32_t> contexts = {32, 256, 1024};
+
+    cudaEvent_t start = nullptr;
+    cudaEvent_t stop = nullptr;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+
+    std::vector<double> single_by_context;
+    std::vector<double> split_by_context;
+
+    for (int32_t context_len : contexts) {
+        AttentionFixture fixture = MakeLongContextFixture(/*batch=*/1, kHeads, kHeads, kHeadSize,
+                                                          kBlockSize, {context_len});
+        AssertFixtureConsistent(fixture);
+        const size_t query_bytes = fixture.query.size() * sizeof(float);
+        const size_t cache_bytes = fixture.key_cache.size() * sizeof(float);
+        const size_t table_bytes = fixture.block_tables.size() * sizeof(int32_t);
+        const size_t lens_bytes = fixture.context_lens.size() * sizeof(int32_t);
+        const size_t out_bytes = static_cast<size_t>(kHeads) * kHeadSize * sizeof(float);
+        const size_t ws_bytes =
+            PagedAttentionWorkspaceBytes(1, kHeads, kHeadSize, kPagedAttentionMaxSplits);
+
+        DeviceBuffer d_query(query_bytes);
+        DeviceBuffer d_key(cache_bytes);
+        DeviceBuffer d_value(cache_bytes);
+        DeviceBuffer d_table(table_bytes);
+        DeviceBuffer d_lens(lens_bytes);
+        DeviceBuffer d_out(out_bytes);
+        DeviceBuffer d_ws(ws_bytes);
+        ASSERT_TRUE(d_query.Allocate(query_bytes) && d_key.Allocate(cache_bytes) &&
+                    d_value.Allocate(cache_bytes) && d_table.Allocate(table_bytes) &&
+                    d_lens.Allocate(lens_bytes) && d_out.Allocate(out_bytes) &&
+                    d_ws.Allocate(ws_bytes));
+        CUDA_CHECK(cudaMemcpy(d_query.data(), fixture.query.data(), query_bytes,
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_key.data(), fixture.key_cache.data(), cache_bytes,
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_value.data(), fixture.value_cache.data(), cache_bytes,
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_table.data(), fixture.block_tables.data(), table_bytes,
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_lens.data(), fixture.context_lens.data(), lens_bytes,
+                              cudaMemcpyHostToDevice));
+
+        PagedAttentionKernelArgs args;
+        args.query = d_query.data();
+        args.key_cache = d_key.data();
+        args.value_cache = d_value.data();
+        args.block_tables = static_cast<const int32_t*>(d_table.data());
+        args.context_lens = static_cast<const int32_t*>(d_lens.data());
+        args.output = d_out.data();
+        args.batch_size = 1;
+        args.num_heads = kHeads;
+        args.num_kv_heads = kHeads;
+        args.head_size = kHeadSize;
+        args.block_size = kBlockSize;
+        args.max_blocks_per_seq = fixture.max_blocks_per_seq;
+        args.scale = fixture.scale;
+        args.is_half = false;
+
+        const auto launch_once = [&](bool split) {
+            if (split) {
+                CUDA_CHECK(LaunchPagedAttentionSplit(args, d_ws.data(), ws_bytes, nullptr));
+            } else {
+                CUDA_CHECK(LaunchPagedAttention(args, nullptr));
+            }
+        };
+        const auto time_block = [&](bool split) {
+            CUDA_CHECK(cudaEventRecord(start));
+            for (int32_t i = 0; i < kLaunchesPerRound; ++i) {
+                launch_once(split);
+            }
+            CUDA_CHECK(cudaEventRecord(stop));
+            CUDA_CHECK(cudaEventSynchronize(stop));
+            float elapsed_ms = 0.0f;
+            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, start, stop));
+            return static_cast<double>(elapsed_ms) / kLaunchesPerRound;
+        };
+
+        for (int32_t i = 0; i < kWarmup; ++i) {
+            launch_once(false);
+            launch_once(true);
+        }
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        std::vector<double> single_ms;
+        std::vector<double> split_ms;
+        for (int32_t r = 0; r < kRounds; ++r) {
+            // ABBA：逐轮交换先后顺序，抵消"轮内顺序"带来的偏置
+            if (r % 2 == 0) {
+                single_ms.push_back(time_block(false));
+                split_ms.push_back(time_block(true));
+            } else {
+                split_ms.push_back(time_block(true));
+                single_ms.push_back(time_block(false));
+            }
+        }
+
+        const double single_median = test_support::Median(single_ms);
+        const double split_median = test_support::Median(split_ms);
+        single_by_context.push_back(single_median);
+        split_by_context.push_back(split_median);
+        std::cout << "[split-K perf] ctx=" << context_len << " (heads=" << kHeads
+                  << " head_size=" << kHeadSize << ", 每轮 " << kLaunchesPerRound
+                  << " 次发射, n=" << kRounds << ")"
+                  << "  单趟 median=" << single_median
+                  << " (p25=" << test_support::Percentile(single_ms, 25.0)
+                  << " p75=" << test_support::Percentile(single_ms, 75.0) << ")"
+                  << "  split median=" << split_median
+                  << " (p25=" << test_support::Percentile(split_ms, 25.0)
+                  << " p75=" << test_support::Percentile(split_ms, 75.0) << ")"
+                  << "  比值=" << (split_median > 0.0 ? single_median / split_median : 0.0)
+                  << "×（只打印，不判定）" << std::endl;
+    }
+
+    // 与 PF-9 同口径的"每 1000 位置涨多少 ms"：两版各一条，供 F1 的同 session 分子/分母
+    const size_t first = 0;
+    const size_t last = contexts.size() - 1;
+    const double positions = static_cast<double>(contexts[last] - contexts[first]);
+    const double single_slope =
+        (single_by_context[last] - single_by_context[first]) / positions * 1000.0;
+    const double split_slope =
+        (split_by_context[last] - split_by_context[first]) / positions * 1000.0;
+    std::cout << "[split-K perf] 斜率（每 1000 位置）：单趟 " << single_slope << " ms / split "
+              << split_slope << " ms → 降幅 "
+              << (single_slope > 0.0 ? (1.0 - split_slope / single_slope) * 100.0 : 0.0)
+              << "%（F1 达标线 = 40%；只打印，不判定）" << std::endl;
+
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
 }
 
 }  // namespace mini_trt_llm

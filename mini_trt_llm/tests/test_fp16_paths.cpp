@@ -1,8 +1,10 @@
 #include "mini_trt_llm/plugins/paged_attention_kernel.hpp"
+#include "mini_trt_llm/plugins/paged_attention_split.hpp"
 #include "mini_trt_llm/plugins/rope_kernel.hpp"
 #include "mini_trt_llm/sampler/sampler_common.hpp"
 #include "mini_trt_llm/utils/cuda_check.hpp"
 #include "mini_trt_llm/utils/memory_pool.hpp"
+#include "paged_attention_test_support.hpp"
 #include "sampler_test_support.hpp"
 #include "test_gpu_guard.hpp"
 #include "test_reference.hpp"
@@ -312,6 +314,142 @@ TEST(Fp16PathTest, PagedAttentionMatchesFp16Reference) {
     for (size_t i = 0; i < actual.size(); ++i) {
         EXPECT_TRUE(WithinTolerance(static_cast<float>(expected[i]), actual[i], 1e-3f, 1e-3f))
             << "index " << i << " expected=" << expected[i] << " actual=" << actual[i];
+    }
+}
+
+// FP16 的 split-K 分支（PG-3）。
+//
+// partial（m / l / acc）在 kernel 里**一律按 float 存**，FP16 只用于读写 K/V 与输出——
+// 这条用例锁住"FP16 下不会退化成 FP16 累加"：退化的表现是误差随片数放大，而分成 2 片 /
+// 8 片两种切法都用**同一份** double 参考裁决，所以切法本身不改变判据。
+// 阈值沿用本文件既有的 FP16 算子口径（1e-3 / 1e-3）；该阈值的出处需作者确认后补注
+// （开发计划 §12.1 的"反向查"）。
+TEST(Fp16PathTest, PagedAttentionSplitMatchesFp16Reference) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    constexpr int32_t kHeads = 2;
+    constexpr int32_t kHeadSize = 8;
+    constexpr int32_t kBlockSize = 8;
+    constexpr int32_t kNumBlocks = 20;
+    constexpr int32_t kMaxBlocks = 18;
+    constexpr int32_t kContextLen = 137;  // 大于 kTargetChunk(128) → 自适应下切成 2 片
+
+    const size_t cache_elements =
+        static_cast<size_t>(kNumBlocks) * kBlockSize * kHeads * kHeadSize;
+    std::vector<float> query(static_cast<size_t>(kHeads) * kHeadSize);
+    std::vector<float> key_cache(cache_elements), value_cache(cache_elements);
+    for (size_t i = 0; i < query.size(); ++i) {
+        query[i] = DeterministicValue(static_cast<int64_t>(i), 0.0f);
+    }
+    for (size_t i = 0; i < cache_elements; ++i) {
+        key_cache[i] = DeterministicValue(static_cast<int64_t>(i), 2.1f);
+        value_cache[i] = DeterministicValue(static_cast<int64_t>(i), 4.3f);
+    }
+    // 物理块顺序与逻辑顺序不同：步长 7 与 20 互质 → 前 18 个物理块互不相同，
+    // 确保 kernel 真的走块表寻址（同 FP32 用例的做法）。
+    std::vector<int32_t> block_table(kMaxBlocks);
+    for (int32_t i = 0; i < kMaxBlocks; ++i) {
+        block_table[i] = (i * 7 + 3) % kNumBlocks;
+    }
+
+    const std::vector<__half> query_h = ToHalf(query);
+    const std::vector<__half> key_h = ToHalf(key_cache);
+    const std::vector<__half> value_h = ToHalf(value_cache);
+    std::vector<double> query_d(query.size()), key_d(cache_elements), value_d(cache_elements);
+    for (size_t i = 0; i < query.size(); ++i) {
+        query_d[i] = __half2float(query_h[i]);
+    }
+    for (size_t i = 0; i < cache_elements; ++i) {
+        key_d[i] = __half2float(key_h[i]);
+        value_d[i] = __half2float(value_h[i]);
+    }
+    const double scale = 1.0 / std::sqrt(static_cast<double>(kHeadSize));
+    std::vector<double> expected;
+    test_support::ReferencePagedAttentionDecode(query_d, key_d, value_d, block_table, kContextLen,
+                                                kHeads, kHeads, kHeadSize, kBlockSize, scale,
+                                                &expected);
+
+    const size_t workspace_bytes = PagedAttentionWorkspaceBytes(
+        1, kHeads, kHeadSize, kPagedAttentionMaxSplits);
+    ASSERT_GT(workspace_bytes, 0u);
+    const size_t guard_floats = 32;
+    const size_t workspace_alloc = workspace_bytes + guard_floats * sizeof(float);
+
+    // 同一份输入、同一份参考，跑两遍不同切法：自适应（2 片）与强制 8 片（含空片）。
+    auto run_once = [&]() {
+        DeviceBuffer d_query(query.size() * sizeof(__half));
+        DeviceBuffer d_key(cache_elements * sizeof(__half));
+        DeviceBuffer d_value(cache_elements * sizeof(__half));
+        DeviceBuffer d_table(kMaxBlocks * sizeof(int32_t));
+        DeviceBuffer d_context(sizeof(int32_t));
+        DeviceBuffer d_out(query.size() * sizeof(__half));
+        DeviceBuffer d_workspace(workspace_alloc);
+        RequireAllocate(d_query, query.size() * sizeof(__half));
+        RequireAllocate(d_key, cache_elements * sizeof(__half));
+        RequireAllocate(d_value, cache_elements * sizeof(__half));
+        RequireAllocate(d_table, kMaxBlocks * sizeof(int32_t));
+        RequireAllocate(d_context, sizeof(int32_t));
+        RequireAllocate(d_out, query.size() * sizeof(__half));
+        RequireAllocate(d_workspace, workspace_alloc);
+
+        std::vector<float> workspace_host(workspace_alloc / sizeof(float),
+                                          test_support::kWorkspaceGuardSentinel);
+        CUDA_CHECK(cudaMemcpy(d_workspace.data(), workspace_host.data(), workspace_alloc,
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_query.data(), query_h.data(), query.size() * sizeof(__half),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_key.data(), key_h.data(), cache_elements * sizeof(__half),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_value.data(), value_h.data(), cache_elements * sizeof(__half),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_table.data(), block_table.data(), kMaxBlocks * sizeof(int32_t),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_context.data(), &kContextLen, sizeof(int32_t),
+                              cudaMemcpyHostToDevice));
+
+        PagedAttentionKernelArgs args;
+        args.query = d_query.data();
+        args.key_cache = d_key.data();
+        args.value_cache = d_value.data();
+        args.block_tables = static_cast<const int32_t*>(d_table.data());
+        args.context_lens = static_cast<const int32_t*>(d_context.data());
+        args.output = d_out.data();
+        args.batch_size = 1;
+        args.num_heads = kHeads;
+        args.num_kv_heads = kHeads;
+        args.head_size = kHeadSize;
+        args.block_size = kBlockSize;
+        args.max_blocks_per_seq = kMaxBlocks;
+        args.scale = static_cast<float>(scale);
+        args.is_half = true;
+        ASSERT_EQ(LaunchPagedAttentionSplit(args, d_workspace.data(), workspace_bytes, nullptr),
+                  cudaSuccess);
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        std::vector<__half> out_h(query.size());
+        CUDA_CHECK(cudaMemcpy(out_h.data(), d_out.data(), query.size() * sizeof(__half),
+                              cudaMemcpyDeviceToHost));
+        const std::vector<float> actual = ToFloat(out_h);
+        for (size_t i = 0; i < actual.size(); ++i) {
+            EXPECT_TRUE(
+                WithinTolerance(static_cast<float>(expected[i]), actual[i], 1e-3f, 1e-3f))
+                << "index " << i << " expected=" << expected[i] << " actual=" << actual[i];
+        }
+
+        // 护栏区必须原封不动：分片数上限就是 workspace 契约的上界
+        std::vector<float> tail(guard_floats);
+        CUDA_CHECK(cudaMemcpy(tail.data(),
+                              static_cast<const char*>(d_workspace.data()) + workspace_bytes,
+                              tail.size() * sizeof(float), cudaMemcpyDeviceToHost));
+        for (size_t i = 0; i < tail.size(); ++i) {
+            EXPECT_FLOAT_EQ(tail[i], test_support::kWorkspaceGuardSentinel);
+        }
+    };
+
+    run_once();  // 自适应切法
+    {
+        // 强制 8 片对 137 个位置 → 每片约 17 个位置；再对 1 个位置强制 8 片制造空片
+        test_support::ScopedSplitsOverride forced(kPagedAttentionMaxSplits);
+        run_once();
     }
 }
 

@@ -1,5 +1,6 @@
 #include "mini_trt_llm/plugins/paged_attention_kernel.hpp"
 #include "mini_trt_llm/plugins/paged_attention_plugin.hpp"
+#include "mini_trt_llm/plugins/paged_attention_split.hpp"
 #include "mini_trt_llm/utils/cuda_dtype.cuh"
 #include "mini_trt_llm/utils/cuda_reduce.cuh"
 #include "mini_trt_llm/utils/logger.hpp"
@@ -22,6 +23,10 @@ constexpr int32_t kMaxHeadSize = kMaxWarps * 32;
 using cuda::BlockReduceSum;
 using cuda::FromFloat;
 using cuda::ToFloat;
+
+// 测试用的分片数覆盖（0 = 自适应）。放在 TU 级：`LaunchPagedAttentionSplit` 读它，
+// 测试通过 `SetPagedAttentionNumSplitsOverride` 写它。生产路径从不设置 → 恒为 0。
+int32_t g_num_splits_override = 0;
 
 // 每个 block 负责一个 (batch, head)，线程沿 head_size 维度切分。
 //
@@ -110,9 +115,188 @@ __global__ void PagedAttentionDecodeKernel(
     }
 }
 
+// split-K 第一阶段：每个 (head, batch, split) 只扫**自己那一段**逻辑位置，产出本片的
+// 局部三元组 (m, l, acc[0..head_size))，写进 workspace。
+//
+// 为什么把上下文维切开：改动前每层只有 `num_heads × batch` 个 block（GPT-2 是 12 个），
+// 而本机 24 个 SM —— 一半闲置，且每块要串行扫完 976 个位置。切分后并行度 = 12 × 8 = 96 块。
+// 参考实现（单趟）保留在 `PagedAttentionDecodeKernel`，供 A/B 与兜底使用。
+//
+// **网格恒为 `kMaxSplits` 层**：宿主侧拿不到"当前上下文有多长"（`block_tables` 形状固定、
+// `context_lens` 在设备上，见开发计划 §12.3 D2 的落地修正），所以片数只能由设备端按
+// 自己那本 `context_lens[b]` 推导；超出有效片数的 block **立即返回、不读不写**。
+template <typename T>
+__global__ void PagedAttentionSplitKernel(
+    const T* __restrict__ query, const T* __restrict__ key_cache,
+    const T* __restrict__ value_cache, const int32_t* __restrict__ block_tables,
+    const int32_t* __restrict__ context_lens, const T* __restrict__ key_new,
+    const T* __restrict__ value_new, float* __restrict__ workspace, int32_t num_heads,
+    int32_t num_kv_heads, int32_t head_size, int32_t block_size,
+    int32_t max_blocks_per_seq, float scale, bool has_current_token,
+    int32_t override_splits) {
+    __shared__ float reduce_scratch[kMaxWarps];
+
+    const int32_t head = blockIdx.x;
+    const int32_t batch = blockIdx.y;
+    const int32_t split = blockIdx.z;
+    // grid = (num_heads, batch, kMaxSplits) → gridDim.y 就是 batch_size，
+    // 与 `PagedAttentionWorkspaceSlotOffset` 需要的 batch_size 同一来源，避免两处各传一份。
+    const int32_t batch_size = gridDim.y;
+
+    const int32_t context_len = context_lens[batch];
+    const int32_t total_len = context_len + (has_current_token ? 1 : 0);
+    const int32_t effective = PagedAttentionResolveSplits(total_len, override_splits);
+    // 本 batch 不需要这么多片（或压根没有位置）→ 不读不写。stage-2 也只读 [0, effective)。
+    if (split >= effective) {
+        return;
+    }
+
+    const int32_t d = threadIdx.x;
+    const bool active = d < head_size;
+    const int32_t kv_head = head / (num_heads / num_kv_heads);
+
+    int32_t begin = 0;
+    int32_t end = 0;
+    PagedAttentionSplitRange(total_len, split, effective, &begin, &end);
+
+    float* slot = workspace + PagedAttentionWorkspaceSlotOffset(split, batch, head,
+                                                                batch_size, num_heads,
+                                                                head_size);
+    const T* query_row =
+        query + (static_cast<size_t>(batch) * num_heads + head) * head_size;
+    const float query_value = active ? ToFloat(query_row[d]) : 0.0f;
+    const int32_t* block_table =
+        block_tables + static_cast<size_t>(batch) * max_blocks_per_seq;
+
+    float accumulator = 0.0f;
+    float running_max = -CUDART_INF_F;
+    float running_sum = 0.0f;
+
+    for (int32_t t = begin; t < end; ++t) {
+        const T* key_row;
+        const T* value_row;
+        if (t < context_len) {
+            const int32_t physical_block = block_table[t / block_size];
+            const int32_t slot_in_block = t % block_size;
+            const size_t kv_offset =
+                ((static_cast<size_t>(physical_block) * block_size + slot_in_block) *
+                     num_kv_heads +
+                 kv_head) *
+                head_size;
+            key_row = key_cache + kv_offset;
+            value_row = value_cache + kv_offset;
+        } else {
+            const size_t kv_offset =
+                (static_cast<size_t>(batch) * num_kv_heads + kv_head) * head_size;
+            key_row = key_new + kv_offset;
+            value_row = value_new + kv_offset;
+        }
+
+        float partial = 0.0f;
+        if (active) {
+            partial = query_value * ToFloat(key_row[d]);
+        }
+        const float score = BlockReduceSum(partial, reduce_scratch) * scale;
+
+        const float new_max = fmaxf(running_max, score);
+        const float alpha = __expf(running_max - new_max);
+        const float probability = __expf(score - new_max);
+        running_sum = running_sum * alpha + probability;
+        if (active) {
+            accumulator = accumulator * alpha + probability * ToFloat(value_row[d]);
+        }
+        running_max = new_max;
+    }
+
+    // **空片也要显式写哨兵**（m = -inf / l = 0）：stage-2 用 `l <= 0` 判定"这片没内容"。
+    // 不写就会读到 workspace 上一轮的残留值 —— 输出与历史调用有关（PROGRESS.md §2.12 /
+    // TROUBLESHOOTING #4 是同一类坑）。
+    if (threadIdx.x == 0) {
+        slot[0] = running_max;
+        slot[1] = running_sum;
+    }
+    if (active) {
+        slot[2 + d] = accumulator;
+    }
+}
+
+// split-K 第二阶段：把各片的 (m, l, acc[]) 用 max-trick 归并成最终输出。
+//
+//   global_max = max_i m_i
+//   l          = Σ_i l_i · exp(m_i − global_max)
+//   acc[d]     = Σ_i acc_i[d] · exp(m_i − global_max)
+//   out[d]     = acc[d] / l
+//
+// **不用原子累加**：原子加无法保序 → 结果随调度变化、不可复现（开发计划 §12.3 D2）。
+// 归并严格按 split 下标递增顺序进行，所以同样的输入必然得到同样的输出。
+template <typename T>
+__global__ void PagedAttentionMergeKernel(const float* __restrict__ workspace,
+                                          const int32_t* __restrict__ context_lens,
+                                          T* __restrict__ output, int32_t num_heads,
+                                          int32_t head_size, bool has_current_token,
+                                          int32_t override_splits) {
+    const int32_t head = blockIdx.x;
+    const int32_t batch = blockIdx.y;
+    const int32_t batch_size = gridDim.y;
+    const int32_t d = threadIdx.x;
+    const bool active = d < head_size;
+
+    T* output_row = output + (static_cast<size_t>(batch) * num_heads + head) * head_size;
+    const int32_t total_len = context_lens[batch] + (has_current_token ? 1 : 0);
+    const int32_t effective = PagedAttentionResolveSplits(total_len, override_splits);
+    if (effective <= 0) {
+        // 与单趟 kernel 的兜底一致：没有任何位置可看时输出 0（那里是 `running_sum > 0` 判据）
+        if (active) {
+            output_row[d] = FromFloat<T>(0.0f);
+        }
+        return;
+    }
+
+    const float* first = workspace + PagedAttentionWorkspaceSlotOffset(
+                                         0, batch, head, batch_size, num_heads, head_size);
+    const size_t per_split = static_cast<size_t>(batch_size) *
+                             static_cast<size_t>(num_heads) *
+                             static_cast<size_t>(PagedAttentionWorkspaceStride(head_size));
+
+    float global_max = -CUDART_INF_F;
+    for (int32_t s = 0; s < effective; ++s) {
+        global_max = fmaxf(global_max, first[static_cast<size_t>(s) * per_split]);
+    }
+
+    float running_sum = 0.0f;
+    float accumulator = 0.0f;
+    for (int32_t s = 0; s < effective; ++s) {
+        const float* slot = first + static_cast<size_t>(s) * per_split;
+        const float local_max = slot[0];
+        const float local_sum = slot[1];
+        // 空片（l == 0）先跳过再算 exp —— 这样即使 global_max 还是 -inf，
+        // 也不会出现 exp(-inf - -inf) = NaN。非空片的 l >= 1（至少有一个位置取到 max）。
+        if (local_sum <= 0.0f) {
+            continue;
+        }
+        const float weight = __expf(local_max - global_max);
+        running_sum += local_sum * weight;
+        if (active) {
+            accumulator += slot[2 + d] * weight;
+        }
+    }
+
+    if (active) {
+        output_row[d] =
+            FromFloat<T>(running_sum > 0.0f ? accumulator / running_sum : 0.0f);
+    }
+}
+
 }  // namespace
 
-cudaError_t LaunchPagedAttention(const PagedAttentionKernelArgs& args, cudaStream_t stream) {
+namespace {
+
+// 两条启动路径（单趟 / split-K）共用的入参校验。
+//
+// **为什么抽出来**：两份校验迟早会漂移，而"两条路径的拒绝条件不同"意味着同一个输入在
+// 一条路上是错误、在另一条路上"能跑但数值错"——那是最难查的一类偏差（`PROGRESS.md` §2.13
+// 对"参考实现唯一"的同一要求）。
+cudaError_t ValidatePagedAttentionArgs(const PagedAttentionKernelArgs& args) {
     if (args.query == nullptr || args.key_cache == nullptr || args.value_cache == nullptr ||
         args.block_tables == nullptr || args.context_lens == nullptr ||
         args.output == nullptr) {
@@ -130,6 +314,16 @@ cudaError_t LaunchPagedAttention(const PagedAttentionKernelArgs& args, cudaStrea
     // 结果是"能跑但数值错"，所以在这里直接拒绝。
     if (args.has_current_token && (args.key_new == nullptr || args.value_new == nullptr)) {
         return cudaErrorInvalidValue;
+    }
+    return cudaSuccess;
+}
+
+}  // namespace
+
+cudaError_t LaunchPagedAttention(const PagedAttentionKernelArgs& args, cudaStream_t stream) {
+    const cudaError_t invalid = ValidatePagedAttentionArgs(args);
+    if (invalid != cudaSuccess) {
+        return invalid;
     }
 
     // CUDA 的 last-error 是粘性的：先清掉入口处可能残留的旧错误（例如别处故意触发的失败），
@@ -165,6 +359,75 @@ cudaError_t LaunchPagedAttention(const PagedAttentionKernelArgs& args, cudaStrea
     }
     return cudaGetLastError();
 }
+
+cudaError_t LaunchPagedAttentionSplit(const PagedAttentionKernelArgs& args, void* workspace,
+                                      size_t workspace_bytes, cudaStream_t stream) {
+    const cudaError_t invalid = ValidatePagedAttentionArgs(args);
+    if (invalid != cudaSuccess) {
+        return invalid;
+    }
+    // 契约：调用方按 `PagedAttentionWorkspaceBytes(..., kPagedAttentionMaxSplits)` 预留。
+    // 这里按**运行期**形状再算一遍并比对——布局函数只有一份（paged_attention_split.hpp），
+    // 所以不一致只可能来自"调用方自己另算了一遍"。
+    const size_t needed =
+        PagedAttentionWorkspaceBytes(args.batch_size, args.num_heads, args.head_size,
+                                     kPagedAttentionMaxSplits);
+    if (workspace == nullptr || needed == 0 || workspace_bytes < needed) {
+        return cudaErrorInvalidValue;
+    }
+
+    (void)cudaGetLastError();
+
+    // blockDim 与单趟版本一致（每线程负责 head_size 维里的一个 d），这样两条路径的
+    // 归约语义、精度、边界处理都不需要各自再证一遍。
+    const int32_t threads = ((args.head_size + 31) / 32) * 32;
+    const dim3 block(static_cast<unsigned int>(threads));
+    // z 维恒为上限：片数由设备端按各自 `context_lens[b]` 推导（宿主侧拿不到，见内核注释）
+    const dim3 split_grid(static_cast<unsigned int>(args.num_heads),
+                          static_cast<unsigned int>(args.batch_size),
+                          static_cast<unsigned int>(kPagedAttentionMaxSplits));
+    const dim3 merge_grid(static_cast<unsigned int>(args.num_heads),
+                          static_cast<unsigned int>(args.batch_size));
+    const int32_t override_splits = g_num_splits_override;
+
+    if (args.is_half) {
+        PagedAttentionSplitKernel<__half><<<split_grid, block, 0, stream>>>(
+            static_cast<const __half*>(args.query),
+            static_cast<const __half*>(args.key_cache),
+            static_cast<const __half*>(args.value_cache), args.block_tables,
+            args.context_lens, static_cast<const __half*>(args.key_new),
+            static_cast<const __half*>(args.value_new),
+            static_cast<float*>(workspace), args.num_heads, args.num_kv_heads,
+            args.head_size, args.block_size, args.max_blocks_per_seq, args.scale,
+            args.has_current_token, override_splits);
+        PagedAttentionMergeKernel<__half><<<merge_grid, block, 0, stream>>>(
+            static_cast<const float*>(workspace), args.context_lens,
+            static_cast<__half*>(args.output), args.num_heads, args.head_size,
+            args.has_current_token, override_splits);
+    } else {
+        PagedAttentionSplitKernel<float><<<split_grid, block, 0, stream>>>(
+            static_cast<const float*>(args.query),
+            static_cast<const float*>(args.key_cache),
+            static_cast<const float*>(args.value_cache), args.block_tables,
+            args.context_lens, static_cast<const float*>(args.key_new),
+            static_cast<const float*>(args.value_new),
+            static_cast<float*>(workspace), args.num_heads, args.num_kv_heads,
+            args.head_size, args.block_size, args.max_blocks_per_seq, args.scale,
+            args.has_current_token, override_splits);
+        PagedAttentionMergeKernel<float><<<merge_grid, block, 0, stream>>>(
+            static_cast<const float*>(workspace), args.context_lens,
+            static_cast<float*>(args.output), args.num_heads, args.head_size,
+            args.has_current_token, override_splits);
+    }
+    return cudaGetLastError();
+}
+
+void SetPagedAttentionNumSplitsOverride(int32_t splits) noexcept {
+    // 负数**不钳到 0**：`< 0` 是"强制旧单趟路径"的语义（A/B 用），钳掉它 A/B 就失效了。
+    g_num_splits_override = splits;
+}
+
+int32_t PagedAttentionNumSplitsOverride() noexcept { return g_num_splits_override; }
 
 // =============================================================================
 // PagedAttentionPlugin
@@ -366,12 +629,22 @@ int32_t PagedAttentionPlugin::configurePlugin(const nvinfer1::DynamicPluginTenso
 size_t PagedAttentionPlugin::getWorkspaceSize(
     const nvinfer1::DynamicPluginTensorDesc* inputs, int32_t nbInputs,
     const nvinfer1::DynamicPluginTensorDesc* outputs, int32_t nbOutputs) const noexcept {
-    (void)inputs;
-    (void)nbInputs;
     (void)outputs;
     (void)nbOutputs;
-    // online softmax 只用到 static shared memory
-    return 0;
+    if (inputs == nullptr || nbInputs < 1) {
+        return 0;
+    }
+    // **必须用 `.max`，不能用 `desc.dims`**：动态轴在 `desc.dims` 里是 -1
+    // （TRT 头文件原话："desc.dims has -1 in place of any runtime dimension"），
+    // 拿它算出来的 workspace 会偏小，而 kernel 照样按运行期形状往里写 → 越界写。
+    // 这与 `TROUBLESHOOTING` #18（按假定精度分配缓冲）是同一类错误的两种形态：
+    // **边界尺寸必须向对方查询，不能自己假定**。
+    const nvinfer1::Dims& query_max = inputs[0].max;
+    if (query_max.nbDims != 4) {
+        return 0;
+    }
+    return PagedAttentionWorkspaceBytes(query_max.d[0], query_max.d[1], query_max.d[3],
+                                        kPagedAttentionMaxSplits);
 }
 
 int32_t PagedAttentionPlugin::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
@@ -417,7 +690,32 @@ int32_t PagedAttentionPlugin::enqueue(const nvinfer1::PluginTensorDesc* inputDes
     args.scale = scale_ > 0.0f ? scale_ : DefaultScale(args.head_size);
     args.is_half = (inputDesc[0].type == nvinfer1::DataType::kHALF);
 
-    const cudaError_t err = LaunchPagedAttention(args, stream);
+    // 生产路径 = split-K（上下文维切开）。`getWorkspaceSize` 用的是**构建期上界**（`.max`），
+    // 而这里算的是**运行期**需求；上界 ≥ 运行期，所以 TRT 给的缓冲一定够。
+    // 唯一会走到兜底的情况是"上界拿不到"（`getWorkspaceSize` 当时返回 0、TRT 便不分配）——
+    // 那时退回单趟 kernel：**结果仍然正确，只是没有加速**，比直接失败更合适。
+    const size_t workspace_needed =
+        PagedAttentionWorkspaceBytes(args.batch_size, args.num_heads, args.head_size,
+                                     kPagedAttentionMaxSplits);
+    // `< 0` = 测试开关"强制旧单趟路径"（同二进制 A/B 用）；生产路径从不设置它。
+    const bool force_single_pass = PagedAttentionNumSplitsOverride() < 0;
+    cudaError_t err = cudaErrorInvalidValue;
+    if (!force_single_pass && workspace != nullptr && workspace_needed > 0) {
+        err = LaunchPagedAttentionSplit(args, workspace, workspace_needed, stream);
+    } else {
+        static bool warned_once = false;
+        // 只在"本该有 workspace 却没有"时告警；A/B 主动选单趟不是异常。
+        if (!force_single_pass && !warned_once) {
+            warned_once = true;
+            MINI_TRT_LOG_WARN("PagedAttention: workspace unavailable at runtime "
+                              << "(batch=" << args.batch_size << " heads=" << args.num_heads
+                              << " head_size=" << args.head_size
+                              << ", computed need=" << workspace_needed
+                              << " B); falling back to the single-pass kernel "
+                                 "(correct but not accelerated)");
+        }
+        err = LaunchPagedAttention(args, stream);
+    }
     if (err != cudaSuccess) {
         MINI_TRT_LOG_ERROR("PagedAttention enqueue failed: " << cudaGetErrorString(err));
         return 1;

@@ -19,6 +19,7 @@
 #include "mini_trt_llm/core/builder.hpp"
 #include "mini_trt_llm/core/engine.hpp"
 #include "mini_trt_llm/core/llm_runner.hpp"
+#include "mini_trt_llm/plugins/paged_attention_kernel.hpp"
 #include "mini_trt_llm/sampler/sampler_common.hpp"
 #include "mini_trt_llm/utils/cuda_check.hpp"
 #include "mini_trt_llm/utils/memory_pool.hpp"
@@ -569,6 +570,254 @@ TEST(Gpt2DecodePerf, ContextLengthSweep) {
               << " ms（相对最短上下文；**线性假设未验证**）\n";
     std::cout << "[Gpt2DecodePerf]  读法：这个增量就是 attention 的边际成本——"
                  "它占短上下文每步的比例，决定 §2.2 的取舍\n";
+    PrintGpuState("(after)");
+}
+
+// PP-2：端到端**同 session A/B**——split 路径 vs 旧单趟路径（**P 层，只打印**）。
+//
+// 为什么必须有这一条：F1 的达标线是"长上下文每步 decode 的斜率至少降 40%"，而
+// `ContextLengthSweep` 只跑生产路径 → 它给的是**跨 session** 的点值，
+// `TROUBLESHOOTING` #38 明令这种差值不可直接比。旧单趟 kernel 由 F3=A 保留，
+// override `< 0` 可以把插件切回它（见 `paged_attention_kernel.hpp` 的说明）——
+// 于是两版能在**同一个 session、同一个引擎、逐轮交替**下测出来。
+//
+// **复用同一条引擎路径**（`..._ctxsweep_{prefill,decode}.engine`）：指纹覆盖整个
+// `EngineBuilder::Config`，另起路径会与 `ContextLengthSweep` 交替判对方过期、来回重建（§11.4.1 的坑）。
+//
+// **副产物（对 §2.2 很关键）**：打印两侧的 token 序列是否相同。若 split 路径只算了
+// 一部分上下文（例如归并漏片），长 prompt 下生成的 token 几乎必然与单趟不同——
+// 这比等数值套件更便宜地否证那一类假设。
+TEST(Gpt2DecodePerf, ContextLengthSweepSplitVsSinglePass) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    const std::string dir = FindRealModelDir();
+    if (dir.empty()) {
+        GTEST_SKIP() << "models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）";
+    }
+
+    constexpr int32_t kPromptLengths[] = {4, 256, 960};
+    constexpr int32_t kAbRounds = 5;
+    constexpr int32_t kAbWarmup = 1;
+    constexpr int32_t kPrefillMaxSeq = 992;
+
+    Logger logger;
+    EngineBuilder::Config builder_config;
+    builder_config.precision = Precision::FP32;
+    builder_config.min_prefill_batch = 1;
+    builder_config.opt_prefill_batch = 1;
+    builder_config.max_prefill_batch = 1;
+    builder_config.min_prefill_seq_len = 1;
+    builder_config.opt_prefill_seq_len = 512;
+    builder_config.max_prefill_seq_len = kPrefillMaxSeq;
+    builder_config.min_decode_batch = 1;
+    builder_config.opt_decode_batch = 1;
+    builder_config.max_decode_batch = 1;
+    EngineBuilder builder(logger, builder_config);
+
+    // **必须与 `ContextLengthSweep` 用同一条路径**（否则两个用例交替重建引擎）
+    const std::string prefill_path = "/tmp/mini_trt_llm_gpt2_ctxsweep_prefill.engine";
+    const std::string decode_path = "/tmp/mini_trt_llm_gpt2_ctxsweep_decode.engine";
+    ASSERT_TRUE(builder.BuildFromConfig(dir, prefill_path, BuildStage::kPrefill));
+    ASSERT_TRUE(builder.BuildFromConfig(dir, decode_path, BuildStage::kDecode));
+
+    LLMRunner::Config runner_config;
+    runner_config.num_layers = kRealLayers;
+    runner_config.num_kv_heads = kRealHeads;
+    runner_config.head_size = kRealHeadSize;
+    runner_config.block_size = kRealBlockSize;
+    runner_config.max_blocks_per_seq = kRealPositions / kRealBlockSize;
+    runner_config.num_blocks = 64;
+    runner_config.is_half = false;
+    runner_config.vocab_size = kRealVocab;
+    runner_config.eos_token_id = -1;
+
+    LLMRunner runner(runner_config, std::make_shared<Engine>(prefill_path, logger),
+                     std::make_shared<Engine>(decode_path, logger), nullptr);
+    ASSERT_TRUE(runner.ok());
+
+    LLMRunner::GenerateOptions options;
+    options.top_k = 1;
+    options.top_p = 1.0f;
+
+    PrintGpuState("(before)");
+    std::cout << "[split-K A/B] ---- 端到端同 session A/B（PP-2）----\n";
+    std::cout << "[split-K A/B]  口径：同一引擎 + 逐轮交替（split / 单趟），每档 warmup="
+              << kAbWarmup << " rounds=" << kAbRounds << "；每步=(T32−T1)/31；只打印不设阈值\n";
+
+    bool failed = false;
+    std::vector<double> split_steps;
+    std::vector<double> single_steps;
+    std::vector<double> drift_anchor_pct_by_prompt;
+    std::vector<double> regression_pct_by_prompt;
+    std::vector<double> paired_regression_pct_by_prompt;
+    std::vector<double> paired_drift_pct_by_prompt;
+    for (int32_t prompt_len : kPromptLengths) {
+        const std::vector<int64_t> prompt = MakePrompt(prompt_len);
+        auto time_once = [&](bool split, int max_new_tokens, std::vector<int64_t>* tokens) {
+            // `override < 0` = 强制旧单趟路径；`0` = 自适应（生产 = split）
+            SetPagedAttentionNumSplitsOverride(split ? 0 : -1);
+            LLMRunner::GenerateOptions local = options;
+            local.max_new_tokens = max_new_tokens;
+            const double t0 = NowMs();
+            const std::vector<int64_t> out = runner.Generate(prompt, local);
+            const double t1 = NowMs();
+            if (out.empty()) {
+                failed = true;
+            }
+            if (tokens != nullptr) {
+                *tokens = out;
+            }
+            return t1 - t0;
+        };
+
+        std::vector<int64_t> split_tokens;
+        std::vector<int64_t> single_tokens;
+        for (int32_t i = 0; i < kAbWarmup; ++i) {
+            time_once(true, 1, nullptr);
+            time_once(true, kMaxNewTokens, nullptr);
+            time_once(false, 1, nullptr);
+            time_once(false, kMaxNewTokens, nullptr);
+        }
+
+        // 一个"测量块" = `kAbRounds` 轮 ABBA。同一档跑**两次**，两次中位数之差就是这个
+        // session 的**重复测量漂移**——F1-B 那句"短上下文退化不超过同 session 漂移"
+        // 需要它做数值锚点（否则那句话没有参照物，等于不可判定）。
+        const auto measure_block = [&](std::vector<double>* split_ms,
+                                       std::vector<double>* single_ms,
+                                       std::vector<double>* paired_diff_ms,
+                                       std::vector<int64_t>* split_tokens_out,
+                                       std::vector<int64_t>* single_tokens_out) {
+            for (int32_t round = 0; round < kAbRounds; ++round) {
+                const bool split_first = (round % 2) == 0;  // ABBA：逐轮换序
+                const auto measure = [&](bool split, std::vector<int64_t>* tokens_out) {
+                    const double t1 = time_once(split, 1, nullptr);
+                    std::vector<int64_t> tokens;
+                    const double t32 = time_once(split, kMaxNewTokens, &tokens);
+                    *tokens_out = tokens;
+                    return (t32 - t1) / (kMaxNewTokens - 1);
+                };
+                double split_value = 0.0;
+                double single_value = 0.0;
+                if (split_first) {
+                    split_value = measure(true, split_tokens_out);
+                    single_value = measure(false, single_tokens_out);
+                } else {
+                    single_value = measure(false, single_tokens_out);
+                    split_value = measure(true, split_tokens_out);
+                }
+                split_ms->push_back(split_value);
+                single_ms->push_back(single_value);
+                // 配对差恒按 `split - single` 记账（与先后顺序无关——顺序由 ABBA 负责抵消）
+                paired_diff_ms->push_back(split_value - single_value);
+            }
+        };
+
+        std::vector<double> split_step_ms;
+        std::vector<double> single_step_ms;
+        std::vector<double> paired_diff_ms;
+        measure_block(&split_step_ms, &single_step_ms, &paired_diff_ms, &split_tokens,
+                      &single_tokens);
+        std::vector<double> split_step_repeat;
+        std::vector<double> single_step_repeat;
+        std::vector<double> paired_diff_repeat_ms;
+        std::vector<int64_t> split_tokens_repeat;
+        std::vector<int64_t> single_tokens_repeat;
+        measure_block(&split_step_repeat, &single_step_repeat, &paired_diff_repeat_ms,
+                      &split_tokens_repeat, &single_tokens_repeat);
+        // 复位：后面还有别的档，别让单趟开关泄漏到下一次测量
+        SetPagedAttentionNumSplitsOverride(0);
+
+        const double split_median = Median(split_step_ms);
+        const double single_median = Median(single_step_ms);
+        const double split_median_repeat = Median(split_step_repeat);
+        const double single_median_repeat = Median(single_step_repeat);
+        split_steps.push_back(split_median);
+        single_steps.push_back(single_median);
+        const bool tokens_match = (split_tokens == single_tokens);
+
+        // 两种"漂移"都要报，因为 F1-B 那句"退化不超过同 session 漂移"里的**漂移**没被钉死：
+        //   ① 各臂自身的绝对漂移（max / min 都给）——**取 max 是宽松方向**（锚点越大越容易
+        //      判"在漂移内"），首版注释把这一点写反了（真机数据打脸，见 TROUBLESHOOTING #45）；
+        //   ② **配对差 `split - single` 的跨块漂移**——ABBA 已抵消轮内漂移，它才是"这次比较
+        //      自身的不确定度"（`TROUBLESHOOTING` #37 / #38 的同一逻辑）。
+        const double drift_split = std::fabs(split_median_repeat - split_median);
+        const double drift_single = std::fabs(single_median_repeat - single_median);
+        const double rel_drift_split =
+            split_median > 0.0 ? 100.0 * drift_split / split_median : 0.0;
+        const double rel_drift_single =
+            single_median > 0.0 ? 100.0 * drift_single / single_median : 0.0;
+        const double drift_anchor_max_pct = std::max(rel_drift_split, rel_drift_single);
+        const double drift_anchor_min_pct = std::min(rel_drift_split, rel_drift_single);
+        // "退化" = split 比单趟慢多少（负数 = split 更快）
+        const double regression_pct =
+            single_median > 0.0 ? 100.0 * (split_median - single_median) / single_median : 0.0;
+        // 配对口径：估计 = 第一块的配对差中位数；不确定度 = 两块配对差中位数之差
+        const double paired_median = Median(paired_diff_ms);
+        const double paired_median_repeat = Median(paired_diff_repeat_ms);
+        const double paired_drift_ms = std::fabs(paired_median_repeat - paired_median);
+        const double paired_drift_pct =
+            single_median > 0.0 ? 100.0 * paired_drift_ms / single_median : 0.0;
+        const double paired_regression_pct =
+            single_median > 0.0 ? 100.0 * paired_median / single_median : 0.0;
+        drift_anchor_pct_by_prompt.push_back(drift_anchor_max_pct);
+        regression_pct_by_prompt.push_back(regression_pct);
+        paired_regression_pct_by_prompt.push_back(paired_regression_pct);
+        paired_drift_pct_by_prompt.push_back(paired_drift_pct);
+
+        std::cout << "[split-K A/B] prompt=" << prompt_len
+                  << "  每步：split=" << split_median << " ms (p25="
+                  << Percentile(split_step_ms, 25.0)
+                  << " p75=" << Percentile(split_step_ms, 75.0) << ")  单趟=" << single_median
+                  << " ms (p25=" << Percentile(single_step_ms, 25.0)
+                  << " p75=" << Percentile(single_step_ms, 75.0) << ")  比值="
+                  << (split_median > 0.0 ? single_median / split_median : 0.0)
+                  << "×  token 一致=" << (tokens_match ? "是" : "否 ← 需查") << "\n";
+        std::cout << "[split-K A/B]   同 session 重复测量漂移（两组各 " << kAbRounds
+                  << " 轮）：split |Δmedian|=" << drift_split << " ms (" << rel_drift_split
+                  << "%)  单趟 |Δmedian|=" << drift_single << " ms (" << rel_drift_single
+                  << "%)  绝对锚点 max=" << drift_anchor_max_pct
+                  << "% / min=" << drift_anchor_min_pct << "%\n";
+        std::cout << "[split-K A/B]   配对差（split−single，ABBA 抵消轮内漂移）："
+                  << paired_regression_pct << "%（两块中位数之差 " << paired_drift_pct
+                  << "% = 本次比较自身的不确定度）→ 可分辨="
+                  << (std::fabs(paired_regression_pct) > paired_drift_pct ? "是" : "否")
+                  << "\n";
+    }
+    ASSERT_FALSE(failed) << "测量期间 Generate 返回空 vector（失败）";
+
+    const double positions =
+        static_cast<double>(kPromptLengths[2] - kPromptLengths[0]);
+    const double split_slope = (split_steps[2] - split_steps[0]) / positions * 1000.0;
+    const double single_slope = (single_steps[2] - single_steps[0]) / positions * 1000.0;
+    std::cout << "[split-K A/B] 斜率（每 1000 位置）：split=" << split_slope
+              << " ms  单趟=" << single_slope << " ms → 降幅 "
+              << (single_slope > 0.0 ? (1.0 - split_slope / single_slope) * 100.0 : 0.0)
+              << "%（F1 达标线 = 40%）\n";
+    std::cout << "[split-K A/B] 读法：这是**同 session 同引擎**的对照，可直接比；"
+                 "跨 session 的单点值（如 PF-9 那次）不可与它相减（#38）\n";
+
+    // 短上下文档（prompt=4，平均上下文≈20）的退化：**观测项，不设判据**（作者 2026-09-27 决定）。
+    //
+    // 为什么不设判据：原判据写的是"退化不超过同 session 漂移"，而"漂移"有绝对 `max` / 绝对
+    // `min` / 配对差三种读法，前两种在本轮给出**相反**结论；更根本的是——我曾建议改写成
+    // "退化 ≤ 2%"，但那个 2% 的唯一数值输入（单次发射 3~6 µs）是拍的、无出处，
+    // 且 PP-1 与 PP-2 对这同一笔代价的估计差 1.97× 尚未解释。按 `AGENTS.md` §7，
+    // 在没被解释的量上画阈值等于埋问题 → 改为照 PF-8 / PF-9 的先例**只报数**。
+    // 完整账见 `docs/TROUBLESHOOTING.md` #45.1。
+    const double short_regression = regression_pct_by_prompt.front();
+    const double short_anchor = drift_anchor_pct_by_prompt.front();
+    const double short_paired = paired_regression_pct_by_prompt.front();
+    const double short_paired_drift = paired_drift_pct_by_prompt.front();
+    std::cout << "[split-K A/B] F1-B（最短档 prompt=" << kPromptLengths[0]
+              << "）：split 相对单趟 " << short_regression << "%\n";
+    std::cout << "[split-K A/B]   读法①（绝对漂移锚点 max=" << short_anchor
+              << "%）：" << (short_regression <= short_anchor ? "在漂移内" : "超出漂移") << "\n";
+    std::cout << "[split-K A/B]   读法②（配对差 " << short_paired << "% vs 其自身不确定度 "
+              << short_paired_drift << "%）："
+              << (std::fabs(short_paired) > short_paired_drift ? "退化可分辨（真实）"
+                                                              : "退化不可分辨（噪声内）")
+              << "\n";
+    std::cout << "[split-K A/B]   → 该项为**观测项、不设判据**（作者 2026-09-27 决定；"
+                 "曾议的 2% 因唯一数值输入无出处被否，见 TROUBLESHOOTING #45.1）\n";
     PrintGpuState("(after)");
 }
 
