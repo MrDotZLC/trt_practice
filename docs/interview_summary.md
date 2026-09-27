@@ -162,6 +162,19 @@ Python 侧 torch + onnx + transformers 做参考实现与产图。
 自研注意力与采样），CV 侧从 FP32 到 INT8 也是通的；工程基建比功能面更突出，
 缺口集中在 batching / 调度、LLM 量化、服务化这三块。
 
+### 2.12 模型支持面（"能接什么模型"的事实清单）
+
+事实来源：`EngineBuilder` 注册表只有两个名字（`gpt2` / `resnet18`，`src/core/builder.cpp:127-128`）；
+插件接受的 dtype（`paged_attention_plugin.cu:528` 只认 FP32/FP16）；插件能力清单见 §2.4。
+
+| 档 | 模型 | 状态 |
+|---|---|---|
+| **已交付 + 真机验证** | GPT-2（原生路径 FP32；ONNX 路径只能做 prefill 推理与对拍）、ResNet18（ONNX / 原生 / `CVRunner`；FP32 / FP16 / INT8） | 见 §2.3 / §2.8 与 §5 数字表 |
+| **同族可直接用，但未实测** | GPT-2 家族的其它 checkpoint（`distilgpt2` / `medium` / `large` 等） | 结构上同算子集（LayerNorm + 学习式位置编码 + MHA），转换脚本按 HF 的 `transformer.` 前缀映射；**从未实测，不能当结论** |
+| **写 builder 后理论可接** | ① LLaMA / Qwen2 / Phi 类（RMSNorm + RoPE + GQA/MQA + SwiGLU）——**算子件全在**；② BERT 类 encoder、ViT（当**纯前向**用） | 缺的是 builder / forward-only runner；LLaMA 系还差 SentencePiece 路径验证 |
+| **需要补 kernel 才能接** | Mistral 的 sliding window；T5 / BART / Whisper 的 cross-attention；MoE 动态路由；量化 KV cache | 都不是"改 builder"能解决的，见 §4 F |
+| **接不了** | 依赖 FP8 / INT4 Tensor Core 的路线（本机 TU116 无 Tensor Core）；70B 级（每层一对 KV cache 输入 → 80 层 160 个 I/O + 单卡显存） | 与 builder 无关的硬约束 |
+
 ---
 
 ## 3. 面试亮点（对齐 TensorRT-LLM 的技术与难点）
@@ -333,8 +346,19 @@ optimization profile）；executor 侧的 buffer / workspace / engine 管理。
    块池按需分配、长度增长不搬迁；`block_tables` 是定形张量，宿主侧不需要知道当前长度，
    正好满足"解码循环内零 D2H"。
 2. **为什么 decode 用插件、prefill 用原生子图？**
-   prefill 是整段算子，TRT 原生融合更好；decode 每步只有 1 个 token，需要跨 block 寻址 +
-   online softmax，TRT 没有现成算子。代价是两条路各自建引擎。
+   **先说准事实（易错）**：TRT 10.15 **有** `IAttention` 融合注意力（`addAttention(q,k,v,normOp,causal)`，
+   头文件原话是"TRT 会尽量用**单个融合 kernel**"），也**有** `addRotaryEmbedding`、
+   `IKVCacheUpdateLayer`。所以不能说"TRT 没有现成算子"。
+   
+   真正的分界是两条：① **TRT 自带的 KV cache 只有 `kLINEAR`**（`KVCacheMode` 只枚举了
+   `kLINEAR`，头文件注明 10.15 仅支持它）→ **分页 / 块表布局没有**，而我们的 KV cache 是分页的；
+   ② **解码侧没有可用的并行控制面**（split-K、片数、确定性归约这些不给开关）。
+   所以 decode 自研插件的理由是"**分页布局 + 可控制的并行策略**"，不是"TRT 没有 attention"。
+
+   prefill 走显式子图则是 **`phase2_development_plan.md` D1 的明确取舍**：备选就是
+   `IAttention(causal=true)`，当时选手搭的三条理由是——可按算子对拍定位差异、把同一份 K/V 张量
+   复用给 KV Cache、以及 Turing 上融合 kernel 的可用性需真机确认。代价是两条路各自建引擎。
+   要不要改成 `IAttention` 属**待测量决定**（`phase3_development_plan.md` D1，前置是 PF-7）。
 3. **为什么每层一对 cache 张量？**
    插件是"单层注意力"实现，只接收一个 4-D cache；共用一张会让每层都读第 0 段——
    这是我踩过的真 bug（2 层差 1.2e-3、12 层完全失真）。
@@ -444,6 +468,118 @@ optimization profile）；executor 侧的 buffer / workspace / engine 管理。
    真要动，先跑 ONNX vs 原生的可复现对照，再决定要不要做 prefill 侧 attention。
 5. **这个项目最大的不足？**
    没有生产级调度与 LLM 量化；FP16 端到端未解决；单卡 sm_75 拿不到 Tensor Core 收益，性能天花板不高。
+6. **（判断类）有人说"`mini_trt_llm/` 这一层多余，代码应该挪到根目录"，你怎么答？**
+   **架构上同意**：这一层原本是为了与两个示例工程并列，而那两个目录已随 Phase 5 下线，前提没了。
+   **工程上不动**：代价是全局 592 行路径引用；其中三类特别贵——① `AGENTS.md` 把目录树与
+   `./build/mini_trt_llm/tests/mini_trt_llm_tests` 写死（改它需要授权）；② 16 份冻结文档会集体失真；
+   ③ 有一处**会静默失效**：测试按路径找 `mini_trt_llm/tools/make_tiny_onnx.py`，搬完候选全不匹配
+   → 走 `GTEST_SKIP`，而那类跳过**故意没进资产闸门**。
+   结论口径：**"该做，但收益是美观、代价是全局路径与权威文档失真——属于排序靠后的事"**；
+   真要做就先把闸门扩到那类跳过，让损失可见，再搬。
+
+### F. 模型支持面与可扩展性（"你这框架能跑什么模型"）
+
+> 事实与分档见 §2.12，这里只给答题要点。
+
+1. **现在能部署哪些模型？**
+   两个：**GPT-2（推荐 FP32）**与 **ResNet18（FP32 / FP16 / INT8）**。其余都是"框架有件、
+   没有模型"——注册表里只有 `gpt2` / `resnet18` 两个名字。
+2. **不考虑 builder，理论上能接哪些？**
+   判据是"**算子集是否落在现成件里**"。能接的是标准 **decoder-only Transformer** 整族
+   （LayerNorm 或 RMSNorm + 绝对位置或 RoPE + MHA/GQA/MQA + MLP），以及把 Transformer 当
+   **纯前向**用的 encoder / ViT。接不了的是要靠新 kernel 的东西：sliding window、
+   cross-attention、MoE 动态路由、量化 KV cache。
+3. **LLaMA 为什么现在跑不了？缺什么？**
+   缺 **builder**，不是缺 kernel——RMSNorm 插件、RoPE 插件、支持 GQA 的分页注意力都在，
+   SiLU/SwiGLU 用 `sigmoid × mul` 就能表达。但**没有** `model_type: llama` 的 builder，
+   GPT-2 builder 走的是 LayerNorm + 学习式位置编码。另外 SentencePiece 路径未验证。
+   这题的关键是**把"算子件齐"和"能跑"分开**。
+4. **接一个新模型要动哪些东西？**
+   ① 转换脚本产 `config.json` + `model.safetensors`（含 `weight_map`）；
+   ② 写一个 `IModelBuilder` 并按名注册（三种切面：single / prefill / decode）；
+   ③ 若架构与 GPT-2 不同，prefill 的注意力子图要自己拼；
+   ④ runner 层适配（`LLMRunner` 只收 decoder-only + token id；encoder 类要 forward-only runner）；
+   ⑤ tokenizer 侧验证（BPE 已验，SP 未验）；
+   ⑥ 与参考实现（HF / PyTorch）做分层对拍，阈值写出处。
+5. **MoE 为什么难？**
+   **同样先说准**：TRT 有 `IGatherLayer`（`kELEMENT` / `kND`）与 `IScatterLayer`（`kELEMENT` / `kND`），
+   索引可以是张量——"按 token 路由"**能表达**，不是"不支持"。
+   难的是工程代价：① 每个专家收到多少 token 是**动态**的 → 要么固定容量 + padding，要么接受
+   丢弃策略；② 每次前向要从大块专家权重里 gather，访存代价高（TRT 的 gather 不会像手写 kernel
+   那样分块复用）；③ token 重排 / 去重（permutation）与容量溢出策略在建图标量图里很难表达。
+   所以准确说法是"**能表达，但要模型级设计**"，退路仍是"全部专家都算 + 掩码"（费算力）。
+6. **Mistral 的 sliding window 为什么是"要改 kernel"？**
+   decode 侧的分页注意力按 `context_len` 扫全量，插件里**没有窗口参数**。窗口不只是 mask 问题
+   （decode 时每步只来 1 个 token，窗口决定"看多少历史"），所以在长上下文下与全注意力**不等价**。
+7. **70B 级为什么说"不现实"？**
+   两条叠加：① decode 网络**每层一对** KV cache 输入（这是真 bug 修出来的设计），80 层 = 160 个
+   I/O，引擎体积与构建时间都成规模瓶颈；② 单卡显存。不是"慢"，是装不下。
+8. **和 TensorRT-LLM 在模型覆盖上的差距？**
+   它覆盖几十种架构 + TP/PP + 量化 + in-flight batching；我们只有 2 个模型、单卡、batch = 1。
+   诚实的说法是"**同一套机制的极小复刻**"，不是"简化版产品"。
+9. **（压力题）给你三个月，先接哪个模型？**
+   **LLaMA 类**：算子件最齐（RMSNorm / RoPE / GQA 分页注意力都在），收益最大
+   （能顺带把 SentencePiece 与 GQA 的生产路径验通）。前提是先验 SP tokenizer——**先造参考再动
+   实现**，不要拿模型去试 tokenizer。
+
+### G. 开场三问（动机 / 定位 / 最难的点）
+
+1. **为什么做这个项目？**（30 秒口径）
+   起点是仓库里两个独立的 TensorRT 示例（ResNet18 / GPT-2，各写各的 ONNX 加载），
+   我把它们合并成一个框架，并给自己定了一条约束：**只依赖 TensorRT + CUDA，关键 kernel 自己写**。
+   因为这台机器**没有 Tensor Core**，靠调库吃低精度吞吐走不通，所以力气放在访存与并行上。
+   追问四层：动机（合并 + 不调库）→ 为什么不用 TRT-LLM（机制 + 硬件吃不到收益）→
+   收获（工程纪律）→ 不足（清楚边界）。
+2. **主要做了什么？解决了什么问题？**
+   用"问题 → 做法 → 结果"讲三条：① 两套孤立能力 → 统一分层（配置驱动 + 注册表 + 指纹缓存）；
+   ② 解码不能回 host → 分页 KV + 设备侧采样 + `position_ids` 由 kernel 填；
+   ③ 长上下文没并行度 → 上下文维 split-K，斜率降 88%。
+   **不要念模块清单**——念"问题清单"。细节见 §2 与 §3。
+3. **最难的技术点？**
+   **长上下文 split-K**（分页注意力是第一个难点，它是进阶）。难的不是算法而是五条约束：
+   宿主拿不到上下文长度（grid 恒为上限）、空片要写哨兵、归约不能原子加（可复现）、
+   workspace 要按 `.max` 报（动态轴是 -1）、分片规则与布局只能有一份实现。
+4. **最难查的 bug？**（三个，类型不同，任选一个讲）
+   ① **最贵**：INT8 per-channel 整网退化——scale 取自**未折 BN** 的权重、量化对象是**已折 BN** 的
+   权重（"量 A 裁 B"），3 次真机往返 + 11 条假设被否证，最后靠 ONNX 官方参考实现 + **文件级证据**
+   （数被 clamp 到 ±127 的比例：3.9% / 16.2% / 0.04%）破局；改 scale 来源后 54.5% → 100%。
+   ② **最隐蔽**：FP16 端到端非法访存——缓冲按"配置精度"分配，而弱类型网络下 TRT 把 K/V 与 logits
+   声明成 FP32；**FP32 下 2 与 4 恰好一致，所以永远不暴露**。修法 = 一律向引擎查询声明精度。
+   ③ **最难下结论**：并列行上的 argmax——判据本身在那行不良定义（分歧比要分辨的间距大 5~7 倍），
+   翻绿翻红只取决于误差符号。修法是加"可判性"前提，数值判据一个字没动。
+
+### H. 实现归属与 TRT 能力边界（"这是你自己写的还是 TRT 给的"）
+
+1. **PagedAttention 包含 FlashAttention 吗？**
+   **包含 FlashDecoding，不包含经典 FlashAttention。** decode 侧是 online softmax 单趟扫描 +
+   上下文维 split-K + 两阶段归约（= FlashDecoding）；**prefill 侧没做** FlashAttention/FMHA，
+   那里是显式 `MatMul→mask→Softmax→MatMul` 子图。
+   口径：**借用了它的数值技巧（online softmax），没借用它的 IO 分块技巧**——query 长度 1 时
+   Q 维没有可分的块。
+2. **TRT 自己提供 FlashDecoding 吗？**
+   **stock TRT 没有这个名字的 API 或开关**。它给的是 `IAttention`（头文件原话"尽量用单个融合
+   kernel"，选哪个 tactic 不透明）；`IKVCacheUpdateLayer` 的 `KVCacheMode` **只有 `kLINEAR`**
+   → **分页/块表布局没有**。解码侧 multi-block（split-KV）那种显式控制是 **TensorRT-LLM**
+   （另一套库）的东西。**我们自研的真实理由是"分页布局 + 并行控制面"**，不是"TRT 没有 attention"。
+3. **TRT 有 `IAttention`，prefill 为什么还手搭？**
+   这是 `phase2_development_plan.md` **D1 的明确取舍**：可逐算子对拍定位差异、把同一份 K/V 复用给
+   KV cache、Turing 上融合 kernel 可用性待确认。要不要换成 `IAttention` 是**待测量决定**
+   （Phase 3 D1，前置 PF-7）。⚠️ 别说"TRT 没有现成算子"（它有），见 §4 A2 与 §6 红线。
+
+### I. 采样与解码策略（"采样器是干什么的"）
+
+1. **采样器是做什么的？是投机解码吗？**
+   **不是**。采样器是解码的"最后一米"——从一行 logits 里选出下一个 token；因为 `logits` 与
+   `token_ids` 都是**设备指针**，结果直接写回显存，**解码循环内零 D2D/D2H 同步**。
+   投机解码是另一件事：草稿模型提 k 个候选 + 目标模型一次前向验证；我们**没做**，
+   而它最硬的前置是 **KV 回退**——分页 cache 目前是"只追加"（`AppendDecodeStep` 只推进长度、
+   无截断）。**顺带区分**：分页 KV 解决显存复用，split-K 解决长上下文并行，都与投机解码无关。
+2. **采样器选几个 logit？是归一化后取最大值吗？**
+   **只有 greedy 取最大值，而且它连归一化都不用**（softmax 单调，`argmax(logits)` 等价）。
+   top-k：**恰好 k 个**（per-batch 张量），在前 k 个内算软概率后**随机抽一个**；
+   top-p：**个数可变**，取"累计概率首次 ≥ p 的最短前缀"再随机抽。
+   实现上归一化是**隐式**的：不逐项除 `total`，而是把阈值乘上 `total`（`u · Σ`），
+   这就是 top-p 新旧实现"唯一语义差异只是浮点累加顺序"的原因。
 
 ---
 
@@ -469,6 +605,13 @@ optimization profile）；executor 侧的 buffer / workspace / engine 管理。
 ## 6. 红线（不要说）
 
 - 别说"实现了 TensorRT-LLM"、"支持 continuous batching"、"支持 batch > 1"——runner 有意限定 batch = 1。
+- 别说"支持 LLaMA / Qwen / 任意 HuggingFace 模型"——注册表里只有 `gpt2` 与 `resnet18`；
+  **算子件齐 ≠ 能跑**（LLaMA 缺 builder、SentencePiece 未验证）。也说不出"支持任意
+  decoder-only Transformer"：每个新架构都要新 builder + 一轮对拍。
+- 别说"TRT 没有 attention / RoPE / KV cache 设施"——TRT 10.15 **有** `IAttention`
+  （`addAttention(q,k,v,normOp,causal)`）、`IRotaryEmbeddingLayer`、`IKVCacheUpdateLayer`
+  （KV cache **仅 `kLINEAR`**）。我们自研的真实理由是**分页布局**与**并行控制面**，
+  以及 prefill 手搭那条明确取舍（`phase2_development_plan.md` D1）。把 TRT 说小会被当场问穿。
 - 别说"支持 INT4 / FP8"、"KV cache 支持量化"——都没有；PagedAttention 只接受 FP32 / FP16。
 - 别说"FP16 端到端可用"；提"1 红"时要顺带说明那是**按设计**的 FP16 复现器，
   否则听起来像留了个未修的 bug。
@@ -476,3 +619,43 @@ optimization profile）；executor 侧的 buffer / workspace / engine 管理。
 - 温度 ≠ 1 是**直接拒绝**而非静默忽略；被问到时解释成有意设计（静默忽略会让"调参无效"
   看起来像"模型就是这样"）。
 - 不要引用未经自己实测的数字，也不要引用别的项目的性能数字来给自己背书。
+
+---
+
+## 7. 本会话问题索引（问题 → 落点）
+
+> 用途：这段对话里问过的问题都留一个坐标，避免"问过、答过、后来找不着"。
+> 面试类问题落在本文 §1~§6；**工程过程类问题不属于面试材料**，落点在 `docs/` 的活文档里。
+
+### 7.1 面试类（本文内）
+
+| 问题 | 落点 |
+|---|---|
+| `mini_trt_llm` 能算 TensorRT-LLM 的简化版吗？ | §4 E1（+ §1 的边界声明） |
+| 这个项目实现了哪些功能？ | §2（12 小节） |
+| 支持哪些模型部署？不考虑 builder 理论上能接哪些？ | §2.12 + §4 F |
+| 介绍一下这个项目 | §1（30 秒 / 2 分钟口述版）+ §2 |
+| 为什么做这个项目？ | §4 G1 |
+| 主要做了什么？解决了什么问题？ | §4 G2 |
+| 最难的技术点？最难查的 bug？ | §4 G3 / G4 |
+| PagedAttention 包含 FlashAttention 吗？ | §4 H1 |
+| TRT 自己提供 FlashDecoding 吗？ | §4 H2 |
+| TRT 有 `IAttention`，为什么还手搭 prefill？ | §4 H3（+ §4 A2） |
+| 采样器是做什么的？是投机解码吗？ | §4 I1 |
+| 采样器选几个 logit？是归一化后取最大值吗？ | §4 I2 |
+| 代码是不是该从 `mini_trt_llm/` 挪到根目录？ | §4 E6 |
+| 项目最大的不足？ | §4 E5 |
+| 和 vLLM / TRT-LLM 比优势在哪？ | §4 E2 |
+
+### 7.2 工程过程类（不在本文，落在活文档）
+
+| 问题 | 落点 |
+|---|---|
+| 接手项目先读什么？ | `docs/README.md` §1 |
+| `0_resnet18_onnx` / `1_gpt2_onnx` 能删了吗？删之前要做什么？ | `docs/phase5_development_plan.md`（阶段 0~4 + 删除清单）；**删除已执行** |
+| 资产迁到哪？provenance 怎么办？ | 同上 §5.1；`assets/legacy/README.md` |
+| "不影响 `mini_trt_llm`"的边界是什么？ | `PROGRESS.md` §4.6（**功能不变；测试与缓存可改可删**） |
+| 资产闸门要不要扩到全部资产跳过点？ | `docs/phase5_development_plan.md` §4.1（**已扩，62 处 / 15 个文件**） |
+| 真机跑出 1 红 / 2 红算不算问题？ | 1 红 = 按设计（`PROGRESS.md` §5.11）；2 红那次 = `TS-049`；基线见 `PROGRESS.md`「当前基线」 |
+| 跳过集合怎么保证不再"静默少跑"？ | `tools/check_skips.py` + `tests/data/expected_skips.txt`（基线为空） |
+| 提交信息怎么写、要不要提交？ | 由作者决定（`AGENTS.md` §0.2：提交与 push 归作者） |
