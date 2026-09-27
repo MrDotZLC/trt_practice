@@ -15,7 +15,16 @@ namespace {
 // 而给 GB 级 safetensors/onnx 做哈希会让每次构建都多花几秒到几十秒。
 std::string FileIdentity(const std::string& path) {
     std::ostringstream oss;
-    oss << path << '|';
+    // 路径**先规范化**再进身份：同一个文件用不同写法（`models/x` / `../../../models/x` /
+    // 带 `./` 的绝对路径）必须给出同一个身份。否则指纹会随"从哪个工作目录调用"变化——
+    // 2026-09-27 实测：`ctest`（CWD = 构建目录，`FindFile` 返回 `../../../models/…`）与
+    // 手动从仓库根跑（返回 `models/…`）会各把对方的引擎判成过期、交替重建一次
+    // （见 `docs/TROUBLESHOOTING.md` + `TS-048`）。
+    // `weakly_canonical` 对**不存在**的路径也能工作（只要求前缀存在）；万一失败就退回原字符串——
+    // 宁可"该变而变"（多花一次构建），也不要漏掉真的要失效的情况。
+    std::error_code canonical_error;
+    const std::filesystem::path canonical = std::filesystem::weakly_canonical(path, canonical_error);
+    oss << (canonical_error ? path : canonical.string()) << '|';
     std::error_code error;
     const auto size = std::filesystem::file_size(path, error);
     if (error) {

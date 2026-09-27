@@ -4,6 +4,8 @@
 >
 > **当前基线（唯一现状口径；以下几段历史快照与各节里的旧数字都不得当作现状）**：
 > - **测试（2026-09-27 整轮复跑，最新）**：沙箱 **264 / 0 失败**；真机整轮 **264 / 1 红 / 0 跳过 / 310 s**。
+>   其后新增 1 条 host 回归用例（`EngineCacheTest.SourceFileIdentityIgnoresPathSpelling`，见 `TS-048`）
+>   → **沙箱现为 265 / 0 失败（已实测）**；**真机总数随之为 265，待下一次真机整轮确认**（未跑过的不写"通过"）。
 >   唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`（GPT-2 FP16 NaN，按设计，见 §5.11）。
 >   `int8_crosscheck` 这次是 **Passed**——它只在**缺报告**时按设计跳过（77）；报告由 §8.3 的 C-1/C-2 产出。
 >   **真机必须带 `MINI_TRT_REQUIRE_GPU=1`**，否则等于白跑。
@@ -1783,6 +1785,16 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 > （GPT-2 主引擎 623 / 709 MB、ctxsweep 627 / 475 MB，分钟级）——这是**预期行为**，不是故障
 > （`future_iterations_development_plan.md` §12.8 第 1 条：workspace 需求由 0 变正数，复用旧引擎会往 0 字节缓冲里写）。
 > 重建后指纹稳定、后续运行命中 `cache hit`。**新会话不要把这些引擎的"已重建"当成异常。**
+>
+> **又一次性失效（2026-09-27，`TS-048` 修复）**：`FileIdentity()` 现在先把模型路径
+> `weakly_canonical` 规范化再算身份（此前"从仓库根手动跑"与"经 ctest 跑"会算出两个指纹、
+> 交替重建）。**已真机验证**：手动跑一次（两个 resnet18 引擎重建，80.5 s，属预期的一次性失效）
+> → 紧接着 `ctest -R ResNet18Int8AccuracyTest` **0.93 / 1.71 / 1.86 s 全命中、无 `stale`**；
+> 指纹里已是绝对路径。**其它引擎（GPT-2 623/709 MB、ctxsweep 627/475 MB）会在下次被用到时各重建一次**，同属预期。
+>
+> **重建 ≠ 逐字节相同**：`builder.cpp` 未设 `kDETERMINISTIC`、无 timing cache → TRT 的 tactic 选择是
+> timing-based。本次实测同网络重建后 `resnet18_onnx_fp32.engine` 由 **54,196,084 → 52,357,812 字节（−3.4%）**。
+> **做性能对照必须用同一次构建的引擎**（与 `phase3_test_plan.md` §3.1 的"构建间噪声"同源）。
 
 **已知会失败/跳过的测试**（避免新会话误判为回归）：
 

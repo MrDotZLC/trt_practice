@@ -62,7 +62,7 @@
 | `TS-045` | 45 | PP-2 的漂移锚点："保守方向"写反了，且 F1-B 的"漂移"本身有歧义（2026-09-27） | — |
 | `TS-046` | 46 | P4-INT8-a 结案：per-channel 整网退化的根因是权重 scale 取自未折 BN 的权重（202… | — |
 | `TS-047` | 47 | 探针用例真机首跑：一个绑定 bug、一个必须记录的现象、一个更硬的证据（2026-09-27） | — |
-| `TS-048` | 48 | 引擎缓存把"模型路径写法"算进指纹 → 换调用方式就重建（已复现两次，机制已定位） | 已定位 |
+| `TS-048` | 48 | 引擎缓存把"模型路径写法"算进指纹 → 换调用方式就重建（已修复，真机已验证） | 已修复（真机已验证） |
 
 > 索引用 `TS-NNN`；旧写法 `#NN` 仍可用（同号）。**正文只增不改**，新记录追加在末尾。
 
@@ -2932,7 +2932,7 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests --gtest_fil
 
 ---
 
-## 48. [TS-048] 引擎缓存把"模型路径写法"算进指纹 → 换调用方式就重建（已复现两次，机制已定位）
+## 48. [TS-048] 引擎缓存把"模型路径写法"算进指纹 → 换调用方式就重建（已复现两次，已修复，**真机已验证**）
 
 **现象**（2026-09-27，真机；同一台机器、同一批模型产物）：
 
@@ -2971,6 +2971,49 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests --gtest_fil
 
 **影响**：只影响构建耗时（每次约 60~70 s），**不影响正确性**；但会让"引擎缓存命中"在两种调用方式之间来回翻转。
 
-**处置建议（属改产品代码，需作者批准）**：进入指纹前先把模型路径规范化（例如 `std::filesystem::weakly_canonical` 成绝对路径）再算 `FileIdentity`；改完需在真机上确认两种调用方式交替跑不再重建。
+**处置（2026-09-27 已实施，作者批准）**：`FileIdentity()` 在算身份前先
+`std::filesystem::weakly_canonical(path, ec)` 规范化（失败则退回原字符串——宁可"该变而变"，
+也不要漏掉真要失效的情况）。`weakly_canonical` 对**不存在**的路径也有效（只要求前缀存在），
+所以"缺文件"分支同样不再随写法漂移。
+
+**验证**
+
+- 新增 host 回归 `EngineCacheTest.SourceFileIdentityIgnoresPathSpelling`：同一文件用
+  `…/tmp/x.bin`、`…/tmp/../tmp/x.bin`、`…/tmp/./x.bin` 三种写法 → 指纹相同；换成**另一个**文件 → 仍不同
+  （防止把"规范化"做成"忽略路径"）。
+- **护栏自证**：临时撤掉修复后该用例**变红**（实测 `1 FAILED TEST`），装回后 6/6 通过
+  ——按 `PROGRESS.md` §2.13"护栏必须有用例证明它会拦人"。
+- 沙箱 `ctest`：**265 条 / 0 失败**（原 264 + 本用例）。
+
+**真机验证（2026-09-27，已通过）**
+
+| 步骤 | 结果 |
+|---|---|
+| ① 从仓库根手动跑 `DumpsLogitsAndCppReportForCrossCheck` | 两个引擎 `stale → 重建`，用例 **80.5 s**（一次性失效，符合预告） |
+| ② 紧接着 `ctest -R ResNet18Int8AccuracyTest` | `RampInputIsOutOfDistribution` **0.93 s** / `Top1AgreementOnRealImages` **1.71 s** / `DumpsLogitsAndCppReportForCrossCheck` **1.86 s**，**全程无 `Engine cache stale`** → 换调用方式不再重建 ✅ |
+| ③ `grep '^file=' …onnx_fp32.engine.fingerprint` | `file=/home/mr_zlc/trt_practice/0_resnet18_onnx/resnet18.onnx\|46748560\|…`、`file=/home/mr_zlc/trt_practice/models/resnet18/config.json\|2677\|…` → **绝对路径，无 `../`** ✅ |
+
+交叉校验数字未变：`整体 98/256`、**余量子集 12/12**、`max_abs 21.5985`。
+
+**附带观察（不是本条的缺陷）**：同网络重建后 `resnet18_onnx_fp32.engine` 由 **54,196,084 → 52,357,812 字节（−3.4%）**。
+`builder.cpp` 未设 `kDETERMINISTIC`、也没有 timing cache → TRT 的 tactic 选择是 timing-based，
+**重建可能选到不同 tactic**，引擎字节与性能因此都会变。这与 `phase3_test_plan.md` §3.1 记的
+"构建间 ±25% 噪声"同源，**做性能对照时要用同一次构建的引擎**。
+
+**原计划的两条确认命令（保留备查）**
+
+```bash
+cmake --build build -j$(nproc)
+# ① 从仓库根手动跑（第一次会重建，属预期的一次性失效）
+MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
+    --gtest_filter='ResNet18Int8AccuracyTest.DumpsLogitsAndCppReportForCrossCheck'
+# ② 紧接着用 ctest 跑同一组：应全部 cache hit（不再重建，秒级）
+ctest --test-dir build -R ResNet18Int8AccuracyTest --output-on-failure
+grep '^file=' /tmp/mini_trt_llm_resnet18_onnx_fp32.engine.fingerprint   # 应变成绝对路径（无 ../ 前缀）
+```
+
+> **注意**：这次修复**改了指纹输入**，所以下一次真机运行的**第一批引擎会全部重建一次**
+> （GPT-2 主引擎 623/709 MB + ctxsweep 627/475 MB + ResNet18 若干）——与 `kEngineGraphVersion`
+> bump 同类，**属预期**，不是故障；重建后两种调用方式都应命中 `cache hit`。
 
 **状态**：现象**已复现两次**；机制**已定位**（证据链 + 输入不变性推论，见上）。另一种路径写法未留证（属可选补充，不影响结论）。

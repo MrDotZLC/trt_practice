@@ -152,4 +152,39 @@ TEST(EngineCacheTest, SourceFileIdentityChangesWithMtime) {
     EXPECT_NE(first, ComputeEngineFingerprint(missing));
 }
 
+// 同一个文件的不同**写法**必须给同一个身份。
+// 为什么单列一条：模型路径由调用方的 `FindFile({"models/…", "../models/…", …})` 按**当前工作目录**
+// 解析，于是"同一个模型"会得到 `models/…` 或 `../../../models/…` 两种字符串。指纹里存的是路径，
+// 所以两种写法会算出两个指纹、把对方的引擎判成过期——2026-09-27 真机上实测过这种交替重建
+// （见 `docs/TROUBLESHOOTING.md` + `TS-048`）。
+TEST(EngineCacheTest, SourceFileIdentityIgnoresPathSpelling) {
+    const std::string probe = MakeTempEnginePath("path_spelling") + ".bin";
+    Touch(probe, "same-bytes");
+    const std::filesystem::path p(probe);
+
+    EngineFingerprintInputs plain = BaseInputs();
+    plain.source_files = {probe};
+    const std::string baseline = ComputeEngineFingerprint(plain);
+
+    // `…/tmp/../tmp/x.bin`：与真机上 `../../../models/…` 同类的"绕一圈还是同一个文件"。
+    EngineFingerprintInputs via_dotdot = BaseInputs();
+    via_dotdot.source_files = {(p.parent_path() / ".." / p.parent_path().filename() / p.filename()).string()};
+    EXPECT_EQ(baseline, ComputeEngineFingerprint(via_dotdot));
+
+    // `…/./x.bin`：多余的当前目录分量。
+    EngineFingerprintInputs via_dot = BaseInputs();
+    via_dot.source_files = {(p.parent_path() / "." / p.filename()).string()};
+    EXPECT_EQ(baseline, ComputeEngineFingerprint(via_dot));
+
+    // 反面：真的换了文件（不同路径、内容也不同）必须仍然不同——规范化不能变成"忽略路径"。
+    const std::string other = probe + ".other";
+    Touch(other, "other-bytes");
+    EngineFingerprintInputs other_inputs = BaseInputs();
+    other_inputs.source_files = {other};
+    EXPECT_NE(baseline, ComputeEngineFingerprint(other_inputs));
+
+    std::filesystem::remove(probe);
+    std::filesystem::remove(other);
+}
+
 }  // namespace mini_trt_llm
