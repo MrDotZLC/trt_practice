@@ -82,6 +82,25 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 # ---------------------------------------------------------------------------
+# P4-INT8-a（`future_iterations.md` §1.5）的两件仪器自检
+#
+# 为什么进 ctest：这一条排查的结论全建立在两件仪器上——
+#   ① `qdq_reference.py` 是**数值标尺**（ONNX 官方参考实现），它必须先被校准
+#      （`TROUBLESHOOTING.md` #29.1/#30.4 的教训：标尺错了会给出错误裁决）；
+#   ② `add_probe_outputs.py` 是**采样器**，它必须保证"探针图 = 产物图 + 探针"
+#      （节点 / initializer 逐字节不变），否则测的不是原来那张图。
+# 两件都自造 fixture、不依赖 GPU 与外部数据 → 沙箱即可跑，因此**不用** SKIP_RETURN_CODE。
+# ---------------------------------------------------------------------------
+if(Python3_Interpreter_FOUND)
+    add_test(NAME qdq_reference_selftest
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/validate/qdq_reference.py --self-test)
+    add_test(NAME add_probe_outputs_selftest
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/convert/add_probe_outputs.py --self-test)
+endif()
+
+# ---------------------------------------------------------------------------
 # GPT-2 BPE 参考数据的可复现性校验（future_iterations A1）
 #
 # 为什么进 ctest：`BpeTokenizer` 的判据是"与 HF 逐 token 全等"，那份 golden 就是标尺。

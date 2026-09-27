@@ -1,0 +1,157 @@
+{
+  "source_onnx": "models/resnet18/resnet18_qdq.onnx",
+  "probe_onnx": "models/resnet18/resnet18_qdq_probe_per_tensor.onnx",
+  "probe_tensors": {
+    "/conv1/Conv_output_0": [
+      0,
+      64,
+      112,
+      112
+    ],
+    "/layer1/layer1.0/conv1/Conv_output_0": [
+      0,
+      64,
+      56,
+      56
+    ],
+    "/layer1/layer1.0/conv2/Conv_output_0": [
+      0,
+      64,
+      56,
+      56
+    ],
+    "/layer1/layer1.1/conv1/Conv_output_0": [
+      0,
+      64,
+      56,
+      56
+    ],
+    "/layer1/layer1.1/conv2/Conv_output_0": [
+      0,
+      64,
+      56,
+      56
+    ],
+    "/layer2/layer2.0/conv1/Conv_output_0": [
+      0,
+      128,
+      28,
+      28
+    ],
+    "/layer2/layer2.0/conv2/Conv_output_0": [
+      0,
+      128,
+      28,
+      28
+    ],
+    "/layer2/layer2.0/downsample/downsample.0/Conv_output_0": [
+      0,
+      128,
+      28,
+      28
+    ],
+    "/layer2/layer2.1/conv1/Conv_output_0": [
+      0,
+      128,
+      28,
+      28
+    ],
+    "/layer2/layer2.1/conv2/Conv_output_0": [
+      0,
+      128,
+      28,
+      28
+    ],
+    "/layer3/layer3.0/conv1/Conv_output_0": [
+      0,
+      256,
+      14,
+      14
+    ],
+    "/layer3/layer3.0/conv2/Conv_output_0": [
+      0,
+      256,
+      14,
+      14
+    ],
+    "/layer3/layer3.0/downsample/downsample.0/Conv_output_0": [
+      0,
+      256,
+      14,
+      14
+    ],
+    "/layer3/layer3.1/conv1/Conv_output_0": [
+      0,
+      256,
+      14,
+      14
+    ],
+    "/layer3/layer3.1/conv2/Conv_output_0": [
+      0,
+      256,
+      14,
+      14
+    ],
+    "/layer4/layer4.0/conv1/Conv_output_0": [
+      0,
+      512,
+      7,
+      7
+    ],
+    "/layer4/layer4.0/conv2/Conv_output_0": [
+      0,
+      512,
+      7,
+      7
+    ],
+    "/layer4/layer4.0/downsample/downsample.0/Conv_output_0": [
+      0,
+      512,
+      7,
+      7
+    ],
+    "/layer4/layer4.1/conv1/Conv_output_0": [
+      0,
+      512,
+      7,
+      7
+    ],
+    "/layer4/layer4.1/conv2/Conv_output_0": [
+      0,
+      512,
+      7,
+      7
+    ],
+    "/avgpool/GlobalAveragePool_output_0": [
+      0,
+      512,
+      1,
+      1
+    ]
+  },
+  "probe_count": 21,
+  "graph_outputs": [
+    "output",
+    "/conv1/Conv_output_0",
+    "/layer1/layer1.0/conv1/Conv_output_0",
+    "/layer1/layer1.0/conv2/Conv_output_0",
+    "/layer1/layer1.1/conv1/Conv_output_0",
+    "/layer1/layer1.1/conv2/Conv_output_0",
+    "/layer2/layer2.0/conv1/Conv_output_0",
+    "/layer2/layer2.0/conv2/Conv_output_0",
+    "/layer2/layer2.0/downsample/downsample.0/Conv_output_0",
+    "/layer2/layer2.1/conv1/Conv_output_0",
+    "/layer2/layer2.1/conv2/Conv_output_0",
+    "/layer3/layer3.0/conv1/Conv_output_0",
+    "/layer3/layer3.0/conv2/Conv_output_0",
+    "/layer3/layer3.0/downsample/downsample.0/Conv_output_0",
+    "/layer3/layer3.1/conv1/Conv_output_0",
+    "/layer3/layer3.1/conv2/Conv_output_0",
+    "/layer4/layer4.0/conv1/Conv_output_0",
+    "/layer4/layer4.0/conv2/Conv_output_0",
+    "/layer4/layer4.0/downsample/downsample.0/Conv_output_0",
+    "/layer4/layer4.1/conv1/Conv_output_0",
+    "/layer4/layer4.1/conv2/Conv_output_0",
+    "/avgpool/GlobalAveragePool_output_0"
+  ]
+}

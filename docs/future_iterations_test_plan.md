@@ -126,20 +126,41 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 
 ## 3. 批次 B：P4-INT8-a 的用例（对应 `future_iterations.md` §1.5）
 
-**注意：本批的验收不是"绿 / 红"**，而是 §1.5 写的二选一结论（定位到第 N 层与机制，或证明查空）。
-因此下面只有 B1-1 允许带阈值，且该阈值**必须先量再定**。
+> **2026-09-27 细化**：执行设计（D1~D6）、测量口径、真机清单在
+> `future_iterations_development_plan.md` **§13**。原表把 B1-1 的判据写成"差异落在 FP32 kernel 正常
+> 差异量级内"——**没说这个量级从哪来**（AGENTS.md §7 不许来路不明的阈值）。现改成：
+> **噪声地板由 PT 臂当场量出**（§13.3 D4），下面是落地后的用例清单。
 
-| 用例 ID | 用例名（拟） | 层 | 判据 | 出处 | 前置 | 状态 |
+**注意：本批的验收不是"绿 / 红"**，而是 §1.5 写的二选一结论（定位到第 N 层与机制，或证明查空）。
+因此只有"位相同"与"首层落在噪声地带内"两条**结构性**判据，其余一律"打印 + 落盘报告"。
+
+| 用例 ID | 用例名 | 层 | 判据 | 出处 | 前置 | 状态 |
 |---|---|---|---|---|---|---|
-| B1-1 | `Int8ProbeTest.PrequantProbeMatchesTorchFoldedBn` | G | **仪器自证**：探针读到的"量化前"张量 vs torch **已折叠 BN** 的模型同点对拍，差异落在"FP32 kernel 正常差异"量级内 | `TROUBLESHOOTING.md` #30.5（上次 2/3 轮预算耗在探针自身的 BN 折叠错） | 探针图 | 未开始 |
-| B1-2 | `Int8ProbeTest.SameEngineSameInputBitIdentical` | G | 同一引擎、同一输入重复跑 → 逐位相同（先证明确定性，才谈误差曲线） | §1.5 做法第 2 条 | 引擎缓存 | 未开始 |
-| B1-3 | `Int8ProbeTest.LayerwiseErrorGrowthReported` | G | 输出**逐层误差增长曲线**并标出首个越过噪声带的层号；**不预设曲线单调** | §1.5 做法第 2 条 | B1-1 通过 | 未开始 |
-| B1-4 | `Int8ProbeTest.PerChannelNotWorseOnIsolatedConv` | G | 回归：单卷积上 per-channel 与模拟的差异仍 ≈`1.9e-6` 量级（结论不因仪器改动而漂移） | §1.5 现状表 | 引擎 | 未开始 |
-| B1-5 | `Int8ProbeTest.PerChannelNotWorseOnMinimalBlock` | G | 回归：最小残差 block 上 per-channel 仍**不差于** per-tensor（实测 0.0134 vs 0.0457） | §1.5 现状表 | 引擎 | 未开始 |
-| B1-6 | `Int8ProbeTest.CoversDownsampleAndGapFc` | G | 覆盖上次最小复现**没覆盖**的两段：3 个下采样卷积（1×1/s2）与 `GAP + fc` | §1.5 做法第 3 条（#30.3 第 2 条） | 引擎 | 未开始 |
+| B1-1 | `Int8ProbeTest.LayerwiseErrorGrowthVsOnnxReference`（自证部分） | G | **仪器自证（比较型）**：两臂 conv1 的 `d_pre = |引擎探针 − 参考量化前| ≤ d_post = |引擎探针 − 参考量化后|`，且首层落在噪声地带内。**落地方案在实施时改了**：原写"数格点占比"，实做改为**同时落量化前/量化后两份参考、比 d_pre 与 d_post**——不用先估 scale，少一个可能出错的环节（见 §13.3 D3 的落地说明） | §13.3 D3 | 探针图 | ✅ **真机通过**（2026-09-27）：`conv1` PT `d_pre=8.34e-07`/`d_post=0.0398`、PC `1.43e-06`/`0.0398`（差 4.7 个数量级） |
+| B1-2 | `Int8ProbeTest.SameEngineSameInputBitIdentical` | G | 同一引擎、同一输入重复跑 → 逐位相同（先证明确定性，才谈误差曲线） | §1.5 做法第 2 条 | 引擎缓存 | ✅ **真机通过**（2026-09-27）：22 个张量逐位相同（首跑红在用例绑定，见 `TROUBLESHOOTING.md` #47.1，已修） |
+| B1-3 | `Int8ProbeTest.LayerwiseErrorGrowthVsOnnxReference`（曲线部分） | G | 与 **ONNX 官方参考实现**逐层对拍：PC / PT 各出一条 `max_abs` 曲线并落盘；标出 PC 首个越过 `100 × noise_floor`（`noise_floor` 由 PT 臂当场量出）的层号；**不预设曲线单调** | §1.5 做法第 1~3 条；§13.3 D1/D2/D4 | B1-1 / B1-2 通过 | ✅ **真机通过**（2026-09-27）：引擎 vs **自己的图**逐层最大 `max_abs` PT 0.2714（`layer4.1.conv2`，相对 2.3%）、PC 0.168、`conv1` 8.3e-07；两臂都未越界 → **引擎忠实**。另加**逐层 ONELINE 落盘**（`<ref-dir>/layers_{pt,pc}.txt`），因为探针图改了 tactic（#47.2）。**判读措辞已修正**：这条判据问的是"引擎有没有跑偏自己的图"，不是"两臂谁更准"（#47.4） |
+| B1-4 | `Int8ProbeTest.PerChannelDegradationReproducesUnderProbe` | G | **硬门**：探针图下 256 张仍复现退化（余量子集一致率 PC 明显 < PT；正式产物口径 PC 54.5% / PT 100%）。不复现 → 本轮作废 | §13.3 D6（挂图输出可能改变融合） | 引擎 | ✅ **真机通过（硬门）**（2026-09-27）：整体 PT 99/256、PC 26/256；**余量子集（n=12）PT 12/12 = 100%、PC 6/12 = 50%** → 与正式产物口径一致，探针图是现象的有效模型（尽管它把 `i8i8` 从 4 变成 0） |
+
+> **B1-4 的前提是"PC 臂用那份**错源**的 per-channel 图"**（`models/resnet18/resnet18_qdq_probe_per_channel.onnx`）。
+> 那份产物的身份已钉为 **#46 的复现样本、不是候选基线**（开发计划 §13.11）。**若哪天把它重生成成
+> 改源版，B1-4 会立刻变红——那不是故障，是它的前提消失了**：届时必须把"重生成 + 退役/改写 B1-4"
+> **打包**做（改成"两臂都对 FP32 全一致"之类），并按 `AGENTS.md` §7 把"为什么可以改这条期望"写进文档。
+> **不要**为了让 B1-4 变绿而去动阈值或删断言。
+
+**覆盖说明（原 B1-6 并进 B1-3）**：探针清单 = 20 个 Conv 的**量化前**输出（含 3 个
+`1×1/s2` 下采样卷积）+ `GlobalAveragePool` 输出 + 契约输出 `output`，覆盖 §1.5 做法第 3 条点名的
+"下采样卷积"与"GAP+fc 段"。残差 `Add` / `Relu` 的输出可由已探张量逐元素推出，不另挂输出
+（理由见 §13.3 D5）。**原 B1-4 / B1-5**（单卷积 / 最小残留 block 上 per-channel 不更差）是
+历史结论，本轮**不重做**——它们的可复现性是 Python 侧，见 B1-H2。
+
+| 用例 ID | 用例名 | 层 | 判据 | 出处 | 前置 | 状态 |
+|---|---|---|---|---|---|---|
+| B1-H1 | `qdq_reference_selftest`（ctest） | H | 参考工具自证：最小 Q/DQ 图**逐位**比手算值（0 差）、per-channel 与 per-tensor 在构造样本上可分辨、index/meta 格式正确、坏输入被拒 | §13.3 D1；`PROGRESS.md` §2.13（参考必须唯一且独立） | 无（沙箱可跑） | ✅ **通过**（`ctest -R qdq_reference_selftest`；自检当场抓出"把 producer 当 consumer"的配对 bug） |
+| B1-H2 | `add_probe_outputs_selftest`（ctest） | H | 探针图变换自证：节点 / initializer / 输入 / opset **逐字节不变**，只有 `graph.output` 变多；探针数与形状自洽 | §13.3 D5；"探针图 = 产物图 + 探针"是整条结论的地基 | 无（沙箱可跑） | ✅ **通过**（`ctest -R add_probe_outputs_selftest`） |
 
 **禁止**：把 B1 的任一判据写成"per-channel 必须优于 per-tensor"——那是预设结论，
 而本条目的问题恰恰是"为什么整网上更差"（`AGENTS.md` §7 第 1 / 3 种动作之外都不允许）。
+**也不许**用 B1-3 的曲线去解释原来的退化，除非 B1-4 先通过（§13.6）。
 
 ---
 
@@ -209,7 +230,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 |---|---|---|---|---|
 | A1 BPE Tokenizer | ✅ 完成（A1-1~A1-10 全部通过；A1-10 层级由 G 改 H，理由见 §2.1） | `Encode` 与 HF 逐 token 全等（21 样本）、`Decode` 一致、4 条 `Load` 负例拒绝、参考自证通过 | `./build/mini_trt_llm/tests/mini_trt_llm_tests --gtest_filter='Bpe*'`（10 条全过）；`ctest -R tokenizer_golden_check`（Passed 3.21 s）；沙箱全量 `ctest` **204 条 / 0 失败** | 2026-09-26 |
 | A2 INT8 判据离线规格 | ✅ 完成（A2-1~A2-4 / A2-6 / **A2-9**；**A2-5 已由 C 批在真机完成**，见 §2.3） | `--self-test` 全绿（3 项分层数学 + 7 道护栏 + 1 项 legacy 标注）；真实 `calib_data` 500 文件 smoke 报告正确；C 批：C++ 与 Python 两侧统计给出同一组 n 与分子 | `python3 mini_trt_llm/tools/validate/int8_eval.py --self-test`；`ctest -R int8_eval_selftest`；`ctest -R int8_crosscheck`；沙箱 `ctest` **215/0** | 2026-09-26 |
-| B1 P4-INT8-a | 未触发 | —— | —— | —— |
+| B1 P4-INT8-a | ✅ **结案**（根因定位 + 离线反证 + **真机 B1-1~B1-4 全绿**） | 根因 = 权重 scale 取自**未折 BN** 的权重、量化对象是**已折 BN** 的权重（逐通道折叠系数 0.05~19.9）。**离线**（ONNX 官方参考、64 张）：PT 60.9%/100%（n=11）、PC(错源) 25.0%/54.5%、**PC(改源) 57.8%/100%**；PC(错源) 与 #29.2/#29.5 的**真机 TRT 数字逐位相同**。**文件级**：饱和(±127)权重 PT 3.919% / PC(错源) **16.188%** / PC(改源) **0.044%**。**真机 B1**：确定性 22 张量逐位相同；探针自证 8.34e-07 vs 0.0398；引擎 vs 自己的图逐层最大 0.2714（未越界 → 引擎忠实）；探针图复现对照 **PT 12/12=100% / PC 6/12=50%** | `ctest -R 'qdq_reference_selftest\|add_probe_outputs_selftest'`（2/2 Passed）；沙箱 `ctest` **264 条 / 0 失败**；真机 `--gtest_filter='Int8Probe*'` **3/3 Passed**；完整记录 `TROUBLESHOOTING.md` #46 / #47 | 2026-09-27 |
 | C 组 | 未触发 | —— | —— | —— |
 
 ---

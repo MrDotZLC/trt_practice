@@ -64,7 +64,11 @@
 >    跑真机时请带 `MINI_TRT_REQUIRE_GPU=1`：否则 GPU 用例会静默跳过，等于白跑。
 > 5. **Phase 4 的精度现状**：ResNet18 的 **FP32 / FP16 都健康**（argmax 全一致）；
 >    **INT8 走 Q/DQ 显式量化**，判据是"**FP32 有余量子集的一致率**"（实测 12/12 = 100%），
->    权重默认 **per_tensor**；**per-channel 的整网退化原因未知**（开放项 P4-INT8-a，见 §6.6）。
+>    权重默认 **per_tensor**；~~per-channel 的整网退化原因未知~~ **→ 2026-09-27 已定位**：
+>    根因在**产图脚本**——权重 scale 取自**未折 BN** 的 torchvision 权重，而 Q/DQ 插在**已折 BN**
+>    的 ONNX 权重上（逐通道折叠系数 0.05~19.9）。改 `--weight-range-source onnx` 后 per-channel
+>    的余量子集一致率 **54.5% → 100%**。**正式产物与默认行为均未改动**（逐字节复核）。
+>    完整证据链见 §3.0j 与 `TROUBLESHOOTING.md` **#46**；真机同机确认（B1 四条）尚未跑。
 >    细节见 §3.0d 与 `docs/phase4_int8_plan.md`。
 >    **两条开放项已于 2026-09-26 立项**：P4-INT8-a → `docs/future_iterations.md` **§1.5**
 >    （per-channel 整网退化根因；前 3 步**不需要联网**）、P4-INT8-b → 同文件 **§1.6**
@@ -752,6 +756,82 @@ PP-1 与 PP-2 对同一笔代价差 1.97× 未解释）→ 见 `TROUBLESHOOTING.
 **开放观察（不是缺陷）**：PP-1 的 kernel 级预测（+0.95%）与 PP-2 的端到端实测（+1.877%）
 差约 2×，**差因未查**。
 
+### 3.0j P4-INT8-a 结案：per-channel 整网退化的根因（2026-09-27）
+
+**计划落点**：`future_iterations.md` **§1.5**；开发计划 **§13**（13.1 计划对账 → 13.10 回填）；
+测试计划 **§3**（B1-1~B1-4 / B1-H1 / B1-H2）。排查全过程：`TROUBLESHOOTING.md` **#46**。
+
+**结论（一句话）**：根因**在产图脚本，不在 TRT**——`quantize_resnet18.py` 的**权重范围**取自
+**尚未折 BN 的 torchvision 权重**，而 Q/DQ 插在**已经折过 BN 的 ONNX 权重**上。
+折叠系数 `γ/√(var+ε)` 逐输出通道跨度实测 **0.05 ~ 19.9**：per-tensor 只错一个全局倍率（后果轻），
+per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` 越过 127 被 **clamp 饱和**。
+
+| 落点 | 说明 |
+|---|---|
+| `tools/validate/qdq_reference.py`（新） | **数值标尺**：用 ONNX **官方参考实现**执行 Q/DQ 图并落盘指定张量（量化前 + 量化后两份）。为什么不再"自己折 BN"：图里 BN 已折好，直接执行就**不存在折叠这一步**——上一轮 3 次真机往返里有 2 次耗在"探针自身的 BN 折叠错"上（#30.5）。含 `--self-test`（最小 Q/DQ 图**逐位**比手算 ONNX 语义）+ 进 ctest |
+| `tools/convert/add_probe_outputs.py`（新） | **采样器**：给既有 Q/DQ 图**只追加图输出**（20 个 Conv 的量化前输出 + GAP 输出）。自证"探针图 = 产物图 + 探针"：node / initializer / input / opset **逐字节不变**；二次追加与非目标图都被拒。含 `--self-test` + 进 ctest |
+| `tools/convert/quantize_resnet18.py` | 新增 `--weight-range-source {torchvision,onnx}`（**默认保持 `torchvision` → 正式产物逐字节不变**；`onnx` = 从被量化那张张量上取 scale，即修复）。另修好旧 `fake_quant_check`：它原来拿**未折 BN** 的权重做 fake-quant，与图里被量化的张量不是同一个（这就是 #28"预检与实测差 5 倍"的根因），现改为"与图逐位等价的模型"（权重取自图 + BN 置成精确恒等）。再加**两道常规自检**（只报不拦，默认产物不受影响）：**来源自检**（算 scale 的张量 vs 被量化张量，不一致就 `[WARN]`＋写进 meta；默认源实测 20 层不一致）与**尺度自检**（打印被 clamp 到 ±127 的权重比例，实测 3.919% vs 改源 0.044%） |
+| `tests/test_resnet18_int8_probe.cpp`（新） | B1-1/2/3/4 三条 GPU 用例：探针自证（`d_pre ≤ d_post`）、同引擎同输入逐位相同、与参考逐层对拍出曲线、探针图下复现对照（硬门） |
+| `tests/CMakeLists.txt` | 注册两条 host ctest 项（`qdq_reference_selftest` / `add_probe_outputs_selftest`） |
+| `models/resnet18/`（新产物，不入库） | `resnet18_qdq_per_channel.onnx`（per-channel 臂）+ 两份探针图 `..._probe_{per_tensor,per_channel}.onnx` |
+
+**离线实测（本机 CPU，ONNX 官方参考实现，64 张真实图，`margin≥5` 余量子集 n=11）**：
+
+| 臂 | 整体一致率 | 余量子集 | max_abs(vs FP32) |
+|---|---|---|---|
+| per-tensor（正式产物） | 60.9% | **100.0%** | 21.736 |
+| per-channel（**错源**） | 25.0% | **54.5%** | 22.911 |
+| per-channel（**改源**） | 57.8% | **100.0%** | 21.527 |
+
+**四条关键证据**：① 参考实现给出的四个数（60.9 / 25.0 / 54.5 / 100）与 #29.2 / #29.5 记的
+**真机 TRT 引擎**数字**逐位相同** → 参考实现与 TRT 一致，出问题的是当时那个"模拟"；
+② 只改 scale 的来源（其它一律不动），参考实现下退化**消失**；③ 逐层曲线显示分叉**从第 0 层
+（`conv1`）就开始**，在 `layer4.1.conv2`（折叠跨度最大）放大到 **16.4×**；
+④ 默认参数重新生成产物 → node / initializer / output **逐字节相同**（**默认行为零改动**）。
+
+**第五条（文件级，与后端无关）**：per-channel 的 int8 权重常量是在 Python 侧算好写进 ONNX 的，
+所以"量化错没错"可以**完全不碰 TRT** 地读文件判断——数被 clamp 到 ±127 的权重比例
+（对称量化下每通道约 1 个才对）：**PT 3.919% / PC(错源) 16.188% / PC(改源) 0.044%**。
+**坏值已经烘进文件**，任何忠实后端都会复现同样的退化。
+
+**真机首跑（2026-09-27，用户执行）**：`Int8Probe*` 3 条**全红，但红在用例自身的绑定**——
+`RunProbeEngine` 用 `ICudaEngine::getTensorShape` 取形状，而**引擎上动态维是 -1**，
+`size_t` 一转成天文数字 → `显存分配失败：input`。已改用 `IExecutionContext::getTensorShape`
+并加"任何维 ≤ 0 即报错"的校验（`TROUBLESHOOTING.md` #47.1），**待复跑**。
+同一次运行还量到：**探针图确实改了 tactic**（产物图 44 层/38 Int8/4 个 `i8i8` → 探针图
+78 层/74 Int8/**0 个** `i8i8`，#47.2）——这正是 §13.3 D6 要防的事，所以 B1-4（复现对照）
+从"硬门"升级成"**唯一的裁判**"，并要求它在同一次运行里通过。
+
+**被推翻的旧结论两条**（#46.3）：#30.3 ①"模拟参照忠实"的否证**作废**（那次否证用的模拟
+**同样**不忠实）；§1.5 原表"整网模拟：两臂余量子集都 100%"一行**作废**。
+
+**验收状态**：§1.5 的"二选一"走**分支一**（第 0 层、机制明确），且机制被"scale 与被量化张量
+一致则三级都不差"的最小复现支持。**沙箱 `ctest` 264 条 / 0 失败**（原 259 + 本轮 5）。
+
+**真机 B1 四条：全绿（2026-09-27，首跑因用例绑定 bug 红过一次，见 #47.1）**：
+
+| 用例 | 实测 |
+|---|---|
+| B1-2 确定性 | 22 个张量两次运行**逐位相同**（704 ms） |
+| B1-1 探针自证 | `conv1`：PT `d_pre=8.34e-07` / `d_post=0.0398`，PC `1.43e-06` / `0.0398` → 探到的是**量化前**张量 |
+| B1-3 引擎 vs 自己的图 | 逐层最大 `max_abs` PT **0.2714**（`layer4.1.conv2`，相对 2.3%）、PC **0.168**；`conv1` 仅 **8.3e-07**；两臂都未越过 `100×地板` → **两个引擎都忠实执行了各自的图** |
+| B1-4 复现对照（硬门） | 256 张：整体 PT 99 / PC 26；**余量子集（n=12）PT 12/12 = 100%、PC 6/12 = 50%** → 与正式产物口径一致，**探针图是现象的有效模型**（尽管它把 `i8i8` 从 4 变成 0，#47.2） |
+
+**所以结论不依赖任何未验证的假设**：引擎忠实（B1-3）+ 探针探对对象（B1-1）+ 现象复现（B1-4）
++ 文件级饱和统计（#47.3）+ 改源后 100%（#46.2）。
+**产物身份已钉死（2026-09-27，作者指示）**：无外部依赖、零功能收益的两条"身份"决定都**暂不做**，
+只在文档与产图脚本的告警里写明，避免下个会话误用：
+
+- `resnet18_qdq.onnx` = **正式产物**（per_tensor + 默认 `torchvision` 源）；
+- `resnet18_qdq_per_channel.onnx`（及其探针图）= **#46 的复现样本，不是候选基线**。
+
+**两件"暂不做"**（作者 2026-09-27 指示：都不是默认行为、都不现在做；展开见开发计划 §13.11）：
+
+| 事项 | 改什么 | 实测成本 / 收益 | 为什么先不做 |
+|---|---|---|---|
+| ① 把 `--weight-range-source` 默认切到 `onnx` | 产图规则 | **数值**：per-tensor 饱和权重 **3.919% → 0.000%（20 个）**，但 64 张上判据与一致率**完全不变**（60.9% / 100%） | 换了默认 = 换了正式产物 → `phase4_int8_plan` §4 / `PROGRESS` §3.0d / R2.6 / C 批交叉校验的数全要真机重测回填；而"更准"的证据不足（余量子集只有 11 张） |
+| ② 重生成 per-channel 产物 | 一份非默认产物 | **零功能收益**（默认路径无人读它） | 它是 B1-4 的承重件；重生成会让 B1-4 变红（现象消失），必须与"退役/改写 B1-4"打包做 |
+
 ### 3.1 目录与构建
 
 - `mini_trt_llm/CMakeLists.txt`：C++17 + CUDA C++17、`sm_75`、static library、第三方依赖接入。
@@ -1227,15 +1307,16 @@ B 触发即做 / C 需外部前置 / D 冻结；含文件级改动面、步序�
    开发计划 §12.7 末行列了唯一没做的二次优化方向（block 内组织改 "warp-per-position"），
    但**必须先有测量支撑**——当前瓶颈分析与证据在 §3.0i / 开发计划 §12.3 D1。
 
-若你想要"无新需求时推进一件有实质结论的实事"，`future_iterations.md` §0.1 点名的是
-**§1.5（P4-INT8-a：per-channel 整网退化根因）**——唯一无外部前置的**已立项**条目（做法 / 验收 /
-成本校准都写全；前 3 步不联网），代价是真机 ≤3 往返 + 改探针脚本（须先获批）。
-其后按 §0.3 的表继续（§2.4 → §2.3/G2-3 → §1.2 → §6.4 → 需联网的 §1.6 / §3.x / §4.x）。
+~~`future_iterations.md` §0.1 点名 §1.5（P4-INT8-a）~~ **§1.5 已于 2026-09-27 定位根因并离线反证**
+（见 §3.0j）；它剩下的只是"真机 B1 四条做同机确认"，清单见开发计划 §13.9。
+若还想推进下一件无外部前置的实事，按 §0.3 的表继续（§2.4 → §2.3/G2-3 → §1.2 → §6.4 →
+需联网的 §1.6 / §3.x / §4.x）。
 
 **接下来做什么，取决于触发条件**（全部见 §6.6 的开放项索引与 `future_iterations.md` §11）：
 
-- 需要更高 INT8 精度 → **P4-INT8-a**（per-channel 整网退化；**已立项为 `future_iterations.md` §1.5**，
-  含做法与验收判据，不依赖联网）；
+- ~~需要更高 INT8 精度 → **P4-INT8-a**~~ **已结案（2026-09-27）**：根因在产图脚本的权重 scale 来源，
+  改 `--weight-range-source onnx` 后 per-channel 回到 100%（§3.0j / `TROUBLESHOOTING.md` #46）；
+  只剩真机 B1 四条同机确认；
 - 需要 INT8 的绝对误差保证 → **P4-INT8-b**（**已立项为 `future_iterations.md` §1.6**；
   前置依赖是联网下载带真值标签的验收集，须先获批）；
 - 真要迁强类型网络 → **P4-FP16-a / P4-INT8 的强类型路线**；
@@ -1410,7 +1491,7 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 | 开放项 | 一句话 | 触发条件（什么时候做） |
 |---|---|---|
-| **P4-INT8-a** | **权重 per-channel 量化在整网上比 per-tensor 差**（余量子集 54.5% vs 100%），而单卷积与最小残差 block 上它**不差**——原因未知；已排除 11 条假设（`TROUBLESHOOTING.md` #28/#29/#30/#31） | 需要更高 INT8 精度时。**已立项：`future_iterations.md` §1.5**（做法 = 探**量化前**的 float 张量，量化后的会被 bin 边界 ±1 格噪声淹没） |
+| ~~**P4-INT8-a**~~ **已结案（2026-09-27）** | ~~权重 per-channel 量化在整网上比 per-tensor 差（余量子集 54.5% vs 100%），原因未知~~ → **根因 = 权重 scale 取自未折 BN 的权重、量化对象是已折 BN 的权重**（逐通道折叠系数 0.05~19.9）；改 `--weight-range-source onnx` 后 **54.5% → 100%**；真机 B1 四条全绿（含**引擎忠实**与**现象复现**两条硬证据）。见 **§3.0j** 与 `TROUBLESHOOTING.md` **#46 / #47**（含被推翻的旧结论两条） | **剩余**：待拍板 = 默认是否切到 `onnx` / 是否重生成 per-channel 产物（都不是默认行为） |
 | **P4-INT8-b** | INT8 的**绝对数值界未定**（当前只用"FP32 余量子集一致率"判，阈值 ≥90%，实测 12/12；验收集无真值标签） | 需要给出 INT8 绝对误差保证时。**已立项：`future_iterations.md` §1.6**（前置 = 联网下载带标签验收集，须先获批） |
 | **P4-FP16-a** | **FP16 路径仍用已废弃的 `BuilderFlag::kFP16`**（TRT 10.12 起废弃、指向 strong typing）；实测可用 | 真要迁到强类型网络时（两条 builder 的每个算子都要显式设类型） |
 | **G5** | ONNX 子图识别只做计数（未做拓扑级）；~~G6 性能无可复现测量方法~~ **已于 2026-09-27 交付并随 §11 关闭**（协议 + 工具链见开发计划 §11.3 / §11.5.2） | 真要做子图替换时（`future_iterations.md` §10.2） |
@@ -1455,7 +1536,8 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 | `/tmp/mini_trt_llm_gpt2_*.engine` | 首次跑用例时自动构建（分钟级），之后复用 | 真机用例；**删掉它会强制重建**（测构建耗时时需要） |
 | `models/resnet18/`（P4-1 基线：logits + 契约输入张量 + 元数据，共 14.5 MB） | `python3 scripts/ref_resnet18.py --input {ramp,pixels} --output models/resnet18/ref_{ramp,pixels}_b8.bin` | Phase 4 的 L2/L3 对拍；**缺了就 skip**（与 GPT-2 缺 `models/gpt2` 同口径） |
 | `models/resnet18/model.safetensors`（42 张量，46.7 MB；`config.json` 入库） | `python3 mini_trt_llm/tools/convert/onnx_to_mini_trt_llm.py --onnx 0_resnet18_onnx/resnet18.onnx --output_dir models/resnet18` | 原生 builder（P4-5）的权重来源；**缺了 host 用例会 skip** |
-| `models/resnet18/resnet18_qdq.onnx`（13.3 MB）+ `.meta.json` | `python3 mini_trt_llm/tools/convert/quantize_resnet18.py --onnx 0_resnet18_onnx/resnet18.onnx --calib-dir 0_resnet18_onnx/calib_data --output models/resnet18/resnet18_qdq.onnx --calib-images 500 --calib-percentile 99.9 --weight-form prequant_dq`（默认权重粒度 per_tensor；`--weight-scope per_channel` 可复现那个开放项） | INT8 用例（`ResNet18Int8*`）；**缺了会 skip** |
+| `models/resnet18/resnet18_qdq.onnx`（13.3 MB）+ `.meta.json` | `python3 mini_trt_llm/tools/convert/quantize_resnet18.py --onnx 0_resnet18_onnx/resnet18.onnx --calib-dir 0_resnet18_onnx/calib_data --output models/resnet18/resnet18_qdq.onnx --calib-images 500 --calib-percentile 99.9 --weight-form prequant_dq` | INT8 用例（`ResNet18Int8*`）；**缺了会 skip**。**身份 = 正式产物**（per_tensor + 默认 `torchvision` 源；默认路径逐字节可复现） |
+| `models/resnet18/resnet18_qdq_per_channel.onnx` + 两份探针图 | `quantize_resnet18.py --weight-scope per_channel ...` → `add_probe_outputs.py`（见开发计划 §13.9） | **只被 `Int8ProbeTest` 的 PC 臂使用**。**身份 = `TROUBLESHOOTING.md` #46 的复现样本，不是候选基线**——它按"错源"生成（权重 scale 取自未折 BN 的权重），16.19% 的 int8 权重被 clamp 饱和。**别拿它做粒度对比、也别把 B1-4 的红当成故障**（B1-4 要的就是"PC 更差"，见开发计划 §13.11） |
 | `0_resnet18_onnx/calib_data/`（500 张真实图，300 MB） | `python3 0_resnet18_onnx/prepare_calib_data.py`（需 datasets/PIL，联网下载 tiny-imagenet） | 生成 pixels 基线、INT8 校准 |
 | torchvision 权重缓存 `~/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth`（46 MB） | torchvision `ResNet18_Weights.DEFAULT` 首次使用时下载 | 生成 Phase 4 基线；**已在本地缓存** |
 

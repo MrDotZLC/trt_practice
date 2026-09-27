@@ -209,6 +209,44 @@ def symmetrize(clip_ranges: Dict[str, Dict[str, float]], weights: Dict[str, np.n
     return act_scales, weight_scales
 
 
+def onnx_graph_parameters(model: onnx.ModelProto) -> Dict[str, object]:
+    """按**逻辑名**取 ONNX 图里 Conv / Gemm 实际使用的权重与偏置。
+
+    **为什么必须有这个函数（P4-INT8-a 的根因）**：`collect_ranges` 的 `weights` 来自
+    **torchvision 模型**，那里的 Conv 还没折 BatchNorm；而插 Q/DQ 的对象是**这份 ONNX 图**里的权重，
+    它**已经折过 BN**（`W_folded = W · γ/√(var+ε)`，实测逐通道系数跨度 **0.05 ~ 19.9**）。
+    两边不是同一个张量：拿前者算 scale、往后者上量化，等于"尺子量 A、裁剪 B"。
+      · **per-tensor**：整张权重一个标量，错的是同一个倍率 → 后果是整体粗一点点（实测 conv1
+        用 `1.016` 去量幅度只有 `0.392` 的权重 → 有效位宽少约 1.4 bit）；
+      · **per-channel**：错的是**逐通道**倍率 → 系数 >1 的通道直接**溢出饱和**（`round(w/s) > 127`
+        被 clamp），系数 <1 的通道变得很粗。这就是"算子级/block 级都等价、整网级 per-channel
+        明显更差"的来源——不是 TRT 的处理，而是**产图时用错了张量**。
+
+    正确做法：scale 必须从"**被量化那张张量**"上取。本函数返回的就是它——`fake_quant_check`
+    也用它把手上的 torch 模型换成"与图逐位等价"的那个，否则预检量的又是另一张权重。
+    """
+    initializers = {i.name: N.to_array(i) for i in model.graph.initializer}
+    conv_weights: Dict[str, np.ndarray] = {}
+    conv_biases: Dict[str, np.ndarray] = {}
+    fc_weight = fc_bias = None
+    for node in model.graph.node:
+        if node.op_type == "Conv":
+            name = logical_name(node.name, "Conv")
+            if node.input[1] not in initializers:
+                raise SystemExit(f"Conv {node.name} 的权重 {node.input[1]} 不在 initializer 里")
+            conv_weights[name] = initializers[node.input[1]].astype(np.float32)
+            if len(node.input) > 2 and node.input[2] in initializers:
+                conv_biases[name] = initializers[node.input[2]].astype(np.float32)
+        elif node.op_type == "Gemm":
+            fc_weight = initializers[node.input[1]].astype(np.float32)
+            if len(node.input) > 2 and node.input[2] in initializers:
+                fc_bias = initializers[node.input[2]].astype(np.float32)
+    if fc_weight is None or fc_bias is None:
+        raise SystemExit("图里没找到带权重与偏置的 Gemm（ResNet18 的 fc）")
+    return {"conv_weights": conv_weights, "conv_biases": conv_biases,
+            "fc_weight": fc_weight, "fc_bias": fc_bias}
+
+
 def insert_qdq(model: onnx.ModelProto, act_scales, weight_scales,
                weight_axis: bool = True,
                weight_form: str = "qdq") -> Dict[str, object]:
@@ -339,15 +377,85 @@ def check_qdq(model: onnx.ModelProto, expected_pairs: int) -> Dict[str, int]:
     return {"quantize": q, "dequantize": dq}
 
 
-def fake_quant_check(act_scales, weight_scales, calib_files, limit: int = 8) -> Dict[str, object]:
-    """建 TRT 引擎**之前**先预估量化损失：在 torch 里用同一批 scale 做 fake-quant。
+def saturation_stats(model: onnx.ModelProto) -> Dict[str, object]:
+    """量化后的权重常量里被 clamp 到 ±127 的比例 —— **尺度是否合理的直接指纹**。
+
+    对称量化在尺度正确时，每张权重里**恰好**只有那个 `max|w|` 元素贴到 ±127
+    （per-channel 就是每个输出通道一个）。若被 clamp 的比例远高于这个数，说明 scale **偏小**——
+    而 scale 偏小的典型来源正是"拿另一张张量的 max 当尺子"（P4-INT8-a 的根因）。
+
+    实测（`docs/TROUBLESHOOTING.md` #46）：错源 16.19% / 改源 **0.044%** / per-tensor 产物 3.92%。
+    本函数只**报数**不做断言——"多少算高"没有普适阈值，而这条数字配 #46.2 那张表足以一眼判断。
+    """
+    saturated = total = channels_saturated = channels = 0
+    worst: List[Tuple[str, int]] = []
+    for initializer in model.graph.initializer:
+        if not initializer.name.endswith("_w_int8") or initializer.data_type != T.INT8:
+            continue
+        values = N.to_array(initializer).astype(np.int32)
+        flat = values.reshape(values.shape[0], -1)
+        hit = np.abs(flat) >= 127
+        saturated += int(hit.sum())
+        total += int(flat.size)
+        channels_saturated += int(hit.any(axis=1).sum())
+        channels += int(flat.shape[0])
+        if hit.any():
+            worst.append((initializer.name, int(hit.sum())))
+    worst.sort(key=lambda item: -item[1])
+    return {"saturated": saturated, "total": total,
+            "saturated_fraction": (saturated / total) if total else 0.0,
+            "channels_with_saturation": channels_saturated, "channels": channels,
+            "worst_layers": [{"tensor": name, "saturated": count} for name, count in worst[:3]]}
+
+
+def build_graph_equivalent_model(params: Dict[str, object]):
+    """搭一个**与 ONNX 图逐位等价**的 torch 模型：权重取自图（**已折 BN**），BN 置成精确恒等。
+
+    **为什么必须换掉 `models.resnet18(weights=DEFAULT)`**：它的 Conv **还没折 BN**，而图里的权重
+    **已经折过**——两者不是同一个张量（逐通道系数跨度 0.05 ~ 19.9）。旧版预检直接拿前者做 fake-quant，
+    量的是"另一张权重上的量化"，于是报出的 `max_abs ≈ 3.9` 与真机/参考实现的 `≈ 22` 差了 5 倍多
+    （`TROUBLESHOOTING.md` #28 里"预检与实测差 5 倍"那一问，根因就在这里；#30.3 曾把它当成
+    "已否证"，那次否证用的是**同样不忠实**的模拟，所以现在要推翻）。
+
+    BN 置成恒等的写法：`γ=1, β=0, μ=0, σ²=1-ε` → `(x-0)/√((1-ε)+ε)·1+0 = x`，**精确**不是近似。
+    """
+    model = models.resnet18(weights=None).eval()
+    for module in model.modules():
+        if isinstance(module, nn.BatchNorm2d):
+            module.weight.data.fill_(1.0)
+            module.bias.data.zero_()
+            module.running_mean.zero_()
+            module.running_var.fill_(1.0 - float(module.eps))
+    convs = {name: mod for name, mod in model.named_modules() if isinstance(mod, nn.Conv2d)}
+    if set(convs) != set(params["conv_weights"]):
+        raise SystemExit(f"torch 模型与 ONNX 图的 Conv 集合不一致："
+                         f"{sorted(set(convs) ^ set(params['conv_weights']))}")
+    with torch.no_grad():
+        for name, module in convs.items():
+            if name not in params["conv_biases"]:
+                raise SystemExit(f"ONNX 图里 {name} 没有 bias；折叠 BN 后每一层都该有 bias")
+            if module.bias is None:
+                # torchvision 的 Conv 后面接 BN 时 `bias=False` → `module.bias is None`。
+                # 图里的 conv 是**折过 BN** 的，每一层都带 bias（折叠把 β 并进来了），
+                # 所以这里必须把 bias 挂上，否则前向会少加一项。
+                module.bias = nn.Parameter(torch.zeros(module.out_channels, dtype=torch.float32))
+            module.weight.copy_(torch.from_numpy(params["conv_weights"][name]))
+            module.bias.copy_(torch.from_numpy(params["conv_biases"][name]))
+        model.fc.weight.copy_(torch.from_numpy(params["fc_weight"]))
+        model.fc.bias.copy_(torch.from_numpy(params["fc_bias"]))
+    return model, convs
+
+
+def fake_quant_check(act_scales, weight_scales, calib_files, params: Dict[str, object],
+                     limit: int = 8) -> Dict[str, object]:
+    """建 TRT 引擎**之前**先预估量化损失：在**与图等价**的 torch 模型上做 fake-quant。
 
     为什么值得做：真机建引擎要几分钟，而"量化损失有多大"在 torch 里几秒就能估出来。
-    若这一步的 argmax 就已经不一致，说明 scale 方案有问题，不必上真机。
-    """
-    model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT).eval()
-    convs = {name: mod for name, mod in model.named_modules() if isinstance(mod, nn.Conv2d)}
 
+    这里模拟的是**图里真实发生的事**：每个卷积的输入按 `in_scale` 量化、输出按 `out_scale` 量化、
+    权重按 `weight_scales` 量化。输出量化那一步不能省——图里 `Conv → Q → DQ → Relu/Add`
+    是**两处量化**，只做输入量化就不是同一张图（`TROUBLESHOOTING.md` #30.4 的教训）。
+    """
     def fake_quant(x: torch.Tensor, scale: float) -> torch.Tensor:
         return torch.clamp(torch.round(x / scale), -127, 127) * scale
 
@@ -359,23 +467,22 @@ def fake_quant_check(act_scales, weight_scales, calib_files, limit: int = 8) -> 
         s = torch.from_numpy(scales).view(*shape).to(w.device)
         return torch.clamp(torch.round(w / s), -127, 127) * s
 
-    # **先把权重量化干净**，再挂激活的 pre-hook —— 不要在第一版那样在 forward hook 里就地改权重：
-    # 那会让"参考"与"量化"两次前向的口径混在一起（第一次用 FP32 权重、第二次用量化权重），
-    # 报出来的差异既不是"全量化 vs FP32"，也不是任何有意义的量。
-    ref_model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT).eval()
-    q_model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT).eval()
-    q_convs = {name: mod for name, mod in q_model.named_modules() if isinstance(mod, nn.Conv2d)}
-    for name, mod in q_convs.items():
+    ref_model, _ = build_graph_equivalent_model(params)
+    q_model, q_convs = build_graph_equivalent_model(params)
+    # **先把权重量化干净**，再挂激活 hook —— 不要在 forward hook 里就地改权重：
+    # 那会让"参考"与"量化"两次前向的口径混在一起，报出来的差异没有意义。
+    for name, module in q_convs.items():
         with torch.no_grad():
-            mod.weight.copy_(fake_quant_per_channel(mod.weight, weight_scales[name]))
+            module.weight.copy_(fake_quant_per_channel(module.weight, weight_scales[name]))
+
     handles = []
-    for name, mod in q_convs.items():
-        s_in = float(act_scales[name]["in"])
-
-        def pre_hook(_module, inputs, s=s_in):
-            return (fake_quant(inputs[0], s),)
-
-        handles.append(mod.register_forward_pre_hook(pre_hook))
+    for name, module in q_convs.items():
+        scale_in = float(act_scales[name]["in"])
+        scale_out = float(act_scales[name]["out"])
+        handles.append(module.register_forward_pre_hook(
+            lambda _m, inputs, s=scale_in: (fake_quant(inputs[0], s),)))
+        handles.append(module.register_forward_hook(
+            lambda _m, _inputs, output, s=scale_out: fake_quant(output, s)))
 
     diffs, mismatches = [], 0
     with torch.no_grad():
@@ -412,8 +519,18 @@ def main() -> None:
                         default="per_tensor",
                         help="权重量化粒度。**默认 per_tensor 是实测结论**：在 FP32 有余量的样本上，"
                              "per-tensor 的 top-1 一致率 100%（11/11），per-channel 只有 54.5%（6/11）。"
-                             "per-channel 为何在整网上更差**原因未知**（单卷积上两者等价、差 1.9e-6），"
-                             "见 docs/TROUBLESHOOTING.md §29.2 与 §29.5——根因查清前按实测选 per_tensor")
+                             "**per-channel 更差的根因已于 2026-09-27 定位**——它配合默认的 "
+                             "`--weight-range-source torchvision` 会拿**未折 BN** 的权重算 scale、"
+                             "却量化**已折 BN** 的权重；改用 `--weight-range-source onnx` 后 per-channel "
+                             "的余量子集一致率回到 100%（见 docs/TROUBLESHOOTING.md #46）。"
+                             "**默认仍保持 per_tensor + torchvision 源**（= 现有正式产物，逐字节不变）")
+    parser.add_argument("--weight-range-source", choices=["torchvision", "onnx"],
+                        default="torchvision",
+                        help="权重 scale 从哪张张量上统计。`torchvision` = 历史行为（来自未折 BN 的 "
+                             "torchvision 模型，而 Q/DQ 插在已折 BN 的 ONNX 权重上——**两者不是同一个"
+                             "张量**）；`onnx` = 从 ONNX 图里 Conv 实际用的权重上取（**与插入对象一致**）。"
+                             "**默认保持 torchvision 以维持正式产物逐位不变**；P4-INT8-a 的根因正是这个"
+                             "不一致（见 docs/TROUBLESHOOTING.md #46 与本函数上方 onnx_weight_ranges 的说明）")
     parser.add_argument("--skip-fake-quant", action="store_true")
     parser.add_argument("--fake-quant-images", type=int, default=32,
                         help="fake-quant 预检用多少张图（默认 32）。**别只看这 8 张就下结论**——"
@@ -425,12 +542,34 @@ def main() -> None:
     if len(files) < args.calib_images:
         raise SystemExit(f"标定图不足：{len(files)} < {args.calib_images}")
 
-    collected, weights = collect_ranges(files, args.calib_images, args.calib_bins)
+    model = onnx.load(args.onnx)
+    collected, torchvision_weights = collect_ranges(files, args.calib_images, args.calib_bins)
     clips = percentile_clip(collected["hist"], collected["max"], args.calib_bins,
                             args.calib_percentile)
+    params = onnx_graph_parameters(model)
+    if set(params["conv_weights"]) != set(torchvision_weights):
+        raise SystemExit(f"ONNX 图与 torchvision 的 Conv 集合不一致："
+                         f"{sorted(set(params['conv_weights']) ^ set(torchvision_weights))}")
+    weights = params["conv_weights"] if args.weight_range_source == "onnx" else torchvision_weights
+    # **来源自检（P4-INT8-a 的根因护栏）**：算 scale 的那张张量，必须就是**被量化那张**。
+    # 两者形状/数值不一致 = "尺子量 A、裁剪 B"——per-tensor 只会整体偏，per-channel 会逐通道错配
+    # （系数 >1 的通道直接 clamp 饱和）。这里只**报**不拦：默认路径（torchvision）历史产物必须
+    # 还能逐位复现，是否切换默认要作者拍板（见 docs/TROUBLESHOOTING.md #46.4）。
+    mismatch_layers = []
+    worst_mismatch = 0.0
+    for name, tensor in weights.items():
+        target = params["conv_weights"][name]
+        if tensor.shape != target.shape:
+            mismatch_layers.append(name)
+            worst_mismatch = float("inf")
+            continue
+        scale_ref = max(float(np.abs(target).max()), 1e-30)
+        relative = float(np.abs(tensor - target).max()) / scale_ref
+        worst_mismatch = max(worst_mismatch, relative)
+        if relative > 1e-6:
+            mismatch_layers.append(name)
     act_scales, weight_scales = symmetrize(clips, weights, args.weight_scope)
 
-    model = onnx.load(args.onnx)
     info = insert_qdq(model, act_scales, weight_scales,
                       weight_axis=(args.weight_scope == "per_channel"),
                       weight_form=args.weight_form)
@@ -443,6 +582,14 @@ def main() -> None:
     report = {"onnx": args.onnx, "output": args.output, "calib_images": args.calib_images,
               "weight_scope": args.weight_scope,
               "weight_form": args.weight_form,
+              "weight_range_source": args.weight_range_source,
+              "weight_range_source_check": {
+                  "layers_with_mismatch": mismatch_layers,
+                  "worst_relative_mismatch": worst_mismatch,
+                  "meaning": ("scale 的来源张量 vs 图里被量化的权重张量；不一致 = '尺子量 A、裁剪 B'。"
+                              "`torchvision` 源在折过 BN 的图上**必然**不一致（P4-INT8-a 的根因）"),
+              },
+              "saturated_int8_weights": saturation_stats(model),
               "calib_percentile": args.calib_percentile, "calib_bins": args.calib_bins,
               "clip_values": {k: {kk: float(vv) for kk, vv in v.items()}
                               for k, v in clips.items()},
@@ -451,7 +598,7 @@ def main() -> None:
               "act_scales": {k: {kk: float(vv) for kk, vv in v.items()}
                              for k, v in act_scales.items()}}
     if not args.skip_fake_quant:
-        report["fake_quant"] = fake_quant_check(act_scales, weight_scales, files,
+        report["fake_quant"] = fake_quant_check(act_scales, weight_scales, files, params,
                                                 args.fake_quant_images)
     meta_path = os.path.splitext(args.output)[0] + ".meta.json"
     with open(meta_path, "w", encoding="utf-8") as handle:
@@ -461,6 +608,22 @@ def main() -> None:
     print(f"[quantize] {args.onnx} → {args.output}")
     print(f"  Q/DQ 对        : {info['qdq_pairs']}（{info['convs']} 个卷积 × 3）")
     print(f"  zero_point 自检 : 全部为 0 且 int8（TRT 要求对称）")
+    saturation = report["saturated_int8_weights"]
+    if saturation["total"]:
+        print(f"  尺度自检        : 饱和(±127)权重 {saturation['saturated']}/{saturation['total']}"
+              f" = {saturation['saturated_fraction'] * 100:.3f}%"
+              f"（对称量化下每通道约 1 个；远高于此说明 scale 偏小）")
+    if mismatch_layers:
+        print(f"  [WARN] scale 的来源与量化对象**不是同一张张量**：{len(mismatch_layers)} 层不一致，"
+              f"最大相对差 {worst_mismatch:.4g}")
+        print(f"         → 这正是 P4-INT8-a 的根因（docs/TROUBLESHOOTING.md #46）；"
+              f"加 --weight-range-source onnx 可修")
+        print(f"  [WARN] 因此本产物**带有 #46 那个缺陷**：它的身份是「**#46 的复现样本**」，"
+              f"**不是候选基线**。")
+        print(f"         别拿它做 per-channel vs per-tensor 的对比、也别把它当成 per-channel 的"
+              f"正确性参照——")
+        print(f"         要对比就得先用 `--weight-range-source onnx` 重生成（见 "
+              f"future_iterations_development_plan.md §13.11）。")
     print(f"  元数据          : {meta_path}")
     if "fake_quant" in report:
         fq = report["fake_quant"]
