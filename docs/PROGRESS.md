@@ -3,15 +3,21 @@
 > 最后更新：2026-09-27（`PROGRESS.md` + `DEC-INT8-WEIGHT-SOURCE` 结案）。
 >
 > **当前基线（唯一现状口径；以下几段历史快照与各节里的旧数字都不得当作现状）**：
-> - **测试（2026-09-27 整轮复跑，最新）**：沙箱 **264 / 0 失败**；真机整轮 **264 / 1 红 / 0 跳过 / 310 s**。
->   其后新增 1 条 host 回归用例（`EngineCacheTest.SourceFileIdentityIgnoresPathSpelling`，见 `TS-048`）
->   → **沙箱现为 265 / 0 失败（已实测）**；**真机总数随之为 265，待下一次真机整轮确认**（未跑过的不写"通过"）。
+> - **测试（2026-09-28）**：**沙箱 268 / 0 失败**；真机整轮 267 条 / 1 红 / 0 跳过 / 301.72 s
+>   （那次跑在 P5-0-2 的 `check_skips_selftest` 注册之前；**总数随之为 268，待下次真机确认**）。
+>   唯一红 = 按设计的 FP16 复现器。
+>   **"0 跳过"是解析出来的、不是推断**：那次跑的 `ctest` 日志里 **ctest 级 `***Skipped` 一条都没有**，
+>   gtest 级 `[  SKIPPED ]` 只出现一次，且那一次来自 `asset_gate_skips_without_require` 探针**故意**
+>   从空目录跑（设计如此，不是覆盖损失）。日志：`build/Testing/Temporary/LastTest.log`。
+>   闸门也吻合：`MINI_TRT_REQUIRE_GPU=1` + `MINI_TRT_REQUIRE_ASSETS=1` 下，"无设备"与"缺资产"
+>   都会判失败，而这次没有别的红。
 >   唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`（GPT-2 FP16 NaN，按设计，见 §5.11）。
 >   `int8_crosscheck` 这次是 **Passed**——它只在**缺报告**时按设计跳过（77）；报告由 §8.3 的 C-1/C-2 产出。
 >   **真机必须带 `MINI_TRT_REQUIRE_GPU=1`**，否则等于白跑。
 >   同轮：INT8 交叉校验复跑通过（`overall 98/256`、**余量子集 12/12**、`max_abs 21.5985`），
 >   报告里的 provenance 已换成 `路径 + ID` 形式、C++ 与 Python 两侧一致。
-> - **阶段**：Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成；Phase 5 永久取消（§4.6）。**没有下一阶段**。
+> - **阶段**：Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成；**Phase 5 已重新立项（2026-09-27）**，
+>   迁移方案见 `docs/phase5_development_plan.md`，**尚未开工**（§4.6）。
 > - **精度**：GPT-2 推荐 **FP32**（FP16 端到端 NaN，按政策不修，§5.11）；ResNet18 的 FP32/FP16
 >   健康；INT8 走 Q/DQ 显式量化，判据 = "FP32 余量子集一致率"（实测 12/12），默认 per_tensor。
 > - **最近一轮交付**：per-channel 整网退化的根因 = 产图脚本的权重 scale 取自**未折 BN** 的权重
@@ -85,7 +91,8 @@
 > 抢跑产生的改动一旦落盘，评审与回滚成本由他承担。
 > 2026-09-26：**Phase 4 收口**（CV 路径打通 + INT8 落地）。
 > 当前阶段：**Phase 4 已完成**（ResNet18：ONNX 路径 / 原生路径 / `CVRunner` / 转换工具 / FP16 / INT8）；
-> **没有下一阶段**——**Phase 5（清理旧模块）已永久取消**，旧模块由作者自行处理（见 §6.6）。
+> **没有"自动往下走"的阶段**——**Phase 5（清理旧模块）已于 2026-09-27 重新立项**，
+> 方案见 `docs/phase5_development_plan.md`；是否开工由作者点名，执行前旧模块保持原样（见 §6.6）。
 >
 > **接手必读五件事**：
 > 1. **GPT-2 的推荐精度是 FP32** —— FP16 端到端数值不稳定（NaN，层数随构建变化），
@@ -93,8 +100,9 @@
 > 2. Phase 2 的残余缺口（含已定位的已知限制）见 §5.12 与 `docs/phase2_test_plan.md` §5；
 > 3. Phase 3 的缺口只剩 **G5**（ONNX 子图识别只做计数）——**G6 的"可复现测量方法"已于
 >    2026-09-27 交付并随 §11 关闭**（见 §3.0h / 开发计划 §11.5.2）；`docs/future_iterations.md` §11。
-> 4. **测试基线（2026-09-27 整轮复跑）**：**沙箱 264 条 / 0 失败；真机整轮全量 264 条 / 1 红 / 0 跳过**
->    （整轮 **310 s**；两边**总数相同**，差别只在 GPU 用例跑还是跳过）。
+> 4. **测试基线**：**沙箱 268 条 / 0 失败**；真机整轮 267 条 / 1 红 / 0 跳过 / 301.72 s（2026-09-28，
+>    该轮尚无 `check_skips_selftest` → 总数随之为 268、待复跑）。
+>    两边**总数相同**，差别只在 GPU 用例跑还是跳过。**唯一出处 = 本文顶部的「当前基线」。**
 >    唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`（GPT-2 FP16 NaN，按设计，§5.11）。
 >    `int8_crosscheck` 在报告齐备时**执行并通过**，只在缺报告时按设计跳过（77）。
 >    上一轮（449 s）有 1 条跳过，就是因为当时还没跑 §8.3 的 C-1/C-2。
@@ -1088,18 +1096,23 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 
 - 当前状态（2026-09-27 实测，含 Phase 4 + 批次 A/B/C + `future_iterations.md` §9.2 采样器迭代 + §3.0h 性能画像基建
   + §3.0i 的 §2.2 split-K + **§3.0j 的 `future_iterations.md` §1.5 仪器**）：
-  沙箱内 `ctest` **265 个用例，0 失败**（GPU / P 层用例在沙箱显式跳过）。
+  沙箱内 `ctest` **268 个用例，0 失败**（GPU / P 层用例在沙箱显式跳过）。
   **演进**：242（§3.0h 的 8 项）→ **259**（§3.0i 的 17 项：H 8 + G 7 + P 2）→ **264**
   （§3.0j 的 5 项：2 条 host 自检 + 3 条 GPU 用例）→ **265**
-  （`EngineCacheTest.SourceFileIdentityIgnoresPathSpelling`，见 `TS-048`）。
+  （`EngineCacheTest.SourceFileIdentityIgnoresPathSpelling`，见 `TS-048`）→ **267**
+  （Phase 5 阶段 0 的 2 条资产闸门自证项）→ **268**（Phase 5 阶段 0 的 `check_skips_selftest`）。
   host 侧含 `onnx_graph_probe`、`GpuEnvProbe`、`int8_eval_selftest`、`tokenizer_golden_check`、
   `int8_crosscheck_selftest`、`ArgmaxCriterion*`（6 条）、`EngineCacheTest*`（5 条）、批次 A 的 16 条、
   P9_2-5/5b 的 `NucleusCutoffTest.*` 与 `SamplerReferenceTest.*`、§3.0h 的 5 条 `PerfStatsTest.*`
   与 `profile_summary_selftest`、**§3.0j 的 `qdq_reference_selftest` / `add_probe_outputs_selftest`**。
-  真机（`MINI_TRT_REQUIRE_GPU=1`）**整轮全量：2026-09-27 复跑，264 条 / 1 红 / 0 跳过 / 310 s**
-  （该次复跑的数；**真机总数随新增的那 1 条变为 265，待下一次真机整轮确认**——未跑过的不写"通过"。
-  **唯一的红 = GPT-2 FP16 NaN 复现器，按设计**，§5.11；`int8_crosscheck` 报告齐备 → Passed）。
-  **沙箱为 265 条 / 0 失败**（原 264 + 上面那条 TS-048 用例）——两边总数相同，差别只在 GPU 用例是跑还是跳过。
+  真机（`MINI_TRT_REQUIRE_GPU=1 MINI_TRT_REQUIRE_ASSETS=1`）**整轮全量：2026-09-28 复跑，
+  267 条 / 1 红 / 0 跳过 / 301.72 s**（该轮尚无 `check_skips_selftest`；总数随之为 268，待复跑；
+  **唯一的红 = GPT-2 FP16 NaN 复现器，按设计**，§5.11）。
+  跳过集合由 `build/Testing/Temporary/LastTest.log` **逐条解析确认**：ctest 级 `***Skipped` 为 0；
+  gtest 级唯一一条 `[  SKIPPED ]` 来自 `asset_gate_skips_without_require` 探针**故意**从空目录跑
+  （设计如此）→ **真实覆盖跳过 = 0**。
+  **沙箱为 268 条 / 0 失败**（原 264 + TS-048 那 1 条 + 资产闸门自证 2 条 + 跳过集合自检 1 条）——两边总数相同，
+  差别只在 GPU 用例是跑还是跳过。
   §3.0i 新增的 17 项**全部真机通过**（含 split-K 的数值/性能用例）；§3.0j 新增的 3 条 GPU 用例
   也已随整轮通过（此前按 filter 跑过两遍，见 §3.0j）。
   上一轮跳过的只有 `int8_crosscheck`——那是按"先全量、后跑 C"的顺序做、缺报告 → 77；**跳过 ≠ 通过**。
@@ -1281,7 +1294,7 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 ## 4. 进行中 / 未完成的部分
 
 **当前没有进行中的阶段，也没有进行中的迭代**：Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成（§4.1 ~ §4.5），
-Phase 5 已永久取消（§4.6）。**Phase 之后的四条工作流都已于 2026-09-27 收口**：
+Phase 5 已重新立项（§4.6）。**Phase 之后的四条工作流都已于 2026-09-27 收口**：
 
 | 工作流 | 状态 | 结论在哪 |
 |---|---|---|
@@ -1381,13 +1394,41 @@ Phase 1 明确不在本次范围内、留待后续的项：
 
 </details>
 
-### 4.6 [DEC-PHASE5-CANCELLED] Phase 5：清理旧模块（❌ 已永久取消，2026-09-26 由用户决定）
+### 4.6 [DEC-PHASE5-REOPENED] Phase 5：清理旧模块（🔄 2026-09-26 取消 → 2026-09-27 重新立项）
 
-- **用户决定：Phase 5 永久取消**。旧模块 `0_resnet18_onnx/`、`1_gpt2_onnx/` 与根 `CMakeLists.txt`
-  里的注释项**保持原样**，**由作者本人按需处理**；Agent **不要**删除或移动它们。
-- **为什么不能擅自删**：它们不只是"旧代码"——`0_resnet18_onnx/` 还是 Phase 3（`gpt2.onnx` 走
-  `1_gpt2_onnx/`）与 INT8（`calib_data/` 500 张真实图 + `resnet18.onnx`）的**本地产物来源**，
-  删掉会让 ONNX / INT8 用例全部跳过。这也与 `AGENTS.md` §0.6 一致：**"这东西没人用"的判断权在作者**。
+> 原 ID 为 `DEC-PHASE5-CANCELLED`；因决定被改回，ID 随标题一并更新（该 ID 无跨文档引用）。
+
+- **状态**：**已重新立项，尚未开工**。迁移方案 = `docs/phase5_development_plan.md`
+  （资产盘点 / 阶段 0~4 / 删除清单 / 验收判据 / 风险与回退）。
+- **为什么改回来**：作者要求把两个历史示例工程从仓库路径里彻底下线。当初取消的理由
+  （"它们是 ONNX / INT8 用例的本地产物来源"）不是"不该删"，而是"**删之前必须先迁走资产**"
+  ——这正是新方案阶段 1 的内容。
+- **执行前提（未满足前一律不动）**：① 先加"资产缺失不许静默跳过"的闸门（阶段 0）；
+  ② 资产迁到新位置，并验证"跳过集合逐条零变化"（阶段 1）；③ 每个删除动作按 `AGENTS.md` §0.5
+  一次性列清单确认。
+- **进展（2026-09-28）**：**阶段 0 的 P5-0-1 / P5-0-1b / P5-0-3 已完成**——新增资产闸门
+  `MINI_TRT_REQUIRE_ASSETS`（27 处旧模块资产跳过点 + 2 个脚本项）、两条"证明闸门会拦人"的
+  ctest 自证项；沙箱 **267 条 / 0 失败**，且不设变量时**跳过集合与加闸门前逐条相同**。
+  **P5-0-2（钉住期望跳过集合）未做**，它要一次真机全量导出基线。详见
+  `docs/phase5_development_plan.md` §4.1。
+- **进展（2026-09-28，阶段 1 第一批）**：四类资产已搬到 `assets/legacy/`，老路径用**相对软链接**
+  指回（`mini_trt_llm/` 与 provenance 字符串**零改动**）；沙箱 **267 条 / 0 失败**、跳过集合与迁移前
+  逐条相同；把 `assets/legacy` 改名可让资产闸门判失败（链接链是承重的）。**目录名尚未消失**
+  （`0_resnet18_onnx/` / `1_gpt2_onnx/` 仍在，只是不再持有数据）——彻底去掉要动
+  `mini_trt_llm/tests/` 的 15 处路径，属阶段 3。详见 `docs/phase5_development_plan.md` §5.1。
+- **进展（2026-09-28，闸门扩面）**：资产闸门**复用同一机制**扩到全部"资产缺失型"跳过点——
+  **62 处 / 15 个测试文件**（旧模块资产 27 + `models/` 产物与 tokenizer 目录 35）；默认行为
+  **零变化**（不设变量时跳过集合逐条相同）。**作者的边界决定（2026-09-28）**：Phase 5 只要求
+  **功能不变**，**测试与缓存可以修改、删除**。详见 `docs/phase5_development_plan.md` §4.1 / §11。
+- **进展（2026-09-28，阶段 1 + 阶段 3 完成）**：资产在 `assets/legacy/`，**两个历史目录已删除**
+  （22 个跟踪文件 + 根 `CMakeLists.txt` 里那 3 行旧模块注释）；全局 20 处路径改到新位置（9 个测试
+  文件 + `tests/CMakeLists.txt` + 6 个工具/脚本 + 3 处 provenance + 文档）；3 个重建脚本迁到
+  `assets/legacy/scripts/`（并修好各自的输出目录）。**沙箱 267 条 / 0 失败，跳过集合与迁移前逐条
+  相同**；缺资产时闸门仍判红。**剩余**：阶段 2（解除"借夹具"耦合）、P5-0-2 真机基线、阶段 4 真机复跑。
+- **`AGENTS.md` §0.6 仍然成立**：判断"这东西没人用"归作者，Agent 不得自行删除或移动它们。
+- **立项依据**：2026-09-27 的改名实验——两个目录改名后沙箱 ctest **仍报 265 / 0 failed / 100%**，
+  只有跳过集合变化（3 项），说明"覆盖损失"对 CI 不可见。证据与表格见
+  `docs/phase5_development_plan.md` §3。
 
 ---
 
@@ -1594,7 +1635,9 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 
 ## 6. [DEC-NEXT-STEPS] 下一步计划
 
-**没有下一阶段。** Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成，**Phase 5（清理旧模块）已永久取消**（§4.6）。
+**没有"自动往下走"的阶段。** Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成；
+**Phase 5（清理旧模块）已于 2026-09-27 重新立项**（§4.6，方案见 `docs/phase5_development_plan.md`），
+**尚未开工**——是否开工由作者点名。
 
 **执行层计划（2026-09-26 产出）**：`docs/future_iterations_development_plan.md`（分批：A 可立即开工 /
 B 触发即做 / C 需外部前置 / D 冻结；含文件级改动面、步序、破坏性动作预告）与
@@ -1831,8 +1874,10 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 - 真机：`Fp16PrefillOutputsDiagnostic` **应当通过**——它是**纯打印**的诊断仪器（只输出
   `max|v|` / NaN 标记，不 assert 数值），"它凭什么通过"的答案就是它不判定正确性；
   别看到"FP16 出 NaN"就以为这条也该红。
-- 沙箱：全部 GPU 用例 `GTEST_SKIP`（无 GPU，见 §5.10）；`onnx_graph_probe` 在缺 `onnx` 包或
-  缺 `1_gpt2_onnx/gpt2.onnx` 时返回 77 → `Skipped`（**设计如此**，缺环境 ≠ 图有问题）。
+- 沙箱：全部 GPU 用例 `GTEST_SKIP`（无 GPU，见 §5.10）；`onnx_graph_probe` 在缺 `onnx` **包**时返回
+  77 → `Skipped`（**设计如此**，缺环境 ≠ 图有问题）；但缺**资产**
+  （`assets/legacy/gpt2_onnx/gpt2.onnx`）在 `MINI_TRT_REQUIRE_ASSETS=1` 下**判失败**——缺资产会掩盖
+  覆盖损失，缺环境不会（见 §4.6 与 `docs/phase5_development_plan.md` 阶段 0）。
 
 </details>
 
@@ -1861,11 +1906,12 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 | ~~**P9_2-5b**~~ | Top-P 收尾段并行化：**已实施**（重扫长度 197→13 / 500→32），同二进制 A/B 判定 **效果无显著差异**（中位数 +4.8/+27.3/−330.5/−81.3 µs，p25/p75 全跨 0） | **已关闭**：代码保留、`LaunchTopPSamplerTwoLevel` 留作永久对照入口（`TROUBLESHOOTING.md` #38） |
 | ~~**P9_2-5c**~~ | ~~第一趟访存/MLP~~ | **不做**：greedy（本来就完全合并访存）净成本 35~155 µs，而 `top-p 净 − top-k 净` @50257×1 仅 60.1 µs → 优化空间见底（#38） |
 
-**另有两条"已取消 / 不属于开放项"的说明**：
+**另有两条说明**（一条已重新立项、一条刻意不做）：
 
-1. **Phase 5（清理旧模块）已永久取消**（用户 2026-09-26 决定）：`0_resnet18_onnx/`、`1_gpt2_onnx/`
-   与根 `CMakeLists.txt` 的注释项**由用户自行处理**，Agent 不要删除或移动它们——
-   它们还是 Phase 3/INT8 对拍与标定的**本地产物来源**（删掉会让 ONNX/INT8 用例跳过）。
+1. **Phase 5（清理旧模块）已重新立项**（2026-09-27，见 §4.6）：`0_resnet18_onnx/`、`1_gpt2_onnx/`
+   与根 `CMakeLists.txt` 的注释项**在新方案执行前保持原样**；迁移方案与删除清单见
+   `docs/phase5_development_plan.md`。**未经点名批准，Agent 仍不得删除或移动它们**——
+   它们还是 Phase 3/INT8 对拍与标定的本地产物来源（删掉会让 ONNX/INT8 用例**静默跳过**）。
 2. **R0.1（`ResNet18ConfigTest.LoadsCnnConfig`）不单独落地**：config 解析断言已由
    `ResNet18WeightContractTest` 承担（见 `phase4_test_plan.md` §7），刻意不建重复用例。
 
@@ -1893,13 +1939,13 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 | 产物 | 生成方式 | 被谁需要 |
 |---|---|---|
 | `models/gpt2/config.json` + `model.safetensors`（548 MB） | `python3 mini_trt_llm/tools/convert/hf_to_mini_trt_llm.py --model_name_or_path <HF gpt2 目录> --output_dir models/gpt2` | 全部 GPT-2 真机用例（config.json 入库，safetensors 被 .gitignore 忽略） |
-| `1_gpt2_onnx/gpt2.onnx`（652 MB，仓库内已有） | 随仓库提供 | Phase 3 的对拍与探针 |
+| `assets/legacy/gpt2_onnx/gpt2.onnx`（652 MB，**本地资产、不入库**；Phase 5 前在 `1_gpt2_onnx/`） | `python3 assets/legacy/scripts/gpt2_load_model.py`（需 HF gpt2 权重） | Phase 3 的对拍与探针 |
 | `/tmp/mini_trt_llm_gpt2_*.engine` | 首次跑用例时自动构建（分钟级），之后复用 | 真机用例；**删掉它会强制重建**（测构建耗时时需要） |
 | `models/resnet18/`（P4-1 基线：logits + 契约输入张量 + 元数据，共 14.5 MB） | `python3 scripts/ref_resnet18.py --input {ramp,pixels} --output models/resnet18/ref_{ramp,pixels}_b8.bin` | Phase 4 的 L2/L3 对拍；**缺了就 skip**（与 GPT-2 缺 `models/gpt2` 同口径） |
-| `models/resnet18/model.safetensors`（42 张量，46.7 MB；`config.json` 入库） | `python3 mini_trt_llm/tools/convert/onnx_to_mini_trt_llm.py --onnx 0_resnet18_onnx/resnet18.onnx --output_dir models/resnet18` | 原生 builder（P4-5）的权重来源；**缺了 host 用例会 skip** |
-| `models/resnet18/resnet18_qdq.onnx`（13.3 MB）+ `.meta.json` | `python3 mini_trt_llm/tools/convert/quantize_resnet18.py --onnx 0_resnet18_onnx/resnet18.onnx --calib-dir 0_resnet18_onnx/calib_data --output models/resnet18/resnet18_qdq.onnx --calib-images 500 --calib-percentile 99.9 --weight-form prequant_dq` | INT8 用例（`ResNet18Int8*`）；**缺了会 skip**。**身份 = 正式产物**（per_tensor + 默认 `torchvision` 源；默认路径逐字节可复现） |
+| `models/resnet18/model.safetensors`（42 张量，46.7 MB；`config.json` 入库） | `python3 mini_trt_llm/tools/convert/onnx_to_mini_trt_llm.py --onnx assets/legacy/resnet18_onnx/resnet18.onnx --output_dir models/resnet18` | 原生 builder（P4-5）的权重来源；**缺了 host 用例会 skip** |
+| `models/resnet18/resnet18_qdq.onnx`（13.3 MB）+ `.meta.json` | `python3 mini_trt_llm/tools/convert/quantize_resnet18.py --onnx assets/legacy/resnet18_onnx/resnet18.onnx --calib-dir assets/legacy/resnet18_onnx/calib_data --output models/resnet18/resnet18_qdq.onnx --calib-images 500 --calib-percentile 99.9 --weight-form prequant_dq` | INT8 用例（`ResNet18Int8*`）；**缺了会 skip**。**身份 = 正式产物**（per_tensor + 默认 `torchvision` 源；默认路径逐字节可复现） |
 | `models/resnet18/resnet18_qdq_per_channel.onnx` + 两份探针图 | `quantize_resnet18.py --weight-scope per_channel ...` → `add_probe_outputs.py`（见开发计划 §13.9） | **只被 `Int8ProbeTest` 的 PC 臂使用**。**身份 = `TROUBLESHOOTING.md` #46 的复现样本，不是候选基线**——它按"错源"生成（权重 scale 取自未折 BN 的权重），16.19% 的 int8 权重被 clamp 饱和。**别拿它做粒度对比、也别把 B1-4 的红当成故障**（B1-4 要的就是"PC 更差"，见开发计划 §13.11） |
-| `0_resnet18_onnx/calib_data/`（500 张真实图，300 MB） | `python3 0_resnet18_onnx/prepare_calib_data.py`（需 datasets/PIL，联网下载 tiny-imagenet） | 生成 pixels 基线、INT8 校准 |
+| `assets/legacy/resnet18_onnx/calib_data/`（500 张真实图，300 MB） | `python3 assets/legacy/scripts/resnet18_prepare_calib_data.py`（需 datasets/PIL，联网下载 tiny-imagenet） | 生成 pixels 基线、INT8 校准 |
 | torchvision 权重缓存 `~/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth`（46 MB） | torchvision `ResNet18_Weights.DEFAULT` 首次使用时下载 | 生成 Phase 4 基线；**已在本地缓存** |
 
 > **注意**：上述 `models/resnet18/*.bin`、`calib_data/`、`*.onnx`、`*.safetensors` **都不入库**

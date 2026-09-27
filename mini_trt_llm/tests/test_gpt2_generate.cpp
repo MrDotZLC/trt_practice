@@ -8,6 +8,7 @@
 #include "mini_trt_llm/utils/cuda_check.hpp"
 #include "mini_trt_llm/utils/memory_pool.hpp"
 #include "test_gpu_guard.hpp"
+#include "test_asset_guard.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -282,7 +283,7 @@ TEST(Gpt2GenerateTest, RealGpt2GreedyMatchesReferenceTokens) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindRealModelDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）");
     }
 
     Logger logger;
@@ -374,7 +375,7 @@ TEST(Gpt2GenerateTest, RealGpt2Fp16GreedyMatchesReferenceTokens) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindRealModelDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）");
     }
 
     Logger logger;
@@ -448,7 +449,7 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindRealModelDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "models/gpt2 不存在";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/gpt2 不存在");
     }
 
     Logger logger;
@@ -573,7 +574,7 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
 // 再在真机上搭一遍双引擎，只会把有限的真机预算烧在没有新信息的路径上。
 TEST(BpeTokenizerWithRunnerTest, TextPromptMatchesReferenceTokens) {
     const std::string dir = test_support::FindTokenizerDir();
-    if (dir.empty()) GTEST_SKIP() << test_support::DescribeTokenizerProbe();
+    if (dir.empty()) MINI_TRT_SKIP_IF_MISSING_ASSET(test_support::DescribeTokenizerProbe());
 
     BpeTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.Load(dir)) << "资产存在但加载失败：" << dir;
@@ -599,11 +600,11 @@ TEST(Gpt2GenerateTest, RealGpt2TextPromptEndToEnd) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindRealModelDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）");
     }
     const std::string tokenizer_dir = test_support::FindTokenizerDir();
     if (tokenizer_dir.empty()) {
-        GTEST_SKIP() << test_support::DescribeTokenizerProbe();
+        MINI_TRT_SKIP_IF_MISSING_ASSET(test_support::DescribeTokenizerProbe());
     }
 
     // 第 1 段：文本 -> token。分词不过关就没必要启动引擎（省一次真机往返的等待）。

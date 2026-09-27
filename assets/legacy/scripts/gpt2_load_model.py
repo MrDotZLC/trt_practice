@@ -48,7 +48,11 @@ print(f"FP16 size : {sum(p.numel() for p in model.parameters()) * 2 / 1024**2:.1
 #   生产环境用 KV Cache 加速自回归，此处先学基础流程
 
 print(__file__)
-onnx_path = os.path.join(os.path.dirname(__file__), "gpt2.onnx")
+# Phase 5 迁到 assets/legacy/scripts/ 之后，产物统一落在 assets/legacy/gpt2_onnx/
+# （原来是写在脚本同目录 `1_gpt2_onnx/`）。
+_ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "gpt2_onnx")
+os.makedirs(_ASSET_DIR, exist_ok=True)
+onnx_path = os.path.join(_ASSET_DIR, "gpt2.onnx")
 
 dummy_input = torch.randint(0, 50257, (1, 16))  # batch=1, seq_len=16
 
@@ -83,7 +87,7 @@ wrapper_ref = GPT2Wrapper(model).eval()
 with torch.no_grad():
     ref_out = wrapper_ref(tokens["input_ids"])  # [1, seq_len, 50257]
 
-ref_path = os.path.join(os.path.dirname(__file__), "ref_output.bin")
+ref_path = os.path.join(_ASSET_DIR, "ref_output.bin")
 ref_out.numpy().tofile(ref_path)
 print(f"Reference output saved: {ref_path}")
 print(f"  shape: {ref_out.shape}")

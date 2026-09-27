@@ -4,6 +4,7 @@
 #include "mini_trt_llm/utils/io.hpp"
 #include "mini_trt_llm/utils/json.hpp"
 #include "mini_trt_llm/utils/safetensors_loader.hpp"
+#include "test_asset_guard.hpp"
 
 #include <NvInfer.h>
 #include <gtest/gtest.h>
@@ -102,7 +103,7 @@ std::set<std::string> ReadSafetensorsKeys(const std::string& path) {
 TEST(ResNet18WeightContractTest, ConvertedArtifactCoversEveryWeight) {
     const std::string dir = FindModelDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "models/resnet18 不存在（先跑 tools/convert/onnx_to_mini_trt_llm.py）";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/resnet18 不存在（先跑 tools/convert/onnx_to_mini_trt_llm.py）");
     }
 
     const ModelConfig config = ModelConfig::Load(dir);
@@ -151,7 +152,7 @@ TEST(ResNet18WeightContractTest, ConvertedArtifactCoversEveryWeight) {
 TEST(ResNet18WeightContractTest, ShapesAreSelfConsistent) {
     const std::string dir = FindModelDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "models/resnet18 不存在";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/resnet18 不存在");
     }
     const ModelConfig config = ModelConfig::Load(dir);
     ASSERT_TRUE(config.hyper_params.Has("num_classes"));
@@ -193,7 +194,7 @@ TEST(ResNet18WeightContractTest, ShapesAreSelfConsistent) {
 TEST(ResNet18WeightContractTest, SourceMetadataMatchesReality) {
     const std::string dir = FindModelDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "models/resnet18 不存在";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/resnet18 不存在");
     }
     const JsonValue raw = LoadJson(dir + "/config.json");
     ASSERT_TRUE(raw.IsObject());

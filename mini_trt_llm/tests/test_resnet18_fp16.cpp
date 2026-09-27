@@ -7,6 +7,7 @@
 #include "mini_trt_llm/utils/logger.hpp"
 #include "mini_trt_llm/utils/memory_pool.hpp"
 #include "test_gpu_guard.hpp"
+#include "test_asset_guard.hpp"
 
 #include <NvInfer.h>
 #include <cuda_fp16.h>
@@ -80,9 +81,9 @@ std::string FindModelDir() {
 }
 
 std::string FindOnnxPath() {
-    return FindFile({"0_resnet18_onnx/resnet18.onnx", "../0_resnet18_onnx/resnet18.onnx",
-                     "../../0_resnet18_onnx/resnet18.onnx",
-                     "../../../0_resnet18_onnx/resnet18.onnx"});
+    return FindFile({"assets/legacy/resnet18_onnx/resnet18.onnx", "../assets/legacy/resnet18_onnx/resnet18.onnx",
+                     "../../assets/legacy/resnet18_onnx/resnet18.onnx",
+                     "../../../assets/legacy/resnet18_onnx/resnet18.onnx"});
 }
 
 EngineBuilder::Config Fp16Config() {
@@ -176,7 +177,7 @@ TEST(ResNet18Fp16PathTest, OnnxEngineMatchesFp32Baseline) {
     const std::string onnx = FindOnnxPath();
     const std::string baseline_dir = FindBaselineDir();
     if (dir.empty() || onnx.empty() || baseline_dir.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18（含 P4-1 基线）与 0_resnet18_onnx/resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18（含 P4-1 基线）与 assets/legacy/resnet18_onnx/resnet18.onnx");
     }
     Logger logger;
     EngineBuilder builder(logger, Fp16Config());
@@ -203,7 +204,7 @@ TEST(ResNet18Fp16PathTest, NativeMatchesOnnxInFp16) {
     const std::string dir = FindModelDir();
     const std::string onnx = FindOnnxPath();
     if (dir.empty() || onnx.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18 与 0_resnet18_onnx/resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18 与 assets/legacy/resnet18_onnx/resnet18.onnx");
     }
     Logger logger;
     EngineBuilder builder(logger, Fp16Config());
@@ -263,7 +264,7 @@ TEST(ResNet18Fp16PathTest, NativeEngineMatchesFp32Baseline) {
     const std::string dir = FindModelDir();
     const std::string baseline_dir = FindBaselineDir();
     if (dir.empty() || baseline_dir.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18（含 P4-1 基线）";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18（含 P4-1 基线）");
     }
     Logger logger;
     EngineBuilder builder(logger, Fp16Config());
@@ -290,7 +291,7 @@ TEST(ResNet18Fp16PathTest, CvRunnerOnFp16EngineMatchesFp32Baseline) {
     const std::string onnx = FindOnnxPath();
     const std::string baseline_dir = FindBaselineDir();
     if (dir.empty() || onnx.empty() || baseline_dir.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18（含 P4-1 基线）与 0_resnet18_onnx/resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18（含 P4-1 基线）与 assets/legacy/resnet18_onnx/resnet18.onnx");
     }
     Logger logger;
     EngineBuilder builder(logger, Fp16Config());

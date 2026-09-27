@@ -13,6 +13,7 @@
 
 #include "mini_trt_llm/utils/io.hpp"
 #include "mini_trt_llm/utils/json.hpp"
+#include "test_asset_guard.hpp"
 
 #include <gtest/gtest.h>
 
@@ -113,7 +114,7 @@ void ExpectEncodeMatchesGolden(BpeTokenizer* tokenizer, const JsonValue& golden,
 
 TEST(BpeTokenizerTest, LoadsFromDirectory) {
     const Fixture fixture = PrepareFixture();
-    if (!fixture.ready) GTEST_SKIP() << DescribeTokenizerProbe();
+    if (!fixture.ready) MINI_TRT_SKIP_IF_MISSING_ASSET(DescribeTokenizerProbe());
 
     BpeTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.Load(fixture.tokenizer_dir)) << "资产存在，但 Load 失败：" << fixture.tokenizer_dir;
@@ -153,7 +154,7 @@ TEST(BpeTokenizerTest, RejectsMissingOrMalformed) {
 
 TEST(BpeTokenizerTest, EncodeMatchesGoldenBasic) {
     const Fixture fixture = PrepareFixture();
-    if (!fixture.ready) GTEST_SKIP() << DescribeTokenizerProbe();
+    if (!fixture.ready) MINI_TRT_SKIP_IF_MISSING_ASSET(DescribeTokenizerProbe());
     BpeTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.Load(fixture.tokenizer_dir));
     ExpectEncodeMatchesGolden(&tokenizer, fixture.golden, "basic");
@@ -161,7 +162,7 @@ TEST(BpeTokenizerTest, EncodeMatchesGoldenBasic) {
 
 TEST(BpeTokenizerTest, EncodeMatchesGoldenWhitespace) {
     const Fixture fixture = PrepareFixture();
-    if (!fixture.ready) GTEST_SKIP() << DescribeTokenizerProbe();
+    if (!fixture.ready) MINI_TRT_SKIP_IF_MISSING_ASSET(DescribeTokenizerProbe());
     BpeTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.Load(fixture.tokenizer_dir));
     // 前导空格 / 连续空格 / 制表符 / 换行：GPT-2 的 `Ġ` 与 `\s+(?!\S)` 语义全在这几条上。
@@ -170,7 +171,7 @@ TEST(BpeTokenizerTest, EncodeMatchesGoldenWhitespace) {
 
 TEST(BpeTokenizerTest, EncodeMatchesGoldenUtf8) {
     const Fixture fixture = PrepareFixture();
-    if (!fixture.ready) GTEST_SKIP() << DescribeTokenizerProbe();
+    if (!fixture.ready) MINI_TRT_SKIP_IF_MISSING_ASSET(DescribeTokenizerProbe());
     BpeTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.Load(fixture.tokenizer_dir));
     // 中文 / emoji / 重音拉丁：走 byte-level 回退路径，也是"非 ASCII 算不算字母"的判据所在。
@@ -179,7 +180,7 @@ TEST(BpeTokenizerTest, EncodeMatchesGoldenUtf8) {
 
 TEST(BpeTokenizerTest, EncodeMatchesGoldenLongText) {
     const Fixture fixture = PrepareFixture();
-    if (!fixture.ready) GTEST_SKIP() << DescribeTokenizerProbe();
+    if (!fixture.ready) MINI_TRT_SKIP_IF_MISSING_ASSET(DescribeTokenizerProbe());
     BpeTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.Load(fixture.tokenizer_dir));
     ExpectEncodeMatchesGolden(&tokenizer, fixture.golden, "long");
@@ -187,7 +188,7 @@ TEST(BpeTokenizerTest, EncodeMatchesGoldenLongText) {
 
 TEST(BpeTokenizerTest, DecodeMatchesGolden) {
     const Fixture fixture = PrepareFixture();
-    if (!fixture.ready) GTEST_SKIP() << DescribeTokenizerProbe();
+    if (!fixture.ready) MINI_TRT_SKIP_IF_MISSING_ASSET(DescribeTokenizerProbe());
     BpeTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.Load(fixture.tokenizer_dir));
 
@@ -205,7 +206,7 @@ TEST(BpeTokenizerTest, DecodeMatchesGolden) {
 
 TEST(BpeTokenizerTest, EmptyStringAndEdgeCases) {
     const Fixture fixture = PrepareFixture();
-    if (!fixture.ready) GTEST_SKIP() << DescribeTokenizerProbe();
+    if (!fixture.ready) MINI_TRT_SKIP_IF_MISSING_ASSET(DescribeTokenizerProbe());
     BpeTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.Load(fixture.tokenizer_dir));
 
@@ -219,7 +220,7 @@ TEST(BpeTokenizerTest, EmptyStringAndEdgeCases) {
 // tokenizer_golden_check 负责——那一步需要 Python 与本地 tokenizer 文件，在 CI 里可能被跳过。
 TEST(BpeTokenizerReferenceTest, GoldenIsSelfConsistent) {
     const Fixture fixture = PrepareFixture();
-    if (!fixture.ready) GTEST_SKIP() << DescribeTokenizerProbe();
+    if (!fixture.ready) MINI_TRT_SKIP_IF_MISSING_ASSET(DescribeTokenizerProbe());
     const JsonValue& golden = fixture.golden;
 
     ASSERT_TRUE(golden.Has("reference"));

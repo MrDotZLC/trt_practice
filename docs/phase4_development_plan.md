@@ -50,7 +50,7 @@
 |---|---|---|
 | INT8 三条口径不一致 | `PROGRESS.md` §6"INT8 延后" / `future_iterations.md` §1.1"ResNet18 INT8 校准"列为后续 / 历史工程**已实现** calibrator + 500 张校准图 | 由 D2 收敛成一条，落进本文件与 PROGRESS |
 | `calibrator.hpp` 的注释写"此处用随机数据仅验证流程，INT8 精度无参考价值" | 实际 `calib_data/` 是 **500 张真实图像**（`prepare_calib_data.py` 从 `tiny-imagenet` valid 取、64→224 resize、ImageNet 归一化） | 注释过时；本文件按"真实校准集"记录，Phase 5 删除旧模块前不必回改（会在 §8 记明） |
-| `PROGRESS.md` §3.1 写"根 `CMakeLists.txt`：旧模块已注释掉" | 属实 | **Phase 5 已永久取消**（用户决定，见 §8）：旧模块由作者本人处理，Agent 不要删改 |
+| `PROGRESS.md` §3.1 写"根 `CMakeLists.txt`：旧模块已注释掉" | 属实 | ~~Phase 5 已永久取消~~ **〔2026-09-27 更新〕已改回重新立项**（见 §8 的更新注与 `docs/phase5_development_plan.md`）；**未获点名批准前，Agent 仍不得删改** |
 | Phase 1.5 曾把"E4 全在沙箱跑"写进计划 | 已更正（2026-09-25） | 本计划沿用更正后的口径：**能上真机的不算 CI 覆盖** |
 
 ### 0.5 待你拍板的决策（D1～D4）
@@ -128,7 +128,7 @@
 |---|---|
 | **必做** | 外部参考基线（P4-1）；ONNX 路径打通（P4-2）；`CVRunner`（P4-3）；原生 builder + 转换工具（P4-4/P4-5）；三方对拍（P4-6）；文档收口（P4-8） |
 | **按 D2 决定** | INT8（P4-7） |
-| **不做** | 动态分辨率（空间维固定 224，留 `future_iterations.md` §2.4）；数据增强/后处理（top-k 标签等业务语义）；多模型（只做 ResNet18）；**旧模块处理（Phase 5 已永久取消，归作者）** |
+| **不做** | 动态分辨率（空间维固定 224，留 `future_iterations.md` §2.4）；数据增强/后处理（top-k 标签等业务语义）；多模型（只做 ResNet18）；**旧模块处理（Phase 5 当时记为已取消，2026-09-27 已改回重新立项，归作者）** |
 
 ---
 
@@ -286,18 +286,20 @@ Phase 4 沿用 Phase 1.5/2/3 的做法：**开发计划（本文件）与测试�
 | FP16 在 CV 上不达标 | 与 GPT-2 的 FP16 事故同型 | 按 §5.3 的三选一处理，保持红色并记录；不调阈值 |
 | `opt_batch` 默认值（1 vs 8）不一致 | 性能结论失真 | §3.5 明确列为待处理项 |
 | INT8 走错路线（隐式量化已废弃） | 建了将来要拆的东西 | D2 推荐 Q/DQ；若选隐式，文档里写明折旧风险 |
-| 旧模块被误删 | 失去对拍对象；ONNX/INT8 用例全部跳过（`calib_data`、`*.onnx` 是本地产物来源） | **Phase 5 已取消**：旧模块归作者处理，Agent 不动它们（§8） |
+| 旧模块被误删 | 失去对拍对象；ONNX/INT8 用例全部跳过（`calib_data`、`*.onnx` 是本地产物来源） | ~~Phase 5 已取消~~ **〔2026-09-27 更新〕已重新立项**：删除前必须先迁资产（`docs/phase5_development_plan.md` 阶段 0/1）；Agent 不动它们（§8） |
 
 ---
 
 ## 8. 范围外（明确不做）
 
 - **动态分辨率**（空间维动态）：`AddCvOptimizationProfile` 目前显式拒绝；留 `future_iterations.md` §2.4。
-- **Phase 5（清理旧模块）已永久取消**（用户 2026-09-26 决定）：旧模块**由作者本人按需处理**，
-  Agent **不要**删除或移动 `0_resnet18_onnx/` / `1_gpt2_onnx/` / 根 `CMakeLists.txt` 的注释项。
-  **理由不只是"旧代码"**：它们还是 Phase 3（`gpt2.onnx`）与 INT8（`calib_data` 500 张真实图、
-  `resnet18.onnx`）的**本地产物来源**，删掉会让 ONNX / INT8 用例全部跳过（`AGENTS.md` §0.6：
-  "这文件没人用"的判断权在作者，不在 Agent）。
+- ~~**Phase 5（清理旧模块）已永久取消**（用户 2026-09-26 决定）~~ —— **〔2026-09-27 更新〕已改回
+  重新立项**：迁移方案见 `docs/phase5_development_plan.md`。原记录中**仍然成立**的部分：
+  未获点名批准前，Agent **不得**删除或移动 `0_resnet18_onnx/` / `1_gpt2_onnx/` /
+  根 `CMakeLists.txt` 的注释项；**理由不只是"旧代码"**：它们还是 Phase 3（`gpt2.onnx`）与 INT8
+  （`calib_data` 500 张真实图、`resnet18.onnx`）的**本地产物来源**，直接删会让 ONNX / INT8 用例
+  全部**静默跳过**（`AGENTS.md` §0.6："这文件没人用"的判断权在作者，不在 Agent）。
+  **新方案的做法**：先迁资产、先让覆盖损失可见（阶段 0 / 阶段 1），再谈删除。
 - **FP16 NaN 的修复**（LLM 侧已知限制）：与本阶段无关，按政策不修。
 - **图像解码/缩放**（JPEG → 224×224）：本阶段只处理"已解码并 resize 好"的 NCHW 输入；
   真正的解码链路（stb/libjpeg）属后续迭代。
@@ -330,7 +332,7 @@ Phase 4 沿用 Phase 1.5/2/3 的做法：**开发计划（本文件）与测试�
 | P4-5 | ✅ 完成（2026-09-26） | `ResNet18ModelBuilder` 原生建图：`conv1(7×7/s2/p3)+bias → Relu → MaxPool → 4 stage × 2 BasicBlock(conv3×3 + 残差 Add + Relu，stage 2/3/4 首块 stride2 + downsample Conv1×1) → GlobalAveragePool(addReduce) → Flatten → fc(MatMul + bias)`；**零 Plugin**（BN 已折叠）。关键决定：I/O 名字复用 `OnnxIoContractFor("cnn")`（与 ONNX 路径同一份常量）、fc 用 `MatrixOperation::kTRANSPOSE`（尊重 config 里的 `out_in_transB` 声明）、`stage != kSingle` 显式失败、通道宽度从权重反推（不硬编码 64/1000）。注册进 `EngineBuilder` 构造（与 gpt2 同处）。**真机实测**：网络 52 层、I/O 契约正确；原生 vs ONNX（同一份权重）`max_abs = 1.07e-6`（阈值 `1e-5`，比 vs torchvision 紧一个数量级）、原生 vs torchvision 基线 `1.05e-5`（阈值 `1e-4`）；argmax 全一致。**真机全量 174 条 / 1 红 / 0 跳过**（仅 FP16 按设计红）。过程中抓到并修掉 #24 两处（bias rank 与 element-wise 的 rank 匹配、新增源文件后必须重跑 configure）与 #25 一处（路径 helper 返回文件 → 新用例静默跳过）。补验：**原生引擎上的 profile 验收**（R1.5b）+ **CVRunner 驱动原生引擎**（R3.5） |
 | P4-6 | ✅ 完成（2026-09-26） | FP16 四方验证 + 补 R1.4。新增 `tests/test_resnet18_fp16.cpp`：R2.5a（ONNX-FP16 vs FP32 基线 `max_abs = 0.03092`）、R2.5b（原生-FP16 vs ONNX-FP16 `0.00757` + **三角证据** + **I/O 契约比对**：两条路 I/O 名字与声明精度均相等，实测都是 `input/output = FP32`）、R2.5c（CVRunner + FP16 引擎 `0.06207`）、**R2.5d**（原生-FP16 vs torchvision-FP32 `0.0329475`，补上此前只有传递推断的那一段）；**argmax 全部 0/8 不一致**。补 R1.4（`decoder_only` 的 config 配 ResNet18 图必须被拒）。**阈值按实测另定两档**（0.1 / 0.05），不再沿用 D4 的 `rel < 1e-3`——第一版给 R2.5b 设 1e-4 被实测打回，判别与推导见 `TROUBLESHOOTING.md` #26。**真机全量 179 条 / 1 红 / 0 跳过**（仅 GPT-2 的 FP16 已知限制那条按设计红）；**ResNet18 的 FP16 是正常的**（argmax 全一致、无 NaN） |
 | P4-7 | ✅ 完成（2026-09-26） | INT8（Q/DQ 显式量化）全流程落地，子计划见 `docs/phase4_int8_plan.md` §7：P4-7-0 调研（S1/S2/S3 全闭环）→ P4-7-1 量化脚本 + 产物 `models/resnet18/resnet18_qdq.onnx`（**`prequant_dq` 形态，13.3 MB**，60 对 Q/DQ、zero_point 全 0）→ P4-7-2 `detailed_profiling` 开关 + 层信息自证（43 层 / 38 层含 Int8 / 4 层 `i8i8` tactic）→ P4-7-3 用例 R2.6（**分层判据**：余量子集 12/12 = 100%）→ P4-7-4 真机全量 182 条 / 1 红 / 0 跳过。**开放项**：per-channel 整网退化（原因未知，P4-INT8-a） |
-| P4-8 | ✅ 完成（2026-09-26） | 文档收口：本文件 §6/§10、`phase4_test_plan.md`（R2.6 用例名与判据、实测回填）、`PROGRESS.md`（**新增 §3.0d Phase 4 交付段**、§2.15 新约定、§3.5 计数、§4.5/§4.6、**新增 §6.6 开放项索引**、§6.5/§7 产物与再生命令、表头）、`future_iterations.md` §11（P4-INT8-a/b、P4-FP16-a）。**Phase 5 已永久取消**（§8 已更新） |
+| P4-8 | ✅ 完成（2026-09-26） | 文档收口：本文件 §6/§10、`phase4_test_plan.md`（R2.6 用例名与判据、实测回填）、`PROGRESS.md`（**新增 §3.0d Phase 4 交付段**、§2.15 新约定、§3.5 计数、§4.5/§4.6、**新增 §6.6 开放项索引**、§6.5/§7 产物与再生命令、表头）、`future_iterations.md` §11（P4-INT8-a/b、P4-FP16-a）。**Phase 5 当时记为已取消**（2026-09-27 更新：已改回重新立项，§8 有更新注） |
 
 **回填要求**：每个任务完成后只写"状态 + 产出 + 判据实测值 + 出处"，
 排查过程写 `TROUBLESHOOTING.md`（避免本文件膨胀成流水账，`PROGRESS.md` §6 的规矩）。

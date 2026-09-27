@@ -17,7 +17,7 @@
 
 用法：
     python3 mini_trt_llm/tools/convert/onnx_to_mini_trt_llm.py \\
-        --onnx 0_resnet18_onnx/resnet18.onnx --output_dir models/resnet18
+        --onnx assets/legacy/resnet18_onnx/resnet18.onnx --output_dir models/resnet18
 """
 
 import argparse
@@ -30,6 +30,19 @@ import numpy as np
 import onnx
 from onnx import numpy_helper
 from safetensors.numpy import save_file
+
+
+def require_assets() -> bool:
+    """`MINI_TRT_REQUIRE_ASSETS=1` 表示"本环境必须具备测试资产"。
+
+    为什么需要：ctest 把"跳过"记成 Passed，于是**缺资产导致的覆盖下降对 CI 不可见**
+    （实测 2026-09-27：把两个历史示例工程改名后全量仍报 265 条 / 100% passed / 0 failed，
+    只有跳过集合变了 3 项；见 docs/phase5_development_plan.md 阶段 0）。设了这个变量，
+    缺资产以 1 退出（失败）而不是 77（跳过）。
+
+    **`tools/inspect_onnx.py` 里有同名同义的实现**，改一处要两处同改。
+    """
+    return os.environ.get("MINI_TRT_REQUIRE_ASSETS", "") not in ("", "0")
 
 # 只允许这两类算子携带权重：出现别的带权重算子就该失败，而不是静默丢掉它。
 # （静默丢权重的后果是"模型能跑但数值全错"，最难查。）
@@ -159,6 +172,9 @@ def main() -> None:
 
     if not os.path.isfile(args.onnx):
         if args.skip_if_missing:
+            if require_assets():
+                raise SystemExit(
+                    f"缺资产（MINI_TRT_REQUIRE_ASSETS=1）：找不到 {args.onnx}")
             print(f"[convert] 跳过：找不到 {args.onnx}")
             raise SystemExit(77)
         raise SystemExit(f"ONNX 不存在：{args.onnx}")

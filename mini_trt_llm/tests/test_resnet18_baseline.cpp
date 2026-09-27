@@ -1,5 +1,6 @@
 #include "cv_test_support.hpp"
 #include "mini_trt_llm/utils/io.hpp"
+#include "test_asset_guard.hpp"
 
 #include <gtest/gtest.h>
 
@@ -37,7 +38,7 @@ const size_t kLogitsElements = static_cast<size_t>(kBatch) * kCvClasses;
 TEST(ResNet18BaselineTest, RampInputMatchesFormulaBitExact) {
     const std::string dir = FindBaselineDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "缺少 models/resnet18 基线产物（先跑 scripts/ref_resnet18.py）";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("缺少 models/resnet18 基线产物（先跑 scripts/ref_resnet18.py）");
     }
     const std::vector<float> stored =
         ReadF32File(dir + "/inputs/ref_ramp_b8.contract_input.f32.bin", kInputElements);
@@ -70,7 +71,7 @@ TEST(ResNet18BaselineTest, RampInputMatchesFormulaBitExact) {
 TEST(ResNet18BaselineTest, PixelsNormalizationMatchesFormula) {
     const std::string dir = FindBaselineDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "缺少 models/resnet18 基线产物";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("缺少 models/resnet18 基线产物");
     }
     const std::vector<float> pixels =
         ReadF32File(dir + "/inputs/ref_pixels_b8.contract_input.f32.bin", kInputElements);
@@ -100,7 +101,7 @@ TEST(ResNet18BaselineTest, PixelsNormalizationMatchesFormula) {
 TEST(ResNet18BaselineTest, MetaArgmaxMatchesLogits) {
     const std::string dir = FindBaselineDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "缺少 models/resnet18 基线产物";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("缺少 models/resnet18 基线产物");
     }
     for (const std::string& stem : {"ref_ramp_b8", "ref_pixels_b8"}) {
         const std::vector<float> logits =

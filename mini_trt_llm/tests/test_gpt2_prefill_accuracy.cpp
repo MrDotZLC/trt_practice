@@ -6,6 +6,7 @@
 #include "mini_trt_llm/utils/io.hpp"
 #include "mini_trt_llm/utils/memory_pool.hpp"
 #include "test_gpu_guard.hpp"
+#include "test_asset_guard.hpp"
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -31,17 +32,17 @@ constexpr int32_t kRealHeadSize = 64;
 constexpr int32_t kRealBlockSize = 16;
 constexpr int32_t kRealPositions = 1024;
 
-// `1_gpt2_onnx/ref_output.bin` 是 HF FP32 对该 prompt 的 logits，形状 [1,4,50257]。
+// `assets/legacy/gpt2_onnx/ref_output.bin` 是 HF FP32 对该 prompt 的 logits，形状 [1,4,50257]。
 // 已核对过：它与 `models/gpt2/model.safetensors` 的权重**逐比特可复现**（§0.1）。
 const std::vector<int64_t> kPrompt = {464, 2068, 7586, 21831};  // "The quick brown fox"
 constexpr int32_t kSeq = 4;
 
 // 在若干候选位置里找仓库根下的参考文件。
 std::string FindRefOutput() {
-    const char* candidates[] = {"1_gpt2_onnx/ref_output.bin",
-                                "../1_gpt2_onnx/ref_output.bin",
-                                "../../1_gpt2_onnx/ref_output.bin",
-                                "../../../1_gpt2_onnx/ref_output.bin"};
+    const char* candidates[] = {"assets/legacy/gpt2_onnx/ref_output.bin",
+                                "../assets/legacy/gpt2_onnx/ref_output.bin",
+                                "../../assets/legacy/gpt2_onnx/ref_output.bin",
+                                "../../../assets/legacy/gpt2_onnx/ref_output.bin"};
     for (const char* candidate : candidates) {
         if (std::filesystem::exists(candidate)) {
             return candidate;
@@ -87,7 +88,7 @@ TEST(Gpt2PrefillAccuracyTest, RealGpt2LogitsMatchReference) {
     const std::string dir = FindRealModelDir();
     const std::string ref_path = FindRefOutput();
     if (dir.empty() || ref_path.empty()) {
-        GTEST_SKIP() << "需要 models/gpt2 与 1_gpt2_onnx/ref_output.bin";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/gpt2 与 assets/legacy/gpt2_onnx/ref_output.bin");
     }
 
     // 参考数据先读进来并校验大小：形状不对就没必要浪费一次引擎构建（分钟级）。

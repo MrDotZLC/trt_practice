@@ -6,8 +6,8 @@
 换导出脚本），我们得**立刻知道**，而不是等引擎构建失败或数值对不上才发现。
 
 用法：
-    python inspect_onnx.py 1_gpt2_onnx/gpt2.onnx            # 打印结构摘要
-    python inspect_onnx.py 1_gpt2_onnx/gpt2.onnx --check    # 与内置基线对比
+    python inspect_onnx.py assets/legacy/gpt2_onnx/gpt2.onnx            # 打印结构摘要
+    python inspect_onnx.py assets/legacy/gpt2_onnx/gpt2.onnx --check    # 与内置基线对比
 
 依赖：onnx（见 requirements.txt）。
 
@@ -18,12 +18,27 @@
 import argparse
 import collections
 import json
+import os
 import sys
 from pathlib import Path
 
 # ctest 的 SKIP_RETURN_CODE（见 tests/CMakeLists.txt）：缺环境时返回它表示"跳过"，
 # 与"图结构不对（返回 1）"区分开——缺 onnx 包或缺 ONNX 文件都不代表图有问题。
 SKIP_EXIT_CODE = 77
+
+
+def require_assets() -> bool:
+    """`MINI_TRT_REQUIRE_ASSETS=1` 表示"本环境必须具备测试资产"。
+
+    为什么需要：ctest 把"跳过"记成 Passed，于是**缺资产导致的覆盖下降对 CI 不可见**
+    （实测 2026-09-27：把两个历史示例工程改名后全量仍报 265 条 / 100% passed / 0 failed，
+    只有跳过集合变了 3 项；见 docs/phase5_development_plan.md 阶段 0）。设了这个变量，
+    缺资产返回 1（失败）而不是 77（跳过）。
+
+    它只管**资产**缺失；缺 Python 包属环境问题，仍按跳过处理。
+    **`tools/convert/onnx_to_mini_trt_llm.py` 里有同名同义的实现**，改一处要两处同改。
+    """
+    return os.environ.get("MINI_TRT_REQUIRE_ASSETS", "") not in ("", "0")
 
 try:
     import onnx
@@ -35,7 +50,7 @@ except ImportError:  # pragma: no cover
     sys.exit(1)
 
 
-# 首次实测基线（2026-09-25，1_gpt2_onnx/gpt2.onnx）。
+# 首次实测基线（2026-09-25，assets/legacy/gpt2_onnx/gpt2.onnx）。
 # 只记录"结构性事实"，不记录与实现无关的数字——这些是子图识别与对齐判据的前提。
 BASELINE = {
     "opset": 17,
@@ -149,6 +164,9 @@ def main() -> int:
     path = Path(args.onnx_path)
     if not path.exists():
         if args.skip_if_missing:
+            if require_assets():
+                print(f"缺资产（MINI_TRT_REQUIRE_ASSETS=1）：找不到 {path}", file=sys.stderr)
+                return 1
             print(f"跳过：找不到 {path}（该文件不在版本控制里，属环境依赖）")
             return SKIP_EXIT_CODE
         print(f"找不到 {path}", file=sys.stderr)

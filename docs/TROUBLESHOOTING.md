@@ -11,7 +11,7 @@
 >
 > 编号只增不改，新记录追加在末尾。
 
-## 索引（48 条，按编号）
+## 索引（50 条，按编号）
 
 | ID | # | 一句话 | 状态 |
 |---|---|---|---|
@@ -63,6 +63,8 @@
 | `TS-046` | 46 | P4-INT8-a 结案：per-channel 整网退化的根因是权重 scale 取自未折 BN 的权重（202… | — |
 | `TS-047` | 47 | 探针用例真机首跑：一个绑定 bug、一个必须记录的现象、一个更硬的证据（2026-09-27） | — |
 | `TS-048` | 48 | 引擎缓存把"模型路径写法"算进指纹 → 换调用方式就重建（已修复，真机已验证） | 已修复（真机已验证） |
+| `TS-049` | 49 | 资产闸门自证项"应当跳过"那条**继承了环境的 `MINI_TRT_REQUIRE_ASSETS`** → 真机验收时自己变红（已修复） | 已修复（沙箱可复现并验证） |
+| `TS-050` | 50 | 新的 ctest 项写在了 `find_package(Python3)` **之前** → 变量未定义、**静默不注册**（configure 成功、条数不变） | 已修复（沙箱验证：268 条） |
 
 > 索引用 `TS-NNN`；旧写法 `#NN` 仍可用（同号）。**正文只增不改**，新记录追加在末尾。
 
@@ -3017,3 +3019,64 @@ grep '^file=' /tmp/mini_trt_llm_resnet18_onnx_fp32.engine.fingerprint   # 应变
 > bump 同类，**属预期**，不是故障；重建后两种调用方式都应命中 `cache hit`。
 
 **状态**：现象**已复现两次**；机制**已定位**（证据链 + 输入不变性推论，见上）。另一种路径写法未留证（属可选补充，不影响结论）。
+
+---
+
+## 49. [TS-049] 资产闸门自证项"应当跳过"那条继承了环境变量 → 真机验收时自己变红（已修复）
+
+- **日期**：2026-09-28
+- **现象**：真机全量 `MINI_TRT_REQUIRE_GPU=1 MINI_TRT_REQUIRE_ASSETS=1 ctest --test-dir build --output-on-failure`
+  → **265 / 267 通过，2 红**：按设计的 `Gpt2GenerateTest.RealGpt2Fp16GreedyMatchesReferenceTokens`
+  （FP16 NaN 复现器）+ **本阶段新加的 `asset_gate_skips_without_require`**。
+- **排查路径**：看失败项的 stdout（`--output-on-failure` 直接给出来了）——探针里那条用例报的是
+  "需要 models/resnet18/config.json 与 assets/legacy/resnet18_onnx/resnet18.onnx；**已设置
+  `MINI_TRT_REQUIRE_ASSETS=1`**，缺资产在本环境算失败"。也就是说**闸门在探针里是开着的**。
+  `ctest` 的 test 环境默认继承调用者环境，而验收命令本身就带 `MINI_TRT_REQUIRE_ASSETS=1`。
+- **根因**：`asset_gate_skips_without_require` 的设计前提是"闸门关闭时该用例应当跳过"，
+  但它**没有把变量钉住** → 在"变量本来就是 1"的环境里前提不成立：探针自己把闸门打开了，
+  于是"应当跳过"变成"按设计失败"，探针反被判红。**是探针不自洽，不是产品缺陷。**
+- **修法**：该 item 改为 `${CMAKE_COMMAND} -E env MINI_TRT_REQUIRE_ASSETS=0 <二进制> ...`。
+  **不用 `cmake -E env --unset=`**：那个选项要 CMake ≥ 3.24，而本项目下限是 3.18；
+  写 `=0` 在 `RequireAssets()` 里就是"关"（它以 `!= "0"` 判定）。
+  另一条 `asset_gate_fails_with_require` 本来就显式设 `=1`，无需改。
+- **回归防护（沙箱即可复现，这条用例没有 GPU 门）**：从空目录跑同一条用例——
+  环境 `=1` 时**旧写法 FAILED（退出码 1）**、显式 `=0` 时 **SKIPPED（退出码 0）**；
+  修完后 `MINI_TRT_REQUIRE_ASSETS=1 ctest -R asset_gate` → **2/2 Passed**。
+- **教训（可复用）**：**凡是"自证 / 探针"类 test，只要它的前提与某个环境变量相关，就必须自己
+  把它钉死**，不能依赖"环境里没有设"。验收命令会用到的变量尤其要注意——闸门的存在恰恰意味着
+  用户会在真机上把它打开。
+- **顺带的收获（不是问题）**：那次真机跑除这条探针外**没有任何失败或跳过**，说明在
+  `MINI_TRT_REQUIRE_ASSETS=1` 下全部资产用例都真的跑到了 → **Phase 5 迁移没有丢覆盖**。
+  总耗时 892 s（对照历史 310 s）：引擎指纹里含源文件**路径**（`FileIdentity`，见 `TS-048`），
+  ONNX 源路径从 `0_resnet18_onnx/` 改到 `assets/legacy/` 后首次重建了一批引擎，属一次性成本。
+
+**状态**：已修复；沙箱内以"环境带 `=1`"复现并验证通过。真机复跑一次即可闭环。
+
+---
+
+## 50. [TS-050] 新的 ctest 项写在 `find_package(Python3)` 之前 → 变量未定义、静默不注册（已修复）
+
+- **日期**：2026-09-28
+- **现象**：给 P5-0-2 加了 `check_skips_selftest`（`add_test` 包在
+  `if(Python3_Interpreter_FOUND)` 里），**configure 成功、build 成功、ctest 仍报 267 条**——
+  新项**根本没注册**。第一次 `--gtest_list_tests` 发现超时（另一件事，见下）后重试成功，
+  于是更容易把"条数没变"读成"已注册并通过"。
+- **排查路径**：`ctest --test-dir build -N | tail` 仍是 `Total Tests: 267` → 说明没注册；
+  再 `rg -n 'add_test\(NAME check_skips|find_package\(Python3' tests/CMakeLists.txt` →
+  新块在第 70 行、`find_package` 在第 87 行。**CMake 是按顺序执行的**：`if()` 求值时
+  `Python3_Interpreter_FOUND` 还没定义 → 条件为假 → 整块被跳过（且**不报错**，
+  因为 `QUIET` 的 `find_package` 本来就不保证找到）。
+- **根因**：把新 test 插在了"看起来相邻"的位置，但那个位置在 `find_package` 之前。
+  与 `TS-011`（GLOB 只在 configure 时求值 → 新增源文件不入构建）同属"构建脚本的顺序陷阱"。
+- **修法**：把该块移到 `find_package(Python3 COMPONENTS Interpreter QUIET)` **之后**，
+  并在注释里写明"必须放在 find_package 之后"。
+- **回归防护 / 判据**：`ctest --test-dir build -N | tail` 必须显示 **Total Tests: 268**；
+  `ctest -R check_skips_selftest` → Passed（0.05 s）。**判据是条数与逐条 `Test #N`，
+  不是退出码**——同 `TS-043`。
+- **顺带记一次环境问题（不是缺陷）**：同一天撞到 **两次** `gtest_discover_tests` 的
+  5 s 发现超时（`Result: Process terminated due to timeout`，发生在链接刚结束、机器满载时；
+  `--gtest_list_tests` 空闲时实测仅 0.08 s）。**重跑即过**。若再频繁出现，可考虑调大
+  `TEST_DISCOVERY_TIMEOUT`（构建脚本改动，需单独批准；已登记在
+  `docs/phase5_development_plan.md` §10）。
+
+**状态**：已修复（沙箱验证 268 条 / 0 失败）。

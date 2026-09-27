@@ -58,7 +58,7 @@
     }
   },
   "calibration_set": {                       // 必需：重叠排除要用它
-    "dir": "0_resnet18_onnx/calib_data",
+    "dir": "assets/legacy/resnet18_onnx/calib_data",
     "num_samples": 500,
     "manifest_path": "...", "manifest_sha256": "..."
   },

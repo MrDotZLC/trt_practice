@@ -43,7 +43,8 @@ class EngineBuilder {
         // CV 动态 batch 范围，覆盖 ResNet18 等 CNN 模型常见 batch。
         //
         // opt 取 8（而不是 1）：TRT 针对 kOPT 形状挑最快 kernel，"越接近 kOPT 性能越好"。
-        // 历史工程 0_resnet18_onnx/src/builder.cpp 用的就是 min/opt/max = 1/8/16，
+        // 历史工程 0_resnet18_onnx/src/builder.cpp 用的就是 min/opt/max = 1/8/16
+        // （该工程已于 Phase 5 下线；原始实现见删除前的提交：`git show ba3ea7a:0_resnet18_onnx/src/builder.cpp`），
         // 沿用 1 会让 batch ≥ 2 的推理走非最优 kernel、性能结论失真。
         // 见 docs/phase4_development_plan.md + PH4-CV-PROFILE。
         int min_batch = 1;

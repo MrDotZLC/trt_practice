@@ -7,6 +7,7 @@
 #include "mini_trt_llm/utils/io.hpp"
 #include "mini_trt_llm/utils/memory_pool.hpp"
 #include "test_gpu_guard.hpp"
+#include "test_asset_guard.hpp"
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -69,9 +70,9 @@ EngineBuilder::Config Fp32BuilderConfig() {
 constexpr float kRampFp32MaxAbs = 1e-4f;
 
 std::string FindOnnxPath() {
-    return FindFile({"0_resnet18_onnx/resnet18.onnx", "../0_resnet18_onnx/resnet18.onnx",
-                     "../../0_resnet18_onnx/resnet18.onnx",
-                     "../../../0_resnet18_onnx/resnet18.onnx"});
+    return FindFile({"assets/legacy/resnet18_onnx/resnet18.onnx", "../assets/legacy/resnet18_onnx/resnet18.onnx",
+                     "../../assets/legacy/resnet18_onnx/resnet18.onnx",
+                     "../../../assets/legacy/resnet18_onnx/resnet18.onnx"});
 }
 
 
@@ -161,7 +162,7 @@ TEST(ResNet18OnnxBuildTest, RejectsUnknownSubgraphName) {
     const std::string config = FindResNet18ModelDir();
     const std::string onnx = FindOnnxPath();
     if (config.empty() || onnx.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18/config.json 与 0_resnet18_onnx/resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18/config.json 与 assets/legacy/resnet18_onnx/resnet18.onnx");
     }
     const std::string dir = std::filesystem::path(config).parent_path().string();
 
@@ -181,7 +182,7 @@ TEST(ResNet18OnnxBuildTest, BuildsFromCnnConfig) {
     const std::string config = FindResNet18ModelDir();
     const std::string onnx = FindOnnxPath();
     if (config.empty() || onnx.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18/config.json 与 0_resnet18_onnx/resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18/config.json 与 assets/legacy/resnet18_onnx/resnet18.onnx");
     }
     const std::string dir = std::filesystem::path(config).parent_path().string();
     const std::string engine_path = kFp32EnginePath;
@@ -216,7 +217,7 @@ TEST(ResNet18OnnxAccuracyTest, MatchesBaselineOnRampInput) {
     const std::string config = FindResNet18ModelDir();
     const std::string onnx = FindOnnxPath();
     if (baseline_dir.empty() || config.empty() || onnx.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18 的 P4-1 基线产物与 resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18 的 P4-1 基线产物与 resnet18.onnx");
     }
     const std::string dir = std::filesystem::path(config).parent_path().string();
     const std::string engine_path = kFp32EnginePath;
@@ -267,7 +268,7 @@ TEST(ResNet18OnnxAccuracyTest, MatchesBaselineOnPixels) {
     const std::string config = FindResNet18ModelDir();
     const std::string onnx = FindOnnxPath();
     if (baseline_dir.empty() || config.empty() || onnx.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18 的 P4-1 基线产物与 resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18 的 P4-1 基线产物与 resnet18.onnx");
     }
     const std::string dir = std::filesystem::path(config).parent_path().string();
 
@@ -317,7 +318,7 @@ TEST(ResNet18OnnxProfileTest, AcceptsBatchRangeAndRejectsOutOfRange) {
     bool built_now = false;
     const std::string path = EnsureFp32Engine(&builder, &built_now);
     if (path.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18/config.json 与 0_resnet18_onnx/resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18/config.json 与 assets/legacy/resnet18_onnx/resnet18.onnx");
     }
     Engine engine(path, logger);
 
@@ -344,7 +345,7 @@ TEST(ResNet18OnnxBuildTest, RejectsLlmConfigForCnnGraph) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string onnx = FindOnnxPath();
     if (onnx.empty()) {
-        GTEST_SKIP() << "需要 0_resnet18_onnx/resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 assets/legacy/resnet18_onnx/resnet18.onnx");
     }
     // 临时目录：声明成 decoder_only（LLM 契约），但图是 ResNet18（input/output）
     const std::string tmp = "/tmp/mini_trt_llm_resnet18_llm_config";

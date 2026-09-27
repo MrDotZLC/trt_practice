@@ -41,7 +41,7 @@
     python3 mini_trt_llm/tools/validate/qdq_reference.py --self-test
     python3 mini_trt_llm/tools/validate/qdq_reference.py \\
         --onnx models/resnet18/resnet18_qdq_probe_per_tensor.onnx \\
-        --calib-dir 0_resnet18_onnx/calib_data --num-images 8 \\
+        --calib-dir assets/legacy/resnet18_onnx/calib_data --num-images 8 \\
         --output-dir /tmp/mini_trt_llm_int8_probe/pt
 """
 
@@ -308,7 +308,7 @@ def self_test() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="用 ONNX 官方参考实现落盘 Q/DQ 图的张量")
     parser.add_argument("--onnx", help="Q/DQ 图（通常是探针图）")
-    parser.add_argument("--calib-dir", default="0_resnet18_onnx/calib_data")
+    parser.add_argument("--calib-dir", default="assets/legacy/resnet18_onnx/calib_data")
     parser.add_argument("--num-images", type=int, default=8)
     parser.add_argument("--output-dir", help="落盘目录")
     parser.add_argument("--self-test", action="store_true", help="只跑护栏自证，不需要任何文件")

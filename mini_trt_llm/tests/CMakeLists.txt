@@ -22,22 +22,78 @@ include(GoogleTest)
 gtest_discover_tests(mini_trt_llm_tests)
 
 # ---------------------------------------------------------------------------
+# 资产闸门自证（Phase 5 的 P5-0-3）
+#
+# 为什么需要：`MINI_TRT_REQUIRE_ASSETS` 这道闸门本身必须有用例证明"它会拦人"——护栏没有
+# 用例证明就等于没有护栏（docs/PROGRESS.md + DEC-TEST-CONVENTIONS）。
+#
+# 做法：从**空目录**里跑一条依赖旧模块资产的用例，所有相对路径候选都落空（FindFile 只认
+# 相对候选，没有绝对路径兜底），于是它必然走"缺资产"分支：
+#   ① 不设变量   → 跳过（退出码 0）；
+#   ② 设 =1      → 失败（非 0）→ 用 WILL_FAIL 反过来断言"它真的红了"。
+# ② 的判据是"非 0 退出码"，所以**闸门哪天被删掉，这条 test 立刻变红**——这正是它要证明的事。
+#
+# **两条都必须自己钉住 `MINI_TRT_REQUIRE_ASSETS`，不能继承环境**：真机验收命令本身就会带
+# `MINI_TRT_REQUIRE_ASSETS=1`（2026-09-28 实测踩到：探针①继承了它 → 探针里的用例按闸门判失败
+# → "应当跳过"的断言反被判红）。用 `=0` 关闭而不是 `cmake -E env --unset`：后者要 CMake 3.24，
+# 而本项目的下限是 3.18（`=0` 在 `RequireAssets()` 里就是"关"）。
+# ---------------------------------------------------------------------------
+set(MINI_TRT_ASSET_GATE_PROBE_DIR ${CMAKE_CURRENT_BINARY_DIR}/asset_gate_probe_dir)
+file(MAKE_DIRECTORY ${MINI_TRT_ASSET_GATE_PROBE_DIR})
+
+add_test(NAME asset_gate_skips_without_require
+    COMMAND ${CMAKE_COMMAND} -E env MINI_TRT_REQUIRE_ASSETS=0
+            $<TARGET_FILE:mini_trt_llm_tests>
+            --gtest_filter=ResNet18OnnxBuildTest.RejectsUnknownSubgraphName)
+set_tests_properties(asset_gate_skips_without_require PROPERTIES
+    WORKING_DIRECTORY ${MINI_TRT_ASSET_GATE_PROBE_DIR})
+
+add_test(NAME asset_gate_fails_with_require
+    COMMAND ${CMAKE_COMMAND} -E env MINI_TRT_REQUIRE_ASSETS=1
+            $<TARGET_FILE:mini_trt_llm_tests>
+            --gtest_filter=ResNet18OnnxBuildTest.RejectsUnknownSubgraphName)
+set_tests_properties(asset_gate_fails_with_require PROPERTIES
+    WORKING_DIRECTORY ${MINI_TRT_ASSET_GATE_PROBE_DIR}
+    WILL_FAIL TRUE)
+
+# ---------------------------------------------------------------------------
+# "期望跳过集合"比对器的自检（Phase 5 的 P5-0-2）
+#
+# 为什么需要它：ctest 把 Skipped 记作 Passed，于是"一批用例不再跑了"对 CI 不可见
+# （2026-09-27 实测：删掉两个历史工程的资产后，全量仍报 265 / 100% passed / 0 failed，
+# 只有跳过集合从 112 变 113）。资产闸门挡住"缺资产"，这个比对器挡住其余原因。
+#
+# 比对本身**不进 ctest**：它要吃一次完整跑出来的 `LastTest.log`（真机口径），
+# 在 ctest 里跑它会递归。所以这里只注册它的**自检**（6 项合成日志断言，无外部依赖）。
+# 用法见 tools/check_skips.py 的 docstring；基线数据在 tests/data/expected_skips.txt。
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # ONNX 图结构探针（Phase 3 G7）
 #
 # 为什么进 ctest：它是"图变了要立刻知道"的护栏——`gpt2.onnx` 一旦重新导出、
 # 换 opset 或换模型，算子分布与子图形态都会变，而方案 B 的识别结论与对齐判据
 # 都建立在这张分布上。靠人记得跑等于没有。
 #
-# 环境语义：缺 Python / 缺 onnx 包 / 缺 1_gpt2_onnx/gpt2.onnx 时**跳过**（返回 77），
+# 环境语义：缺 Python / 缺 onnx 包 / 缺 assets/legacy/gpt2_onnx/gpt2.onnx 时**跳过**（返回 77），
 # 不是失败——缺环境不等于图有问题，混在一起会让回归信号失真。
 # 未找到 Python 解释器时干脆不注册这条 test（同理）。
 # ---------------------------------------------------------------------------
 find_package(Python3 COMPONENTS Interpreter QUIET)
+
+# "期望跳过集合"比对器的自检（Phase 5 的 P5-0-2）——**必须放在 find_package 之后**：
+# 放在前面时 `Python3_Interpreter_FOUND` 还没定义，这条 test 会被静默不注册
+# （2026-09-28 实测踩到：configure 成功、ctest 仍是 267 条，差点当成"已注册但没跑"）。
+if(Python3_Interpreter_FOUND)
+    add_test(NAME check_skips_selftest
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_skips.py --self-test)
+endif()
+
 if(Python3_Interpreter_FOUND)
     add_test(NAME onnx_graph_probe
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/inspect_onnx.py
-                ${CMAKE_CURRENT_SOURCE_DIR}/../../1_gpt2_onnx/gpt2.onnx
+                ${CMAKE_CURRENT_SOURCE_DIR}/../../assets/legacy/gpt2_onnx/gpt2.onnx
                 --check --skip-if-missing)
     set_tests_properties(onnx_graph_probe PROPERTIES SKIP_RETURN_CODE 77)
 endif()
@@ -57,7 +113,7 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME resnet18_convert_selftest
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/convert/onnx_to_mini_trt_llm.py
-                --onnx ${CMAKE_CURRENT_SOURCE_DIR}/../../0_resnet18_onnx/resnet18.onnx
+                --onnx ${CMAKE_CURRENT_SOURCE_DIR}/../../assets/legacy/resnet18_onnx/resnet18.onnx
                 --output_dir ${CMAKE_CURRENT_BINARY_DIR}/resnet18_convert_selftest
                 --self-test --skip-if-missing)
     set_tests_properties(resnet18_convert_selftest PROPERTIES SKIP_RETURN_CODE 77)

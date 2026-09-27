@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """生成 ResNet18 的外部参考基线（Phase 4 的 P4-1）。
 
-为什么需要它：历史工程 `0_resnet18_onnx/` 的"精度验证"是**自相对**的——FP16/INT8 跟它自己跑的
+为什么需要它：历史工程 `0_resnet18_onnx/`（已随 Phase 5 下线）的"精度验证"是**自相对**的——FP16/INT8 跟它自己跑的
 FP32 比，没有任何外部真值（见 docs/phase4_development_plan.md + PH4-LEGACY-FINDINGS / PH4-LEGACY-INHERIT）。没有独立基线，
 "两条路径对齐"就只能证明它们互相一致，证明不了它们对。本脚本用 torchvision 的
 ImageNet 预训练权重（与 load_model.py 同源）产出 FP32 logits 作为那条标尺。
@@ -32,7 +32,7 @@ import numpy as np
 import torch
 import torchvision.models as models
 
-# ImageNet 归一化参数。与 0_resnet18_onnx/prepare_calib_data.py 完全一致——
+# ImageNet 归一化参数。与 assets/legacy/scripts/resnet18_prepare_calib_data.py 完全一致——
 # 两处若不一致，数值差会被误判成"引擎错"（docs/phase4_test_plan.md + PH4-CRITERIA）。
 MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -109,7 +109,7 @@ def main() -> None:
     parser.add_argument("--input", choices=["ramp", "pixels"], required=True)
     parser.add_argument("--output", required=True, help="logits 输出路径（FP32 raw）")
     parser.add_argument("--batch", type=int, default=8, help="与历史工程一致：8")
-    parser.add_argument("--calib-dir", default="0_resnet18_onnx/calib_data")
+    parser.add_argument("--calib-dir", default="assets/legacy/resnet18_onnx/calib_data")
     parser.add_argument("--input-dir", default=None,
                         help="契约输入张量的落盘目录，默认与 --output 同级的 inputs/")
     args = parser.parse_args()

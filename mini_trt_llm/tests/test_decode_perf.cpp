@@ -25,6 +25,7 @@
 #include "mini_trt_llm/utils/memory_pool.hpp"
 #include "mini_trt_llm/utils/timer.hpp"
 #include "test_gpu_guard.hpp"
+#include "test_asset_guard.hpp"
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -191,7 +192,7 @@ TEST(Gpt2DecodePerf, StepLatencyByPhase) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindRealModelDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）");
     }
 
     Logger logger;
@@ -454,7 +455,7 @@ TEST(Gpt2DecodePerf, ContextLengthSweep) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindRealModelDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）");
     }
 
     constexpr int32_t kPromptLengths[] = {4, 256, 960};
@@ -591,7 +592,7 @@ TEST(Gpt2DecodePerf, ContextLengthSweepSplitVsSinglePass) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindRealModelDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）");
     }
 
     constexpr int32_t kPromptLengths[] = {4, 256, 960};

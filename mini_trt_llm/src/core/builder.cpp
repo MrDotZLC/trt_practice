@@ -509,6 +509,8 @@ bool EngineBuilder::BuildFromOnnx(const std::string& model_dir,
     // profile：ONNX 图是整段前向（无 KV cache 输入），因此只挂 **prefill** 那一组。
     // 依据（D4 的历史工程核对）：`1_gpt2_onnx/src/builder.cpp` 当年也是**单个** profile，
     // 取值 min[1,1] / opt[1,64] / max[4,512]，与 EngineBuilder::Config 的 prefill 默认值一致。
+    // 该历史工程已于 Phase 5 下线；要复核原始实现见删除前的提交
+    // `git show ba3ea7a:1_gpt2_onnx/src/builder.cpp`（`docs/phase5_development_plan.md`）。
     // 多挂一组 decode profile 不会错，但会让 TRT 白编译一份用不到的形状。
     if (model_config.architecture == "cnn") {
         if (!AddCvOptimizationProfile(builder.get(), trt_config.get(), network.get())) {

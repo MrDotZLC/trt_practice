@@ -18,7 +18,7 @@
 namespace mini_trt_llm {
 namespace test_support {
 
-// ImageNet 归一化参数：与 `0_resnet18_onnx/prepare_calib_data.py` 和
+// ImageNet 归一化参数：与 `assets/legacy/scripts/resnet18_prepare_calib_data.py` 和
 // `scripts/ref_resnet18.py` 必须逐值一致。
 inline constexpr float kImageNetMean[3] = {0.485f, 0.456f, 0.406f};
 inline constexpr float kImageNetStd[3] = {0.229f, 0.224f, 0.225f};

@@ -52,7 +52,7 @@
     "layer4.1.conv2.weight": "layer4.1.conv2.weight"
   },
   "source": {
-    "onnx": "0_resnet18_onnx/resnet18.onnx",
+    "onnx": "assets/legacy/resnet18_onnx/resnet18.onnx",
     "onnx_sha256": "f78d57655f2c5afb659feedffb09af89c5f9985fe3a50b4b8a5db3b91c50d54c",
     "opset": 17,
     "batch_norm": "folded_into_conv",

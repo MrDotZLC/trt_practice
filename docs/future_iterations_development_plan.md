@@ -303,13 +303,16 @@
    `file(GLOB ...)`，GLOB 只在 configure 时求值；漏跑的症状是链接期 `undefined reference to vtable`。
 3. **产物或建图变了先删引擎缓存**：`/tmp/mini_trt_llm_*.engine` 只按路径名区分，不随代码失效。
 4. **真机口径固定**：`MINI_TRT_REQUIRE_GPU=1`（否则 GPU 用例静默跳过，等于白跑）。
-   当前基线（**2026-09-27 复跑**）：**沙箱 264 条 / 0 失败；真机整轮全量 264 条 / 1 红 / 0 跳过 / 310 s**
+   当前基线（唯一出处：`PROGRESS.md` 当前基线）：**沙箱 267 条 / 0 失败（2026-09-28）**；
+   真机整轮全量 264 条 / 1 红 / 0 跳过 / 310 s（2026-09-27 复跑，总数随之为 267 待确认）
    （沙箱含 §11 的 6 项 host 用例与脚本自检、§12 的 8 项、§13 的 2 条 host 自检，
    GPU / P 层用例在沙箱显式跳过）。红按设计（GPT-2 FP16 NaN，`PROGRESS.md` §5.11）；
    `int8_crosscheck` 报告齐备 → Passed，只在缺报告时按设计跳过。**两边总数相同**，差别只在 GPU 用例跑还是跳过。
    （`AGENTS.md` §7：未跑过的不写"通过"——这一行现在是跑过的。）
 5. **跳过或失败都要显式**：`MINI_TRT_SKIP_IF_NO_CUDA` / ctest 的 77；缺资产 → 跳过并打印探测结果。
-6. **不擅自删旧模块**：`0_resnet18_onnx/`、`1_gpt2_onnx/` 归作者（Phase 5 已永久取消）。
+6. **不擅自删旧模块**：`0_resnet18_onnx/`、`1_gpt2_onnx/` 归作者——**未经点名批准不得删除或移动**。
+   Phase 5 已于 2026-09-27 **重新立项**（`PROGRESS.md` §4.6），迁移方案与删除清单见
+   `docs/phase5_development_plan.md`；方案未执行前两个目录保持原样。
 7. **阈值纪律**：每个阈值旁写出处；不跨精度复用；放宽前先量"与正确性无关的差异"。
 
 ---
@@ -338,7 +341,7 @@
 ls ~/.cache/huggingface/hub/models--gpt2/snapshots/*/vocab.json   # 缺 → export MINI_TRT_GPT2_TOKENIZER_DIR=<你的 HF gpt2 目录>
 ls models/gpt2/config.json models/gpt2/model.safetensors
 ls models/resnet18/resnet18_qdq.onnx models/resnet18/config.json
-ls 0_resnet18_onnx/calib_data | head -3
+ls assets/legacy/resnet18_onnx/calib_data | head -3
 ```
 
 ### 8.1 真机全量（改动面：无）
@@ -347,7 +350,7 @@ ls 0_resnet18_onnx/calib_data | head -3
 MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 ```
 
-- **期望（2026-09-26 快照）**：**204 条**，其中（**现状基线见 `PROGRESS.md` 的「当前基线」：2026-09-27 复跑为 264 条 / 1 红 / 0 跳过 / 310 s**）：
+- **期望（2026-09-26 快照）**：**204 条**，其中（**现状基线见 `PROGRESS.md` 的「当前基线」：沙箱 267 条 / 0 失败，真机待复跑确认**）：
   - **按设计的红 1 条**：`Gpt2GenerateTest.RealGpt2Fp16GreedyMatchesReferenceTokens`（GPT-2 FP16 已知限制）；
   - ~~当前还有 1 条新红待查：`Gpt2OnnxTest.MatchesAcrossProfileShapes`~~ **已结案**（2026-09-26：
     机制 = 两实现差异之下的并列；按方案 B 修正判据后单测真机复跑 PASSED，不可判行 1/713）→ §8.5 / `TROUBLESHOOTING.md` #34.9；
@@ -382,7 +385,7 @@ python3 mini_trt_llm/tools/validate/int8_eval.py \
   --fp32-logits /tmp/mini_trt_llm_int8_crosscheck/fp32.f32.bin \
   --int8-logits /tmp/mini_trt_llm_int8_crosscheck/int8.f32.bin \
   --meta /tmp/mini_trt_llm_int8_crosscheck/meta.json \
-  --calib-dir 0_resnet18_onnx/calib_data --legacy-mode \
+  --calib-dir assets/legacy/resnet18_onnx/calib_data --legacy-mode \
   --json-out /tmp/mini_trt_llm_int8_crosscheck/py_report.json
 
 # C-3 比对两侧口径（不一致就是真问题）
@@ -1954,7 +1957,7 @@ diverged(L)  ⟺  PC 臂的 max_abs(L) > kDivergenceFactor × noise_floor
 
 | 项 | 口径 |
 |---|---|
-| 输入 | `0_resnet18_onnx/calib_data/`（500 张，**已归一化**）按文件名排序；前 8 张拼成一个 `batch=8` 张量 |
+| 输入 | `assets/legacy/resnet18_onnx/calib_data/`（500 张，**已归一化**）按文件名排序；前 8 张拼成一个 `batch=8` 张量 |
 | 比较对象 | 同一张图：**TRT 引擎输出** vs **ONNX 参考实现输出**（逐张量、逐元素） |
 | 差异 | `max_abs`（主）+ `max_rel`（辅，分母取 `max\|reference\|`，沿用 `tests/diff_stats.hpp` 的唯一定义） |
 | 逐层曲线 | 按 ONNX 图中的拓扑序（= 用例里的 `probe_index.txt` 顺序）逐行打印，**不做单点比较**（`future_iterations.md` §1.5 做法第 2 条） |
@@ -2013,8 +2016,8 @@ ctest --test-dir build -R qdq_reference_selftest --output-on-failure
 #    （见 §13.11）。要拿 per-channel 做正确性对比/选型，必须另加 `--weight-range-source onnx`
 #    并输出到**另一个路径**，别覆盖这一份。
 python3 mini_trt_llm/tools/convert/quantize_resnet18.py \
-    --onnx 0_resnet18_onnx/resnet18.onnx \
-    --calib-dir 0_resnet18_onnx/calib_data \
+    --onnx assets/legacy/resnet18_onnx/resnet18.onnx \
+    --calib-dir assets/legacy/resnet18_onnx/calib_data \
     --weight-scope per_channel \
     --output models/resnet18/resnet18_qdq_per_channel.onnx
 
@@ -2029,11 +2032,11 @@ python3 mini_trt_llm/tools/convert/add_probe_outputs.py \
 # 3) 参考落盘（纯 CPU；只跑前 8 张，秒级）
 python3 mini_trt_llm/tools/validate/qdq_reference.py \
     --onnx models/resnet18/resnet18_qdq_probe_per_tensor.onnx \
-    --calib-dir 0_resnet18_onnx/calib_data --num-images 8 \
+    --calib-dir assets/legacy/resnet18_onnx/calib_data --num-images 8 \
     --output-dir /tmp/mini_trt_llm_int8_probe/pt
 python3 mini_trt_llm/tools/validate/qdq_reference.py \
     --onnx models/resnet18/resnet18_qdq_probe_per_channel.onnx \
-    --calib-dir 0_resnet18_onnx/calib_data --num-images 8 \
+    --calib-dir assets/legacy/resnet18_onnx/calib_data --num-images 8 \
     --output-dir /tmp/mini_trt_llm_int8_probe/pc
 
 # 4) 真机：B1 四条（**跳过即失败**）

@@ -10,7 +10,7 @@
 
 用法：
     python3 int8_eval.py --fp32-logits fp32.f32.bin --int8-logits int8.f32.bin \
-        --meta meta.json --calib-dir 0_resnet18_onnx/calib_data --json-out report.json
+        --meta meta.json --calib-dir assets/legacy/resnet18_onnx/calib_data --json-out report.json
     python3 int8_eval.py --self-test        # 护栏自证 + 分层数学自证（不需要任何外部数据）
 """
 

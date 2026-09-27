@@ -5,6 +5,7 @@
 #include "mini_trt_llm/utils/io.hpp"
 #include "mini_trt_llm/utils/json.hpp"
 #include "mini_trt_llm/utils/safetensors_loader.hpp"
+#include "test_asset_guard.hpp"
 
 #include <gtest/gtest.h>
 
@@ -276,7 +277,7 @@ TEST(Gpt2WeightContractTest, SyntheticFixtureResolvesEveryWeight) {
 TEST(Gpt2WeightContractTest, RealConvertedArtifactIsComplete) {
     const std::string dir = FindRealModelDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/gpt2 不存在（先跑 hf_to_mini_trt_llm.py 转换）");
     }
 
     const ModelConfig model_config = ModelConfig::Load(dir);

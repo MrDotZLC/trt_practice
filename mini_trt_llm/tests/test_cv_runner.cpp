@@ -5,6 +5,7 @@
 #include "mini_trt_llm/core/cv_runner.hpp"
 #include "mini_trt_llm/core/engine.hpp"
 #include "test_gpu_guard.hpp"
+#include "test_asset_guard.hpp"
 
 #include <gtest/gtest.h>
 
@@ -54,9 +55,9 @@ std::string FindResNet18ModelDir() {
 }
 
 std::string FindOnnxPath() {
-    return FindFile({"0_resnet18_onnx/resnet18.onnx", "../0_resnet18_onnx/resnet18.onnx",
-                     "../../0_resnet18_onnx/resnet18.onnx",
-                     "../../../0_resnet18_onnx/resnet18.onnx"});
+    return FindFile({"assets/legacy/resnet18_onnx/resnet18.onnx", "../assets/legacy/resnet18_onnx/resnet18.onnx",
+                     "../../assets/legacy/resnet18_onnx/resnet18.onnx",
+                     "../../../assets/legacy/resnet18_onnx/resnet18.onnx"});
 }
 
 // ImageNet 的 mean/std，与 cv_test_support.hpp / P4-1 脚本一致（同一份数值，不各写一套）。
@@ -77,7 +78,7 @@ const std::vector<float> kStd = {test_support::kImageNetStd[0], test_support::kI
 TEST(CvRunnerPreprocessTest, MatchesBaselineNormalization) {
     const std::string dir = FindBaselineDir();
     if (dir.empty()) {
-        GTEST_SKIP() << "缺少 models/resnet18 基线产物（先跑 scripts/ref_resnet18.py）";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("缺少 models/resnet18 基线产物（先跑 scripts/ref_resnet18.py）");
     }
     const std::vector<float> pixels =
         ReadF32File(dir + "/inputs/ref_pixels_b8.contract_input.f32.bin", kInputElements);
@@ -163,7 +164,7 @@ TEST(CvRunnerTest, InferMatchesBaseline) {
     const std::string model_dir = FindResNet18ModelDir();
     const std::string onnx = FindOnnxPath();
     if (dir.empty() || model_dir.empty() || onnx.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18（基线 + config）与 0_resnet18_onnx/resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18（基线 + config）与 assets/legacy/resnet18_onnx/resnet18.onnx");
     }
     Logger logger;
     EngineBuilder::Config builder_config;
@@ -207,7 +208,7 @@ TEST(CvRunnerTest, RejectsInvalidBatchAndSize) {
     const std::string model_dir = FindResNet18ModelDir();
     const std::string onnx = FindOnnxPath();
     if (model_dir.empty() || onnx.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18/config.json 与 0_resnet18_onnx/resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18/config.json 与 assets/legacy/resnet18_onnx/resnet18.onnx");
     }
     Logger logger;
     EngineBuilder::Config builder_config;
@@ -239,7 +240,7 @@ TEST(CvRunnerTest, RejectsMeanStdSizeMismatch) {
     const std::string model_dir = FindResNet18ModelDir();
     const std::string onnx = FindOnnxPath();
     if (model_dir.empty() || onnx.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18/config.json 与 0_resnet18_onnx/resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18/config.json 与 assets/legacy/resnet18_onnx/resnet18.onnx");
     }
     Logger logger;
     EngineBuilder::Config builder_config;
@@ -266,7 +267,7 @@ TEST(CvRunnerTest, BenchmarkReportsFiniteStats) {
     const std::string model_dir = FindResNet18ModelDir();
     const std::string onnx = FindOnnxPath();
     if (model_dir.empty() || onnx.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18/config.json 与 0_resnet18_onnx/resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18/config.json 与 assets/legacy/resnet18_onnx/resnet18.onnx");
     }
     Logger logger;
     EngineBuilder::Config builder_config;
@@ -304,7 +305,7 @@ TEST(CvRunnerTest, InferMatchesBaselineOnNativeEngine) {
     const std::string model_dir = FindResNet18ModelDir();
     if (baseline_dir.empty() || model_dir.empty() ||
         !std::filesystem::exists(model_dir + "/model.safetensors")) {
-        GTEST_SKIP() << "需要 models/resnet18（基线 + 转换产物）";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18（基线 + 转换产物）");
     }
     Logger logger;
     EngineBuilder::Config builder_config;

@@ -35,9 +35,9 @@ cmake --build build -j$(nproc) && ctest --test-dir build
 MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 ```
 
-**当前基线（2026-09-27 复跑为基础）**：**沙箱 265 条 / 0 失败**（该次复跑为 264，其后新增
-`EngineCacheTest.SourceFileIdentityIgnoresPathSpelling`，见 `TS-048`）；**真机整轮全量 264 条 /
-1 红 / 0 跳过 / 310 s**（该次复跑的数）——**真机总数随之为 265，待下一次真机整轮确认**。
+**当前基线**：**沙箱 268 条 / 0 失败**；真机整轮 267 条 / 1 红 / 0 跳过 / 301.72 s（2026-09-28，
+该轮尚无 P5-0-2 的 `check_skips_selftest` → 总数随之为 268、待复跑）。
+唯一出处见 `PROGRESS.md` 的「当前基线」（真机跳过集合由 `LastTest.log` 逐条解析确认，见那里的说明）。
 （红 = 按设计的 `RealGpt2Fp16GreedyMatchesReferenceTokens`，见 `docs/PROGRESS.md` §5.11；
 `int8_crosscheck` 报告齐备 → Passed，只在缺报告时按设计跳过 77）。
 两边**总数相同**，差别只在 GPU 用例是跑还是跳过。
@@ -212,7 +212,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 | INT8 整体一致率 | `>= 30%`（实测 37.9% / 38.3%） | 同上，"没崩坏"下界 | 主要在测测试集噪声，不是质量指标 |
 | INT8 绝对误差界 | **未定**（实测 `max_abs ≈ 21.6`，故意不作判据） | 同上 + `future_iterations.md` §1.6 | 有真值标签的验收集到位后按 p95 / p99 分布定 |
 | 探针仪器自证（`future_iterations.md` §1.5） | **`d_pre ≤ d_post` + 首层落在噪声地带内**（真机：`conv1` 8.34e-07 vs 0.0398；噪声地板 0.2714） | `future_iterations_development_plan.md` §13.3 D3/D4；`TROUBLESHOOTING.md` #46.4 | 落地时由"数格点"改成"比 d_pre / d_post"——不用先估 scale，少一个可能出错的环节 |
-| 基线（沙箱 / 真机） | **沙箱 264 条 / 0 失败；真机整轮全量 264 条 / 1 红 / 0 跳过 / 310 s**（2026-09-27 复跑） | `PROGRESS.md` §3.0j /"接手必读"第 4 条 | 每批收口同步更新（演进：182 → 204 → 215 → 242 → 259 → **264**） |
+| 基线（沙箱 / 真机） | **沙箱 267 条 / 0 失败**（2026-09-28）；真机整轮全量 264 条 / 1 红 / 0 跳过 / 310 s（2026-09-27 复跑，总数随之为 267 待确认） | `PROGRESS.md` 当前基线 / §3.0j | 每批收口同步更新（演进：182 → 204 → 215 → 242 → 259 → 264 → 265 → **267**） |
 
 ---
 
@@ -453,7 +453,8 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 | **P** | 真机性能（G6 口径：同轮 ABBA / 跨构建对照） | 不能 | 作者真机 |
 
 执行口径同 §1：沙箱 `ctest --test-dir build`；真机 `MINI_TRT_REQUIRE_GPU=1 ctest ...`。
-**当前基线（2026-09-27 复跑）**：沙箱 **264 条 / 0 失败**；真机**整轮全量 = 264 条 / 1 红 / 0 跳过 / 310 s**。
+**当前基线**：沙箱 **267 条 / 0 失败**（2026-09-28）；真机**整轮全量 = 264 条 / 1 红 / 0 跳过 / 310 s**
+（2026-09-27 复跑的数，总数随之为 267 待确认）。唯一出处见 `PROGRESS.md` 当前基线。
 两边总数相同，差别只在 GPU 用例跑还是跳过。
 （本节原写"沙箱 242、真机复跑应为 243"是**当时的历史快照**，已作废。）
 
@@ -569,7 +570,8 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 | **G** | split-K kernel 的数值正确性（vs CPU double 参考）与 FP16 分支 | 不能 | 作者真机 |
 | **P** | kernel 级 / 端到端两版的**同轮交替**性能对照 | 不能 | 作者真机 |
 
-**当前基线（2026-09-27 复跑）**：沙箱 **264 条 / 0 失败**；真机**整轮全量 = 264 条 / 1 红 / 0 跳过 / 310 s**
+**当前基线**：沙箱 **267 条 / 0 失败**（2026-09-28）；真机**整轮全量 = 264 条 / 1 红 / 0 跳过 / 310 s**
+（2026-09-27 复跑的数，总数随之为 267 待确认）。唯一出处见 `PROGRESS.md` 当前基线。
 （唯一红 = 按设计的 `RealGpt2Fp16GreedyMatchesReferenceTokens`；`int8_crosscheck` 报告齐备 → Passed，
 只在缺报告时按设计跳过 77）。下面这段"259"是本节**收口当天**的快照，保留作为那次复跑的记录。
 **更正**：本节上一版写"真机复跑应为 260"——**错了 1 条**。ctest 的**总数**在沙箱与真机是

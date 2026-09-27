@@ -100,33 +100,46 @@ TEST_F(Gpt2OnnxErrorTest, RejectsUnreadableOnnxPath) {
 // L1b：解析之后的 I/O 契约校验（需要 GPU —— 解析要走 createInferBuilder）
 // ---------------------------------------------------------------------------
 //
-// 夹具直接用仓库里已有的 `0_resnet18_onnx/resnet18.onnx`：它的 I/O 名是
-// `input` / `output`，与**LLM 契约**要求的 `input_ids` / `logits` 完全不同。
+// 夹具**自造**：`input` → `output`——对 LLM 契约（`input_ids` / `logits`）**两个名字都不符**。
 //
 // ⚠️ **架构必须声明成 LLM（2026-09-25 修正）**：P4-2 起 `cnn` 的契约就是 `input`/`output`，
 // 所以"配一个 cnn 配置"不再构成"外来 I/O 名"——最早那版正是这么写的，被真机全量回归抓红
-// （用例的**意图**不变：I/O 名与**声明的架构契约**不符时必须被拒；CNC 侧的正面覆盖
+// （用例的**意图**不变：I/O 名与**声明的架构契约**不符时必须被拒；CNN 侧的正面覆盖
 // 由 `ResNet18OnnxBuildTest.*` 负责）。
-// **为什么用现成文件而不是造一个 ONNX**：造图需要 protobuf 级生成器（成本高、易错），
-// 而"非同名图"这个场景仓库里本来就有真实样本；省下的成本留给真正的缺口（见测试计划 G1c）。
+//
+// **为什么不再借 `resnet18.onnx` 当夹具（2026-09-28，Phase 5 阶段 2）**：借别的模型的产物
+// 会把两边的契约耦合起来（这条教训见 `PROGRESS.md` + `DEC-TEST-CONVENTIONS` 与 `TS-022`），
+// 而且它是本地资产，缺了本用例就跳过。生成器已支持 `--input-name/--output-name`，自造即可。
 //
 // 它验证的是这条护栏真的会拦人：任何 I/O 名与方案 A 不同的图都不会被悄悄接受——
 // 否则"ONNX 与原生对齐"就会变成一句空话（绑定时才报错，甚至数值错而无人察觉）。
 TEST_F(Gpt2OnnxErrorTest, RejectsGraphWithForeignIoNames) {
     MINI_TRT_SKIP_IF_NO_CUDA("解析 ONNX 需要 CUDA（createInferBuilder）");
-    const std::vector<std::string> candidates = {
-        "0_resnet18_onnx/resnet18.onnx", "../0_resnet18_onnx/resnet18.onnx",
-        "../../0_resnet18_onnx/resnet18.onnx", "../../../0_resnet18_onnx/resnet18.onnx"};
-    std::string resnet;
-    for (const std::string& candidate : candidates) {
+    const std::vector<std::string> generator_candidates = {
+        "mini_trt_llm/tools/make_tiny_onnx.py", "../mini_trt_llm/tools/make_tiny_onnx.py",
+        "../../mini_trt_llm/tools/make_tiny_onnx.py",
+        "../../../mini_trt_llm/tools/make_tiny_onnx.py"};
+    std::string generator;
+    for (const std::string& candidate : generator_candidates) {
         if (std::filesystem::exists(candidate)) {
-            resnet = candidate;
+            generator = candidate;
             break;
         }
     }
-    if (resnet.empty()) {
-        GTEST_SKIP() << "找不到 0_resnet18_onnx/resnet18.onnx（本用例复用它当'外来 I/O 名'夹具）";
+    if (generator.empty()) {
+        GTEST_SKIP() << "找不到 tools/make_tiny_onnx.py";
     }
+
+    const std::string fixture = directory_.path() + "/foreign_io.onnx";
+    const std::string command = "python3 " + generator + " --output " + fixture +
+                                " --input-name input --output-name output > /dev/null 2>&1";
+    if (std::system(command.c_str()) != 0 || !std::filesystem::exists(fixture)) {
+        GTEST_SKIP() << "生成夹具失败（缺 python3 或 onnx 包）";
+    }
+    // 夹具自证：非空。名字由生成器的两个参数定死（见上面命令），
+    // 若它俩被改回契约内的名字，本用例会走"通过"分支而红——正是我们要的。
+    ASSERT_GT(std::filesystem::file_size(fixture), 0u);
+
     // 给这份 ONNX 配一个合法的模型目录：这样失败一定来自 I/O 名校验，
     // 而不是"config 缺失"这类更早的检查。
     ASSERT_TRUE(directory_.WriteConfig(R"({
@@ -134,7 +147,7 @@ TEST_F(Gpt2OnnxErrorTest, RejectsGraphWithForeignIoNames) {
         "hyper_params": {}, "weight_map": {}
     })"));
     EngineBuilder builder(logger_, EngineBuilder::Config{});
-    EXPECT_FALSE(builder.BuildFromOnnx(directory_.path(), resnet, engine_path_, {}))
+    EXPECT_FALSE(builder.BuildFromOnnx(directory_.path(), fixture, engine_path_, {}))
         << "外来 I/O 名的图必须被拒绝";
     EXPECT_FALSE(std::filesystem::exists(engine_path_));
 }

@@ -7,6 +7,7 @@
 #include "mini_trt_llm/utils/memory_pool.hpp"
 #include "mini_trt_llm/utils/json.hpp"
 #include "test_gpu_guard.hpp"
+#include "test_asset_guard.hpp"
 
 #include <NvInfer.h>
 #include <cuda_runtime.h>
@@ -94,9 +95,9 @@ std::string FindModelDir() {
 }
 
 std::string FindOnnxPath() {
-    return FindFile({"0_resnet18_onnx/resnet18.onnx", "../0_resnet18_onnx/resnet18.onnx",
-                     "../../0_resnet18_onnx/resnet18.onnx",
-                     "../../../0_resnet18_onnx/resnet18.onnx"});
+    return FindFile({"assets/legacy/resnet18_onnx/resnet18.onnx", "../assets/legacy/resnet18_onnx/resnet18.onnx",
+                     "../../assets/legacy/resnet18_onnx/resnet18.onnx",
+                     "../../../assets/legacy/resnet18_onnx/resnet18.onnx"});
 }
 
 std::string FindQdqOnnx() {
@@ -214,7 +215,7 @@ TEST(ResNet18Int8EngineTest, IsActuallyInt8) {
     const std::string onnx = FindOnnxPath();
     const std::string qdq = FindQdqOnnx();
     if (model_dir.empty() || onnx.empty() || qdq.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18/resnet18_qdq.onnx（先跑 quantize_resnet18.py）";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18/resnet18_qdq.onnx（先跑 quantize_resnet18.py）");
     }
     Logger logger;
     EngineBuilder builder(logger, Int8Config());
@@ -261,7 +262,7 @@ TEST(ResNet18Int8AccuracyTest, RampInputIsOutOfDistribution) {
     const std::string qdq = FindQdqOnnx();
     const std::string baseline_dir = FindBaselineDir();
     if (model_dir.empty() || onnx.empty() || qdq.empty() || baseline_dir.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18（QDQ 图 + P4-1 基线）与 resnet18.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18（QDQ 图 + P4-1 基线）与 resnet18.onnx");
     }
     Logger logger;
     EngineBuilder int8_builder(logger, Int8Config());
@@ -318,14 +319,14 @@ TEST(ResNet18Int8AccuracyTest, Top1AgreementOnRealImages) {
     const std::string onnx = FindOnnxPath();
     const std::string qdq = FindQdqOnnx();
     if (model_dir.empty() || onnx.empty() || qdq.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18/resnet18_qdq.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18/resnet18_qdq.onnx");
     }
     // calib_data 只在本地存在（.gitignore 忽略），缺了就以 77 跳过
     const std::string calib_root =
-        FindFile({"0_resnet18_onnx/calib_data", "../0_resnet18_onnx/calib_data",
-                  "../../0_resnet18_onnx/calib_data", "../../../0_resnet18_onnx/calib_data"});
+        FindFile({"assets/legacy/resnet18_onnx/calib_data", "../assets/legacy/resnet18_onnx/calib_data",
+                  "../../assets/legacy/resnet18_onnx/calib_data", "../../../assets/legacy/resnet18_onnx/calib_data"});
     if (calib_root.empty()) {
-        GTEST_SKIP() << "需要 0_resnet18_onnx/calib_data";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 assets/legacy/resnet18_onnx/calib_data");
     }
     Logger logger;
     EngineBuilder int8_builder(logger, Int8Config());
@@ -452,13 +453,13 @@ TEST(ResNet18Int8AccuracyTest, DumpsLogitsAndCppReportForCrossCheck) {
     const std::string onnx = FindOnnxPath();
     const std::string qdq = FindQdqOnnx();
     if (model_dir.empty() || onnx.empty() || qdq.empty()) {
-        GTEST_SKIP() << "需要 models/resnet18 的 onnx / qdq 产物";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/resnet18 的 onnx / qdq 产物");
     }
     const std::string calib_root =
-        FindFile({"0_resnet18_onnx/calib_data", "../0_resnet18_onnx/calib_data",
-                  "../../0_resnet18_onnx/calib_data", "../../../0_resnet18_onnx/calib_data"});
+        FindFile({"assets/legacy/resnet18_onnx/calib_data", "../assets/legacy/resnet18_onnx/calib_data",
+                  "../../assets/legacy/resnet18_onnx/calib_data", "../../../assets/legacy/resnet18_onnx/calib_data"});
     if (calib_root.empty()) {
-        GTEST_SKIP() << "需要 0_resnet18_onnx/calib_data";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 assets/legacy/resnet18_onnx/calib_data");
     }
 
     Logger logger;
@@ -575,7 +576,7 @@ TEST(ResNet18Int8AccuracyTest, DumpsLogitsAndCppReportForCrossCheck) {
         validation["num_samples"] = JsonValue(usable);
         validation["manifest_path"] = JsonValue(manifest_path);
         validation["source"] = JsonValue(JsonValue::Object{
-            {"url", JsonValue("local: 0_resnet18_onnx/calib_data")},
+            {"url", JsonValue("local: assets/legacy/resnet18_onnx/calib_data")},
             {"retrieved_utc", JsonValue("n/a")},
             {"license", JsonValue("n/a")}});
         validation["preprocessing"] = JsonValue(JsonValue::Object{

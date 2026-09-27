@@ -19,6 +19,7 @@
 #include "mini_trt_llm/utils/logger.hpp"
 #include "mini_trt_llm/utils/memory_pool.hpp"
 #include "test_gpu_guard.hpp"
+#include "test_asset_guard.hpp"
 
 #include <NvInfer.h>
 #include <cuda_runtime.h>
@@ -99,15 +100,15 @@ std::string FindModelDir() {
 }
 
 std::string FindOnnxPath() {
-    return FindFile({"0_resnet18_onnx/resnet18.onnx", "../0_resnet18_onnx/resnet18.onnx",
-                     "../../0_resnet18_onnx/resnet18.onnx",
-                     "../../../0_resnet18_onnx/resnet18.onnx"});
+    return FindFile({"assets/legacy/resnet18_onnx/resnet18.onnx", "../assets/legacy/resnet18_onnx/resnet18.onnx",
+                     "../../assets/legacy/resnet18_onnx/resnet18.onnx",
+                     "../../../assets/legacy/resnet18_onnx/resnet18.onnx"});
 }
 
 std::string FindCalibDir() {
-    return FindFile({"0_resnet18_onnx/calib_data", "../0_resnet18_onnx/calib_data",
-                     "../../0_resnet18_onnx/calib_data",
-                     "../../../0_resnet18_onnx/calib_data"});
+    return FindFile({"assets/legacy/resnet18_onnx/calib_data", "../assets/legacy/resnet18_onnx/calib_data",
+                     "../../assets/legacy/resnet18_onnx/calib_data",
+                     "../../../assets/legacy/resnet18_onnx/calib_data"});
 }
 
 EngineBuilder::Config ProbeConfig() {
@@ -438,17 +439,17 @@ ProbeSetup MakeSetup() {
 
 const char* const kHowToPrepare =
     "先产出两臂探针图与参考落盘（见开发计划 §13.9）：\n"
-    "  python3 mini_trt_llm/tools/convert/quantize_resnet18.py --onnx 0_resnet18_onnx/resnet18.onnx \\\n"
-    "      --calib-dir 0_resnet18_onnx/calib_data --weight-scope per_channel \\\n"
+    "  python3 mini_trt_llm/tools/convert/quantize_resnet18.py --onnx assets/legacy/resnet18_onnx/resnet18.onnx \\\n"
+    "      --calib-dir assets/legacy/resnet18_onnx/calib_data --weight-scope per_channel \\\n"
     "      --output models/resnet18/resnet18_qdq_per_channel.onnx\n"
     "  python3 mini_trt_llm/tools/convert/add_probe_outputs.py --onnx models/resnet18/resnet18_qdq.onnx \\\n"
     "      --output models/resnet18/resnet18_qdq_probe_per_tensor.onnx\n"
     "  python3 mini_trt_llm/tools/convert/add_probe_outputs.py --onnx models/resnet18/resnet18_qdq_per_channel.onnx \\\n"
     "      --output models/resnet18/resnet18_qdq_probe_per_channel.onnx\n"
     "  python3 mini_trt_llm/tools/validate/qdq_reference.py --onnx models/resnet18/resnet18_qdq_probe_per_tensor.onnx \\\n"
-    "      --calib-dir 0_resnet18_onnx/calib_data --num-images 8 --output-dir /tmp/mini_trt_llm_int8_probe/pt\n"
+    "      --calib-dir assets/legacy/resnet18_onnx/calib_data --num-images 8 --output-dir /tmp/mini_trt_llm_int8_probe/pt\n"
     "  python3 mini_trt_llm/tools/validate/qdq_reference.py --onnx models/resnet18/resnet18_qdq_probe_per_channel.onnx \\\n"
-    "      --calib-dir 0_resnet18_onnx/calib_data --num-images 8 --output-dir /tmp/mini_trt_llm_int8_probe/pc\n";
+    "      --calib-dir assets/legacy/resnet18_onnx/calib_data --num-images 8 --output-dir /tmp/mini_trt_llm_int8_probe/pc\n";
 
 }  // namespace
 
@@ -462,7 +463,7 @@ TEST(Int8ProbeTest, SameEngineSameInputIsBitIdentical) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     const ProbeSetup setup = MakeSetup();
     if (!setup.Complete()) {
-        GTEST_SKIP() << "需要两臂探针图 + 参考落盘。\n" << kHowToPrepare;
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要两臂探针图 + 参考落盘。\n" << kHowToPrepare);
     }
     Logger logger;
     EngineBuilder builder(logger, ProbeConfig());
@@ -504,11 +505,11 @@ TEST(Int8ProbeTest, LayerwiseErrorGrowthVsOnnxReference) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     const ProbeSetup setup = MakeSetup();
     if (!setup.Complete()) {
-        GTEST_SKIP() << "需要两臂探针图 + 参考落盘。\n" << kHowToPrepare;
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要两臂探针图 + 参考落盘。\n" << kHowToPrepare);
     }
     const std::vector<std::string> files = CalibFiles(setup.calib_dir);
     if (static_cast<int32_t>(files.size()) < kProbeBatch) {
-        GTEST_SKIP() << "标定图不足 " << kProbeBatch << " 张";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("标定图不足 " << kProbeBatch << " 张");
     }
     const std::vector<float> input = ReadBatchInput(files, 0, kProbeBatch);
     ASSERT_EQ(input.size(), kProbeInputElements);
@@ -688,11 +689,11 @@ TEST(Int8ProbeTest, PerChannelDegradationReproducesUnderProbe) {
     const ProbeSetup setup = MakeSetup();
     const std::string fp32_onnx = FindOnnxPath();
     if (!setup.Complete() || fp32_onnx.empty()) {
-        GTEST_SKIP() << "需要两臂探针图 + 参考落盘 + FP32 ONNX。\n" << kHowToPrepare;
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要两臂探针图 + 参考落盘 + FP32 ONNX。\n" << kHowToPrepare);
     }
     const std::vector<std::string> files = CalibFiles(setup.calib_dir);
     if (static_cast<int32_t>(files.size()) < kReproImages) {
-        GTEST_SKIP() << "标定图不足 " << kReproImages << " 张";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("标定图不足 " << kReproImages << " 张");
     }
 
     Logger logger;

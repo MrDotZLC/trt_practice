@@ -6,6 +6,7 @@
 #include "mini_trt_llm/utils/io.hpp"
 #include "mini_trt_llm/utils/memory_pool.hpp"
 #include "test_gpu_guard.hpp"
+#include "test_asset_guard.hpp"
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -85,14 +86,14 @@ std::string FindModelDir() {
 }
 
 std::string FindOnnx() {
-    return FindFile({"1_gpt2_onnx/gpt2.onnx", "../1_gpt2_onnx/gpt2.onnx",
-                     "../../1_gpt2_onnx/gpt2.onnx", "../../../1_gpt2_onnx/gpt2.onnx"});
+    return FindFile({"assets/legacy/gpt2_onnx/gpt2.onnx", "../assets/legacy/gpt2_onnx/gpt2.onnx",
+                     "../../assets/legacy/gpt2_onnx/gpt2.onnx", "../../../assets/legacy/gpt2_onnx/gpt2.onnx"});
 }
 
 std::string FindRefOutput() {
-    return FindFile({"1_gpt2_onnx/ref_output.bin", "../1_gpt2_onnx/ref_output.bin",
-                     "../../1_gpt2_onnx/ref_output.bin",
-                     "../../../1_gpt2_onnx/ref_output.bin"});
+    return FindFile({"assets/legacy/gpt2_onnx/ref_output.bin", "../assets/legacy/gpt2_onnx/ref_output.bin",
+                     "../../assets/legacy/gpt2_onnx/ref_output.bin",
+                     "../../../assets/legacy/gpt2_onnx/ref_output.bin"});
 }
 
 double Cosine(const std::vector<float>& a, const std::vector<float>& b) {
@@ -233,7 +234,7 @@ TEST(Gpt2OnnxTest, MatchesNativeBuildOnSamePrompt) {
     const std::string onnx = FindOnnx();
     const std::string ref_path = FindRefOutput();
     if (dir.empty() || onnx.empty() || ref_path.empty()) {
-        GTEST_SKIP() << "需要 models/gpt2、1_gpt2_onnx/gpt2.onnx 与 ref_output.bin";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/gpt2、assets/legacy/gpt2_onnx/gpt2.onnx 与 ref_output.bin");
     }
 
     Logger logger;
@@ -372,7 +373,7 @@ TEST(Gpt2OnnxTest, Fp16PathsAgree) {
     const std::string dir = FindModelDir();
     const std::string onnx = FindOnnx();
     if (dir.empty() || onnx.empty()) {
-        GTEST_SKIP() << "需要 models/gpt2 与 1_gpt2_onnx/gpt2.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/gpt2 与 assets/legacy/gpt2_onnx/gpt2.onnx");
     }
 
     Logger logger;
@@ -431,7 +432,7 @@ TEST(Gpt2OnnxTest, MatchesAcrossProfileShapes) {
     const std::string dir = FindModelDir();
     const std::string onnx = FindOnnx();
     if (dir.empty() || onnx.empty()) {
-        GTEST_SKIP() << "需要 models/gpt2 与 1_gpt2_onnx/gpt2.onnx";
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/gpt2 与 assets/legacy/gpt2_onnx/gpt2.onnx");
     }
 
     Logger logger;

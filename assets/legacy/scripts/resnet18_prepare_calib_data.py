@@ -28,7 +28,10 @@ def preprocess(image: Image.Image) -> np.ndarray:
     return arr
 
 def main():
-    out_dir = os.path.join(os.path.dirname(__file__), "calib_data")
+    # Phase 5 迁到 assets/legacy/scripts/ 之后，产物统一落在 assets/legacy/resnet18_onnx/
+    # （原来是脚本同目录 `0_resnet18_onnx/` 下的 calib_data/）。
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                           "resnet18_onnx", "calib_data")
     os.makedirs(out_dir, exist_ok=True)
 
     print("Loading ILSVRC2012 validation set (streaming)...")

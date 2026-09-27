@@ -31,8 +31,8 @@
 
 用法：
     python3 mini_trt_llm/tools/convert/quantize_resnet18.py \\
-        --onnx 0_resnet18_onnx/resnet18.onnx \\
-        --calib-dir 0_resnet18_onnx/calib_data \\
+        --onnx assets/legacy/resnet18_onnx/resnet18.onnx \\
+        --calib-dir assets/legacy/resnet18_onnx/calib_data \\
         --output models/resnet18/resnet18_qdq.onnx
 """
 
@@ -502,7 +502,7 @@ def fake_quant_check(act_scales, weight_scales, calib_files, params: Dict[str, o
 def main() -> None:
     parser = argparse.ArgumentParser(description="ResNet18 FP32 ONNX → 对称 int8 Q/DQ ONNX")
     parser.add_argument("--onnx", required=True)
-    parser.add_argument("--calib-dir", default="0_resnet18_onnx/calib_data")
+    parser.add_argument("--calib-dir", default="assets/legacy/resnet18_onnx/calib_data")
     parser.add_argument("--output", required=True)
     parser.add_argument("--calib-images", type=int, default=500,
                         help="标定图片数（默认 500，与 legacy 校准集一致）")

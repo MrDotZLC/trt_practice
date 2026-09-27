@@ -1,5 +1,5 @@
 {
-  "onnx": "0_resnet18_onnx/resnet18.onnx",
+  "onnx": "assets/legacy/resnet18_onnx/resnet18.onnx",
   "output": "models/resnet18/resnet18_qdq.onnx",
   "calib_images": 500,
   "weight_scope": "per_tensor",
