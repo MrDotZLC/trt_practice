@@ -180,8 +180,8 @@ Python 侧 torch + onnx + transformers 做参考实现与产图。
 ## 3. 面试亮点（对齐 TensorRT-LLM 的技术与难点）
 
 > 组织方式：**TRT-LLM 里的哪个技术 → 我实现了什么 → 难点在哪 → 证据**。
-> 前四项是 kernel / 运行时相关的技术件，第五项是量化；工程流程类的内容不放在这里，
-> 而是下沉到 §4 的问答（面试官通常以提问的方式考它）。
+> 前四项是 kernel / 运行时相关的技术件，第五项是量化，第六项是"整条链路的实现归属盘点"；
+> 工程流程类的内容不放在这里，而是下沉到 §4 的问答（面试官通常以提问的方式考它）。
 
 ### 亮点 1｜PagedAttention 全链路：paged KV Cache → generation-phase attention → 长上下文 split-K
 
@@ -319,6 +319,77 @@ optimization profile）；executor 侧的 buffer / workspace / engine 管理。
 
 **诚实边界**：LLM 侧的 INT4 / FP8 与 KV cache 量化**未做**，这是与 TRT-LLM 最大的技术差距之一；
 本机是 GTX 1660 Ti（TU116，无 Tensor Core），那条收益曲线本来也拿不到。
+
+### 亮点 6｜端到端全链路：从模型加载到结果输出，每一步哪些是我们写的
+
+**对应 TRT-LLM**：它把"权重 → engine → executor"整条链路收在库内部；这里每一段都拆开自己实现过一遍。
+
+**一句话口径**：**算子（layer）是 TensorRT 提供的，怎么拼、精度怎么定、缓存与调度怎么管全部是自己写的**；
+第三方只有 safetensors 解析、CUB 排序、nvonnxparser、SentencePiece 与 TRT 运行时本身。
+
+**链路九段（括号里是这一段"我们手写"的部分）**
+
+1. **离线产图**（手写 Python 转换工具）：HF GPT-2 → `config.json` + `model.safetensors`；
+   ONNX → 原生权重（BN 在导出时就折进卷积）；INT8 走对称 Q/DQ。核心设计是 `config.json` 里的
+   **`weight_map`**（"TRT 侧名字 → 权重源 key"），把权重改名与建图代码解耦。
+2. **读配置**（手写递归下降 JSON 解析器 + `ModelRegistry` 分发）：按 `model_type` 选
+   `IModelBuilder`，加新模型只需注册一个子类；`\uXXXX` 也支持——GPT-2 的词表 key 全是
+   `"\u0120the"` 这种形式，不支持它就读不了词表。
+3. **加载权重**（手写 dtype 转换与缓存；解析复用第三方 `safetensors-cpp`）：FP16 / BF16 / FP64
+   统一先还原成 FP32 再降到目标精度（BF16 不能靠位截断）；转换结果按张量名缓存，
+   保证 TRT 拿到的裸指针在整次建图期间稳定。
+4. **建图**（手写用 TRT Network API 拼图）：GPT-2 逐层手搭——`addGather` 词/位置嵌入、
+   `addNormalizationV2`（**显式 `setComputePrecision(FP32)`**，不赌默认值）、`MatMul`+bias、
+   `Shuffle`/`Slice` 拆 QKV；**prefill 的注意力是自己拼的 `MatMul → 缩放 → 因果 mask → Softmax →
+   MatMul` 子图，decode 换成自己的 PagedAttention 插件**；MLP 走 `c_fc → kGELU_TANH → c_proj`；
+   `tie_word_embeddings` 时在图上转置 `wte`，不物化冗余拷贝。ResNet18 同理（BN 已折进权重、
+   残差加在最后一个 relu 之前、GAP 用 reduce、fc 用 `kTRANSPOSE` 右乘）。
+5. **Profile 与缓存**（手写）：只给动态维填 min/opt/max；LLM 按 stage 挂 prefill / decode 两组，
+   ONNX 路径只挂 prefill 一组；引擎旁写**构建指纹**（源文件 size+mtime、全部建图数值参数、开关、
+   TRT·CUDA 版本、手工图版本 → FNV-1a），指纹不一致或缺失就重建。
+6. **加载引擎**（TRT API 的薄包装）：反序列化 → 建 `ExecutionContext`；真正的 tactic 选择、
+   层融合与显存规划都在 TRT 里，这一段没有可讲的算法。
+7. **Prefill + 首 token**（手写 kernel）：绑 `input_ids` / `position_ids` 与每层 K/V 输出 →
+   `enqueueV3` → 用**手写的分页写入 kernel** 按 block table 把 `[B, H, S, D]` 散写进 cache
+   （源精度 × 目标精度四种组合显式分发）→ **手写采样 kernel** 出第 1 个 token
+   （随机数是自实现的 Philox，固定 seed 可复现；Top-K/Top-P 的整行排序复用 CUB）。
+8. **Decode 循环**（手写 kernel / 插件；循环内零 H2D/D2H）：用设备端 `context_lens` 填
+   `position_ids`（手写 kernel，不为一个整数回主机）→ 手写的 PagedAttention 插件
+   （online softmax + 上下文维 split-K + 两阶段归约，并把当前 token 的 K/V 一起参与）
+   → **手写追加 kernel**：写当前 token 的每层 K/V 并**整步只推进一次**长度 → 再采样，
+   token 直接留在显存里，下一步就把它绑成 `input_ids`。
+9. **出结果**（手写后处理与 BPE）：循环外一次性 D2H + 同步 → 主机侧 EOS 截断
+   （循环内不早停是有意取舍：早停必须每步同步）→ `int32 → int64` 返回；
+   文本进出时用手写的 byte-level BPE（读 `vocab.json` / `merges.txt`，自己做预切分与按 rank 合并）。
+   CV 路径同构：手写归一化 + 维度与 batch 范围一律向引擎查询。
+
+**归属一览**
+
+| 环节 | 我们手写 | 复用第三方 / TRT |
+|---|---|---|
+| 权重导出 | 转换 / 产图脚本、`weight_map` 设计 | safetensors 文件格式 |
+| JSON / 配置 | 递归下降解析器、`ModelConfig` | — |
+| 权重加载 | dtype 转换、转换缓存、名字映射 | `safetensors-cpp` 解析 + mmap |
+| 建图 | 算子组合、命名、精度决策、全部建图护栏 | TRT 的层算子（MatMul / Slice / Softmax / Gather / Conv…） |
+| Plugin | 三个 `IPluginV3` 封装 + 全部 CUDA kernel | TRT 的插件框架 |
+| Profile / 缓存 | profile 规则、构建指纹 sidecar | TRT 的构建与 tactic 选择 |
+| KV Cache | 分页布局、块分配器、写入 kernel、长度推进 | — |
+| 采样 | greedy / top-k / top-p kernel、Philox PRNG | CUB 分段排序 |
+| 执行 | 绑定、形状设置、符号查询、循环编排 | TRT Runtime / `ExecutionContext` |
+| Tokenizer | byte-level BPE | SentencePiece（已嵌入但**未验证**） |
+
+**三条能讲深的**
+
+- **弱类型网络下精度不能假定、只能查询**：FP16 引擎里 K/V 与 logits 实际被 TRT 声明成 FP32；
+  按配置精度分配缓冲 = 4 字节写进 2 字节的越界写，而且 **FP32 路径下永远不暴露**。
+- **所有权边界就是契约**：decode 网络对每一层都要一对独立 cache 张量（共用会让每层都读第 0 段）；
+  写 K/V 与推进长度必须拆开，且整步只推进一次。
+- **缓存代次要手工声明**：指纹看不见插件源码的变化，所以"workspace 需求从 0 变正数"这类改动
+  必须手工 bump 图版本，否则复用旧引擎就是往 0 字节缓冲里写。
+
+**证据**：GPT-2 FP32 贪心 8 token 与 HF 逐 token 一致、prefill logits 相对偏差 `9.19e-07`；
+ResNet18 FP32 对 torchvision `9.5e-06`、原生 vs ONNX `1.07e-06`；INT8 余量子集一致率 12/12；
+split-K 斜率降 88.85%（kernel）/ 88.20%（端到端）。出处见 `PROGRESS.md` §3 与 §5。
 
 ### 与 TRT-LLM 的能力对照（把边界说清楚，避免被问倒）
 
@@ -643,6 +714,7 @@ optimization profile）；executor 侧的 buffer / workspace / engine 管理。
 | TRT 有 `IAttention`，为什么还手搭 prefill？ | §4 H3（+ §4 A2） |
 | 采样器是做什么的？是投机解码吗？ | §4 I1 |
 | 采样器选几个 logit？是归一化后取最大值吗？ | §4 I2 |
+| 从模型加载到结果输出，每一步哪些是自己写的？ | §3 亮点 6（+ §4 H 的实现归属问答） |
 | 代码是不是该从 `mini_trt_llm/` 挪到根目录？ | §4 E6 |
 | 项目最大的不足？ | §4 E5 |
 | 和 vLLM / TRT-LLM 比优势在哪？ | §4 E2 |
