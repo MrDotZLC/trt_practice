@@ -1,24 +1,14 @@
 # Development State
 
-workflow:
-
-feature | bugfix
-
-feature:
-
-phase:
-
-phase_index:
-
-status:
-
-in-progress | waiting-human-gate | completed
-
-updated:
-
-owner:
-
-Codex
+| 字段 | 取值 |
+| --- | --- |
+| workflow | feature / bugfix |
+| feature | |
+| phase | P0-Requirement … P9-Interview |
+| phase_index | |
+| status | in-progress / waiting-human-gate / completed |
+| updated | |
+| owner | Codex |
 
 ---
 

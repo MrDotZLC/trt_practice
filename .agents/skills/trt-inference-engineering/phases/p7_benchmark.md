@@ -118,8 +118,6 @@ Human Gate：
 
 ## Output
 
-更新：
+更新 STATE.md 字段：
 
-STATE:
-
-phase: P8-Documentation
+- phase: P8-Documentation

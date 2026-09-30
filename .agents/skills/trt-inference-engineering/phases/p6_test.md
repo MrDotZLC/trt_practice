@@ -89,8 +89,6 @@ P6未通过：
 
 test_plan.md
 
-更新：
+更新 STATE.md 字段：
 
-STATE:
-
-phase: P7-Benchmark
+- phase: P7-Benchmark

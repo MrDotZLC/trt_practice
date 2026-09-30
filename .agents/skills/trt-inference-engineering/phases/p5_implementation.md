@@ -103,8 +103,6 @@ Self Check:
 
 ## Output
 
-更新：
+更新 STATE.md 字段：
 
-STATE:
-
-phase: P6-Test
+- phase: P6-Test

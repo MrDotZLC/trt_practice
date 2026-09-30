@@ -54,7 +54,7 @@ P9 Interview
 
 读取：
 
-phases/p3_review.md
+[phases/p3_review.md](../phases/p3_review.md)
 
 禁止：
 

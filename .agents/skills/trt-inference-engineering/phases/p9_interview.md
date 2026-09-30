@@ -111,9 +111,7 @@ Self Check：
 
 ## Output
 
-更新：
+更新 STATE.md 字段：
 
-STATE:
-
-status: completed  
-phase: DONE
+- phase: P9-Interview
+- status: completed

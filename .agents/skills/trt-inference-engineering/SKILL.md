@@ -1,3 +1,8 @@
+---
+name: trt-inference-engineering
+description: 在 C++/CUDA/TensorRT/LLM 推理项目里做功能开发、Bug 修复、评审与 benchmark 时使用，按 P0–P9 / B0–B4 流程推进并维护 docs/dev 下各 feature 的 artifact。单纯解释代码或讨论概念时不触发。
+---
+
 # TensorRT Inference Engineering Skill
 
 ## Purpose
@@ -13,6 +18,8 @@
 - 保证长期项目维护具有状态恢复能力
 
 ## Trigger
+
+路由以 frontmatter 的 description 为权威摘要，本节列出细化的触发条件。
 
 ### Feature Workflow
 
@@ -58,7 +65,7 @@
 
 路径：
 
-<project_root>/.codex/skills/trt-inference-engineering/
+<project_root>/.agents/skills/trt-inference-engineering/
 
 用途：
 
@@ -111,6 +118,12 @@ interview_notes.md
 
 所有开发过程产物必须写入 Artifact Directory。
 
+### Naming Conventions
+
+STATE.md 的 `phase` 字段使用连字符标识（`P0-Requirement` … `P9-Interview`），便于机器比对；正文叙述与状态机使用空格形式（`P3 Review`）。
+
+`status` 字段取值限定为 `in-progress` / `waiting-human-gate` / `completed`；结束状态由 `status` 表达，不写 `phase: DONE`。
+
 ## Global Rules
 
 ### Mandatory Rules
@@ -151,80 +164,21 @@ interview_notes.md
 
 ### Feature Workflow
 
-适用于：
+适用于：新增能力、新增模块、性能优化、架构增强。
 
-- 新增能力
-- 新增模块
-- 性能优化
-- 架构增强
+阶段顺序：P0 Requirement → P1 Analysis → P2 Design → Gate-A → P3 Review → Gate-B → P4 Baseline → P5 Implementation → P6 Test → P7 Benchmark → Gate-C → P8 Documentation → P9 Interview。
 
-流程：
+详细流程、各 Gate 判据与所需 artifact 以 [workflows/feature.md](workflows/feature.md) 为准，本节不复述。
 
-P0 Requirement  
-↓  
-P1 Analysis  
-↓  
-P2 Design  
-↓  
-Gate-A  
-↓  
-P3 Review  
-↓  
-Gate-B  
-↓  
-P4 Baseline  
-↓  
-P5 Implementation  
-↓  
-P6 Test  
-↓  
-P7 Benchmark  
-↓  
-Gate-C  
-↓  
-P8 Documentation  
-↓  
-P9 Interview
-
-详细流程：
-
-读取：
-
-workflows/feature.md
-
-Phase执行规则：
-
-进入Phase时只读取对应：
-
-phases/pX_xxx.md
-
-禁止一次加载所有Phase。
+Phase 执行规则：进入 Phase 时只读取对应的 `phases/pX_xxx.md`（见 [phases/](phases/)），禁止一次加载所有 Phase。
 
 ### Bugfix Workflow
 
-适用于：
+适用于：Bug 修复、崩溃修复、正确性修复。
 
-- Bug修复
-- 崩溃修复
-- 正确性修复
+阶段顺序：B0 Reproduce → B1 Diagnose → B2 Minimal Fix → B3 Regression → B4 Summary。
 
-流程：
-
-B0 Reproduce  
-↓  
-B1 Diagnose  
-↓  
-B2 Minimal Fix  
-↓  
-B3 Regression  
-↓  
-B4 Summary
-
-详细流程：
-
-读取：
-
-workflows/bugfix.md
+详细流程以 [workflows/bugfix.md](workflows/bugfix.md) 为准，本节不复述。
 
 ## Human Gate Protocol Summary
 
@@ -333,11 +287,7 @@ Step 5:
 
 ## Multi Feature Handling
 
-当：
-
-docs/dev/
-
-存在多个feature时。
+当 `<project_root>/docs/dev/` 下存在多个 feature 时。
 
 用户输入：
 
@@ -361,44 +311,31 @@ Status:
 
 ## File Index
 
-### Workflows
-
-workflows/
-
-feature.md
-
-bugfix.md
-
-### Phases
-
-phases/
-
-p0_requirement.md
-
-p1_analysis.md
-
-p2_design.md
-
-p3_review.md
-
-p4_baseline.md
-
-p5_implementation.md
-
-p6_test.md
-
-p7_benchmark.md
-
-p8_documentation.md
-
-p9_interview.md
-
-### Checklists and Templates
-
-Checklist:
-
-checklists/
-
-Templates:
-
-templates/
+| 场景 | 读取 |
+| --- | --- |
+| 走 Feature 流程 | [workflows/feature.md](workflows/feature.md) |
+| 走 Bugfix 流程 | [workflows/bugfix.md](workflows/bugfix.md) |
+| P0-Requirement 阶段 | [phases/p0_requirement.md](phases/p0_requirement.md) |
+| P1-Analysis 阶段 | [phases/p1_analysis.md](phases/p1_analysis.md) |
+| P2-Design 阶段 | [phases/p2_design.md](phases/p2_design.md) |
+| P3-Review 阶段 | [phases/p3_review.md](phases/p3_review.md) |
+| P4-Baseline 阶段 | [phases/p4_baseline.md](phases/p4_baseline.md) |
+| P5-Implementation 阶段 | [phases/p5_implementation.md](phases/p5_implementation.md) |
+| P6-Test 阶段 | [phases/p6_test.md](phases/p6_test.md) |
+| P7-Benchmark 阶段 | [phases/p7_benchmark.md](phases/p7_benchmark.md) |
+| P8-Documentation 阶段 | [phases/p8_documentation.md](phases/p8_documentation.md) |
+| P9-Interview 阶段 | [phases/p9_interview.md](phases/p9_interview.md) |
+| 提交前自检 C++ | [checklists/cpp.md](checklists/cpp.md) |
+| 提交前自检 CUDA | [checklists/cuda.md](checklists/cuda.md) |
+| 提交前自检 TensorRT | [checklists/tensorrt.md](checklists/tensorrt.md) |
+| 提交前自检 LLM Runtime | [checklists/llm_runtime.md](checklists/llm_runtime.md) |
+| 生成 requirement.md | [templates/requirement.md](templates/requirement.md) |
+| 生成 analysis.md | [templates/analysis.md](templates/analysis.md) |
+| 生成 design.md | [templates/design.md](templates/design.md) |
+| 生成 review.md | [templates/review.md](templates/review.md) |
+| 生成 benchmark_before.md | [templates/benchmark_before.md](templates/benchmark_before.md) |
+| 生成 benchmark.md | [templates/benchmark.md](templates/benchmark.md) |
+| 生成 test_plan.md | [templates/test_plan.md](templates/test_plan.md) |
+| 生成 summary.md | [templates/summary.md](templates/summary.md) |
+| 生成 interview_notes.md | [templates/interview_notes.md](templates/interview_notes.md) |
+| 维护 STATE.md | [templates/STATE.md](templates/STATE.md) |

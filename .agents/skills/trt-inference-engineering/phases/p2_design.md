@@ -125,12 +125,9 @@ Human Gate格式。
 
 生成：
 
-docs/dev//design.md
+docs/dev/<feature>/design.md
 
-更新：
+更新 STATE.md 字段：
 
-STATE:
-
-phase: P3-Review
-
-status: waiting-human-gate
+- phase: P3-Review
+- status: waiting-human-gate

@@ -114,8 +114,6 @@ Human Gate:
 
 ## Output
 
-更新：
+更新 STATE.md 字段：
 
-STATE:
-
-phase: P5-Implementation
+- phase: P5-Implementation

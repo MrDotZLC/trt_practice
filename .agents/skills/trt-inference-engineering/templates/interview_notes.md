@@ -27,5 +27,3 @@
 ---
 
 ## Follow-up Questions
-
-### 

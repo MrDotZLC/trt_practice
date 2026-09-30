@@ -45,15 +45,17 @@ requirement.md
 
 必须包含：
 
-### Current Architecture
+```markdown
+## Current Architecture
 
-### Data Flow
+## Data Flow
 
-### Relevant Modules
+## Relevant Modules
 
-### Existing Limitations
+## Existing Limitations
 
-### Extension Points
+## Extension Points
+```
 
 ## Rules
 

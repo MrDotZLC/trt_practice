@@ -26,7 +26,7 @@
 
 读取：
 
-docs/dev//STATE.md
+docs/dev/<feature>/STATE.md
 
 ## Actions
 
@@ -34,13 +34,13 @@ docs/dev//STATE.md
 
 创建：
 
-docs/dev//
+docs/dev/<feature>/
 
 ### 2. 创建requirement.md
 
 模板：
 
-templates/requirement.md
+[templates/requirement.md](../templates/requirement.md)
 
 ### 3. 明确需求
 
@@ -119,11 +119,9 @@ requirement.md：
 
 生成：
 
-docs/dev//requirement.md
+docs/dev/<feature>/requirement.md
 
-更新：
+更新 STATE.md 字段：
 
-STATE.md
-
-workflow: feature  
-phase: P1-Analysis
+- phase: P1-Analysis
+- workflow: feature

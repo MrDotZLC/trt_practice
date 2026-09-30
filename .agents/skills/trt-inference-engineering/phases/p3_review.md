@@ -12,13 +12,13 @@ design.md
 
 加载：
 
-checklists/cpp.md
+[checklists/cpp.md](../checklists/cpp.md)
 
-checklists/cuda.md
+[checklists/cuda.md](../checklists/cuda.md)
 
-checklists/tensorrt.md
+[checklists/tensorrt.md](../checklists/tensorrt.md)
 
-checklists/llm_runtime.md
+[checklists/llm_runtime.md](../checklists/llm_runtime.md)
 
 ## Actions
 
@@ -97,7 +97,7 @@ P0失败：
 
 生成：
 
-docs/dev//review.md
+docs/dev/<feature>/review.md
 
 更新：
 
