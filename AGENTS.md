@@ -153,6 +153,23 @@ ncu --set full -o ncu_report_kernel \
 
 ## 5. Incremental 开发推进流程
 
+**流程权威**：功能开发与 Bug 修复的推进流程以技能 `trt-inference-engineering` 为准
+（`.agents/skills/trt-inference-engineering/SKILL.md`）。本节只规定**权限、计划对账与文档落点**，
+**不复述**技能细则——阶段定义、Gate 判据、artifact 模板都在技能里。
+
+| workflow | 适用 | 阶段链 |
+|---|---|---|
+| **Feature** | 新增能力 / 性能优化 / 架构增强 | P0 Requirement → P1 Analysis → P2 Design → **Gate-A** → P3 Review → **Gate-B** → P4 Baseline → P5 Implementation → P6 Test → P7 Benchmark → **Gate-C** → P8 Documentation → P9 Interview |
+| **Bugfix** | 结果错误 / 崩溃 / 性能回退 | B0 Reproduce → B1 Diagnose → B2 Minimal Fix → B3 Regression → B4 Summary |
+
+- **artifact 落点**：`docs/dev/<feature>/`（`STATE.md` + 各阶段产出的文档）。
+  每个 Phase 结束必须更新该目录的 `STATE.md`：`phase` / `status` / 已完成 artifact / blocker /
+  next action。
+- **Gate 与 §0.7 的关系**：Gate 只决定"能否进入下一阶段"；**开工本身仍须按 §0.7 由作者点名**。
+  两者并行成立，互不替代。
+
+**C++ 侧仍按下面四步分步推进：**
+
 生成新功能代码时，请按以下顺序分步推进：
 
 0. **计划对账（在写任何代码之前）**：见本节末尾的「计划对账」。
@@ -165,8 +182,10 @@ ncu --set full -o ncu_report_kernel \
 
 任何一次（含继续上一轮未完成的任务）动手写代码之前，先完成并**在回复里明确说出**下面四件事：
 
-1. **有没有计划文档**：这次要做的事是否已被 `docs/phaseN_development_plan.md` 覆盖。
+1. **有没有计划文档**：这次要做的事是否已被 `docs/dev/<feature>/` 覆盖（`requirement.md` +
+   `analysis.md` + `design.md`；Bugfix 走 `requirement.md` + `analysis.md` + 候选修复方案）。
    没有 → 先产出计划文档并等确认，不要直接开工。
+   （历史阶段文档 `docs/phaseN_development_plan.md` 只作判据出处，**不再作为新工作的计划落点**。）
 2. **是否一致**：把这次要做的任务、接口、验收判据，逐条与文档描述对照，说出
    "哪几条对上了、哪几条有偏差"。
 3. **偏差怎么处理**：不一致时**先改文档再改代码**（或在动手前说明差异并取得确认）。
@@ -182,6 +201,9 @@ ncu --set full -o ncu_report_kernel \
 
 当完成一个阶段性任务，或做出重要架构决策时，
 更新 docs/PROGRESS.md 的对应部分。
+
+> **与 §5 的分工**：**每个 Phase 结束**更新 `docs/dev/<feature>/STATE.md`（进行状态 / blocker）；
+> **阶段或批次收口**才回填 `PROGRESS.md`（结论与基线）。两者都要写，落点不同、时效不同。
 
 ### 更新规则
 请把当前进度总结成一份可以交接给新会话的文档，包含以下部分：

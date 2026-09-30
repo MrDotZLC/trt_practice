@@ -30,9 +30,12 @@
 | **P3** | 当前硬件（sm_75、单卡、无 Tensor Core）收益有限，或研究性 / 探索性 |
 | **冻结** | 已被别的路线取代，或触发条件已被现状否证。保留备查、不排期；解冻需重新评估 |
 
-> **文档归位规则（2026-09-26 作者决定）**：后续迭代中**每个事项的开发计划与测试计划，一律并入
-> `docs/future_iterations_development_plan.md` 与 `docs/future_iterations_test_plan.md`**，
-> **不再单独新建 per-item 文件**（例：§9.2 的两份计划已并入 §10 / §9）。
+> **文档归位规则（2026-10-01 修订；原 2026-09-26 决定已被取代）**：后续迭代中**每个事项的
+> 开发状态与设计落点改为 `docs/dev/<feature>/`**（入口 = 该目录的 `STATE.md`；阶段链与 Gate
+> 见 `AGENTS.md` §5 与技能 `trt-inference-engineering`）。本文件（触发条件 / 优先级 / 判据）
+> 与 `docs/future_iterations_development_plan.md`、`docs/future_iterations_test_plan.md`
+> **保留触发条件、判据与执行回填**，不再承载新 feature 的设计正文。
+> （例：§9.2 的两份计划当年并入 §10 / §9，属老口径存量，不回改。）
 
 ### 0.1 [OI-PRIORITY-TABLE] 优先级总表（按建议优先级排序）
 
@@ -167,7 +170,11 @@
 ### 1.2 LLM INT8 / INT4 量化
 
 - **优先级**：P2
-- **背景**：sm_75 有 INT8 Tensor Core，LLM INT8 可显著提升吞吐。
+- **背景**：本机 GPU 为 **TU116（GTX 1660 Ti Mobile）**——`sm_75` **指令集**含 INT8 张量指令，
+  但该芯片**没有 Tensor Core 硬件单元**（`AGENTS.md` §1）。因此 LLM INT8 的收益来自
+  **显存带宽**（decode 访存受限，权重 4 字节 → 1 字节），不是张量核心吞吐。
+  **更正记录（2026-10-01，作者确认）**：原文写"sm_75 有 INT8 Tensor Core"，与该芯片事实不符；
+  **决策不变**（仍走显式 Q/DQ），只改收益来源的表述。
 - **工作内容**：
   - 支持 INT8 weight-only 或 SmoothQuant。
   - 支持 GPTQ/AWQ 需评估 sm_75 兼容性（可能不支持部分 INT4 kernel）。

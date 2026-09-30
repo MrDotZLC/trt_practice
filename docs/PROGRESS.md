@@ -423,6 +423,9 @@
 
 ### 2.16 协作与权限规则（2026-09-27 收紧）
 
+- **开发流程权威（2026-10-01 起）**：Feature / Bugfix 的阶段链、Gate 判据与 artifact 落点以
+  `AGENTS.md` §5 + 技能 `trt-inference-engineering` 为准；各 feature 的状态在
+  `docs/dev/<feature>/STATE.md`（本文不复述流程细则，见 `docs/README.md` §2.4）。
 - **改 `AGENTS.md`**：必须由作者**原话**给出许可口令 **"授权修改AGENTS.md一次"**（`AGENTS.md` §0.1）。
   含糊的表达（"编辑一条规则""顺手改一下"）**不构成**许可——Agent 只出草稿，等口令。
 - **其他任何工作**（**写计划文档 / 改代码 / 跑实验 / 真机任务**）：必须由作者**点名到具体条目**

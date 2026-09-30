@@ -10,6 +10,10 @@
 >   条目内部的做法与验收**不复制过来**——复制出来的第二份必然漂移。
 >
 > 配套测试计划：`docs/future_iterations_test_plan.md`（用例 → 判据 → 出处 → 环境 → 状态）。
+>
+> **开发状态落点（2026-10-01 起）**：各 feature 的**状态与设计**在 `docs/dev/<feature>/`
+> （入口 = `STATE.md`；阶段链与 Gate 见 `AGENTS.md` §5 与技能 `trt-inference-engineering`）。
+> 本文件仍是"怎么做"的执行层：轮到某条时在这里看改动面 / 步序 / 破坏性清单。
 
 ---
 
@@ -452,8 +456,10 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
 
 ## 10. [OI-SAMPLER-KERNEL-PLAN] `future_iterations.md` §9.2 Sampler 高性能 kernel（开发计划）
 
-> **本文档是它唯一的正式计划落点**（2026-09-26 作者决定：后续迭代中每个事项的开发/测试计划
-> **都并入 `future_iterations*_plan.md` 家族，不再单独新建 per-item 文件**）。
+> **本文档是它当年的正式计划落点**（2026-09-26 作者决定：后续迭代中每个事项的开发/测试计划
+> 都并入 `future_iterations*_plan.md` 家族）。
+> **该决定已于 2026-10-01 被取代**：新 feature 的状态与设计落点改为 `docs/dev/<feature>/`
+> （见 `AGENTS.md` §5 与 `docs/future_iterations.md`）；§9.2 是旧口径的**存量**，不回改。
 > 配套测试计划见 `future_iterations_test_plan.md` §9。
 
 ### 10.1 计划对账（AGENTS.md §5 第 0 步）
@@ -1073,8 +1079,10 @@ O(块数 + 一个块)，量级差 100 倍以上，而省掉了一整套 block sc
 
 ## 11. [OI-PERF-PROFILE-PLAN] decode 端到端性能画像 + G6 可复现测量方法（开发计划）
 
-> **本文档是它唯一的正式计划落点**（沿用 §10 开头记的规则：后续迭代的每个事项都并入
+> **本文档是它当年的正式计划落点**（沿用 §10 开头记的规则：后续迭代的每个事项都并入
 > `future_iterations*_plan.md` 家族，不新建 per-item 文件）。
+> **该规则已于 2026-10-01 被取代**（新落点 = `docs/dev/<feature>/`，见 `AGENTS.md` §5）；
+> 本节属旧口径存量，不回改。
 > 配套测试计划见 `future_iterations_test_plan.md` §10。
 > 条目事实来源：`docs/future_iterations.md` **§6.3**（Nsight 一键 profile target）与 **§11 的 G6**
 > （性能无可复现测量方法）；同时收口 `future_iterations.md` §9.2 留下的"sampler 在整步 decode 里占多少"。
@@ -1838,7 +1846,8 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
 
 <details><summary>展开：13.1 计划对账（AGENTS.md §5 第 0 步） 全文</summary>
 
-   改动面 + 破坏性动作预告"。本轮**不新建** per-item 文件（§0 的文档归位规则），执行细节落进本节。
+   改动面 + 破坏性动作预告"。本轮**不新建** per-item 文件（§0 的文档归位规则；该规则 2026-10-01 起
+   已被 `docs/dev/<feature>/` 取代，此处保留当时口径），执行细节落进本节。
 2. **是否一致**：逐条对照后**全部对上**，只有两处**细化**（不是偏差）：
    - `future_iterations.md` §1.5 做法第 1 条写"与 torch **已折叠 BN** 的模型同点对拍"。本轮改成
      **用 ONNX 官方参考实现直接执行那张 Q/DQ 图**——仍是"同点对拍"，但**取消了"我去折 BN"这一步**。

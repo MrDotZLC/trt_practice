@@ -6,7 +6,7 @@
 > 权威顺序：`AGENTS.md` > 本文（写作规约） > 各文档正文。
 > 建立基线（2026-09-27，实测量得）：**本文之外的 21 份**共 13,005 行 / 1012 KB
 > （5 份活文档 7766 行 + 16 份冻结文档 5239 行；本文自身不计入这个数）。
-> **该基线之后新增的文档不计入**（2026-09-27：`phase5_development_plan.md`、`interview_summary.md`）。
+> **该基线之后新增的文档不计入**（2026-09-27：`phase5_development_plan.md`、`interview_summary.md`；2026-10-01：`docs/dev/` 整支）。
 > 其中 `§x.y` 形式引用 1627 处、`#N` 形式引用 554 处、文件名提及 486 处；
 > `docs/` 被仓外（代码 / 脚本 / 根 `README.md`）引用 **79 行 / 37 个文件**（已排除 `third_party/`）。
 
@@ -17,8 +17,8 @@
 1. `PROGRESS.md` 顶部的「当前基线」块 —— 现在在哪、测试基线是多少。
 2. `PROGRESS.md` §6.6「当前未解决项」—— 哪些事还活着（它只是索引）。
 3. 命中某条开放项 → `future_iterations.md` 的对应条目（目标 / 触发条件 / 前置 / 验收判据）。
-4. 决定动手 → 先走 `AGENTS.md` §5「计划对账」，再到 `future_iterations_development_plan.md`
-   与 `future_iterations_test_plan.md` 找该条目的计划与用例。
+4. 决定动手 → 先走 `AGENTS.md` §5「计划对账」；开发状态与设计在 `docs/dev/<feature>/`
+   （入口 `STATE.md`），用例与判据在 `future_iterations_test_plan.md`。
 5. 遇到故障、或要查某条结论的来路 → `TROUBLESHOOTING.md` 顶部的索引表。
 6. 只要设计思路 → `mini_trt_llm_design.md`；只要某阶段的判据出处 → 对应的 `phaseN_*.md`。
 
@@ -55,6 +55,11 @@
 |---|---|---|
 | `interview_summary.md` | 面试口径的项目总结（定位 / 功能清单 / 亮点 / 问答 / 数字速查） | 准备面试、或需要"对外口径"时。**不新增技术结论**，数字与判据仍以 `PROGRESS.md` 等为准 |
 
+### 2.4 开发状态（`docs/dev/`：技能产出的开发 artifact）
+
+入口是该目录的 `STATE.md`（该 feature 状态的唯一落点）；文件构成、阶段链与 Gate 见技能
+`trt-inference-engineering` 与 `AGENTS.md` §5，本文不复述。状态数字仍只有 `PROGRESS.md` 一个出处。
+
 > 项目总入口是根目录 `README.md`；本文只负责 `docs/` 内部的组织规则。
 
 ---
@@ -71,6 +76,7 @@
 | 已知问题 / 坑的**结论**（问题 / 影响 / workaround） | `PROGRESS.md` §5 | 链接；**过程不写在这里** |
 | 排查过程（命令 / 日志 / 对比数据 / 被否证的假设） | `TROUBLESHOOTING.md` | 只写 `TS-xxx` |
 | 还没做什么 / 触发条件 / 优先级 | `future_iterations.md` | 只写 `OI-xxx` |
+| 某个 feature 的**开发状态**（在哪个 Phase、卡在哪、下一步） | `docs/dev/<feature>/STATE.md` | 只写"见该 STATE.md"，**不复制 phase / status 值** |
 | 怎么做（任务分解 / 接口 / 破坏性清单） | `future_iterations_development_plan.md` | 链接 |
 | 怎么验（用例清单 / 判据 / 执行口径） | `future_iterations_test_plan.md` 或对应 `phaseN_test_plan.md` | 链接 |
 | 阈值本身 | 用例代码里阈值所在处（**原地写清出处**，AGENTS.md §7） | 只写出处链接 |
@@ -227,6 +233,7 @@ rg -n '^\s*#{2,3}\s+[0-9][0-9.]*[a-z]?\s+\[(DEC|TS|OI|MP|GAP|PH)' docs/*.md
 | `future_iterations_development_plan.md` | 2123 / **574** ✅ | **800** | 已交付条目的计划段折进文末"附录：已完成" |
 | `future_iterations_test_plan.md` | 677 / **344** ✅ | **350** | 同上 |
 | `docs/README.md`（本文） | —（自引用，现值随编辑漂移，不登记） | **260** | 规约只留规则；实例与清单移进对应文档 |
+| `docs/dev/<feature>/*`（技能产出，按 feature 增删） | 不登记 | `STATE.md` ≤ 60 行；其余单文档 ≤ 200 行 | 超限就拆文档或折进 `<details>`；本文只登记落点与上限 |
 | 16 份冻结文档 | 5303 / 5303 | 冻结，**不再增长** | 新结论一律回写活文档（含各 +4 行冻结横幅） |
 
 瘦身优先级：**折叠 > 压表 > 移动**；删除是最后手段。
@@ -242,16 +249,14 @@ rg -n '^\s*#{2,3}\s+[0-9][0-9.]*[a-z]?\s+\[(DEC|TS|OI|MP|GAP|PH)' docs/*.md
 
 **冻结定义**：文档不再更新；只作设计与判据出处；不代表现状；新结论回写活文档。
 
-> **例外（2026-09-27 起）**：冻结文档里**与现行决定直接冲突**的表述，允许**加日期批注修正**——
-> 保留原文（可加删除线），只追加带日期的更新注，写明新决定与指向的活文档。首个适用案例：
-> "Phase 5 已永久取消" → 迁移方案 `phase5_development_plan.md`
-> （涉及 `mini_trt_llm_design.md`、`phase0_development_plan.md`、`phase4_development_plan.md`）。
-> **除这种"冲突修正"外，冻结文档仍然不更新。**
+> **例外（2026-09-27 起）**：冻结文档里**与现行决定直接冲突**的表述，允许**加日期批注修正**
+> （保留原文 + 删除线，只追加带日期的更新注）；**除此以外的冻结文档不更新**。已用过两例：
+> ① "Phase 5 已永久取消" → `phase5_development_plan.md`；② "1660 Ti 有 INT8 Tensor Core"
+> → `phase4_development_plan.md` D2 / 依据表（2026-10-01，依据 `future_iterations.md` + OI-INT8-CALIB）。
 
 **为什么原地冻结、不搬进 `docs/archive/`**：
 
-- `AGENTS.md` §5 原文点名 `docs/phaseN_development_plan.md` 这个路径，而 `AGENTS.md` 不可擅改；
-- 仓外有 79 行 / 37 个文件引用 `docs/`；
+- `AGENTS.md` §5 自 2026-10-01 起改了计划落点（`phaseN_*.md` 只作判据出处），但仓外仍有 79 行 / 37 个文件按老路径引用 `docs/`；
 - 搬目录的唯一收益是好看，代价是一批产品代码注释的连带改动。
 
 **冻结横幅模板**（加在文件第 1 行之后）：

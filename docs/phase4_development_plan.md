@@ -58,7 +58,7 @@
 | # | 决策 | 选项 | **结论（2026-09-25 已确认：按推荐执行）** |
 |---|---|---|---|
 | **D1** | 接入路径 | **A** 先 ONNX（复用 Phase 3 的 `BuildFromOnnx`）→ 再做原生；**B** 直接做原生 | **✅ A → B 两步**。A 的改动小（放宽 I/O 校验 + 一份 `config.json`），能最快拿到可运行的 CV 引擎与 `CVRunner`；原生风险集中在转换工具与权重映射，后置后可用 A 的结果对拍 |
-| **D2** | INT8 是否纳入 Phase 4 | **①** 不纳入；**②** 纳入，Q/DQ 显式量化；**③** 纳入，沿用隐式量化 + Calibrator | **✅ ②（纳入，Q/DQ）**。1660 Ti **无 FP16 Tensor Core、有 INT8 Tensor Core**（历史 README 结论）→ FP16 只省带宽，INT8 才是真加速；隐式量化在 TRT 10.15 已废弃。**代价**：Q/DQ 要单列任务 **P4-7** |
+| **D2** | INT8 是否纳入 Phase 4 | **①** 不纳入；**②** 纳入，Q/DQ 显式量化；**③** 纳入，沿用隐式量化 + Calibrator | **✅ ②（纳入，Q/DQ）**。~~1660 Ti 无 FP16 Tensor Core、有 INT8 Tensor Core（历史 README 结论）→ FP16 只省带宽，INT8 才是真加速~~；**更正（2026-10-01，作者确认）**：1660 Ti（TU116）**没有 Tensor Core**（FP16 / INT8 都没有）→ 两者的收益都来自**显存带宽**（INT8 是 4→1 字节、FP16 是 4→2 字节），不是张量核心吞吐。**决策不变**：仍走 Q/DQ——理由是隐式量化在 TRT 10.15 已废弃，与 Tensor Core 无关。**代价**：Q/DQ 要单列任务 **P4-7** |
 | **D3** | 参考基线怎么来 | **①** torchvision FP32；**②** ONNX Runtime | **✅ ① torchvision FP32**（与 `load_model.py` 同源；权重已在本地缓存 `resnet18-f37072fd.pth`，**生成基线不需要联网**）。输入两套：合成 ramp + 真实图 |
 | **D4** | CVRunner 的前处理契约 | **①** CVRunner 自己做（ImageNet mean/std）；**②** 只收归一化好的 NCHW | **✅ ① CVRunner 自己做**（`cv_runner.hpp` 已预留 `mean`/`std`）。**必须与基线脚本逐参数一致**，否则误差会伪装成"引擎错" |
 
@@ -91,7 +91,7 @@
 | 精度判据 | **自相对**：FP16/INT8 与它自己跑的 FP32 比 `cosine_sim` / `max_abs_diff` / `mse`，并逐样本比 `argmax`（batch 8） | `src/main.cpp:139-167` |
 | 推理输入 | **合成 ramp**：`input[i] = (i % 255) / 255.f` | `src/main.cpp:120-123` |
 | benchmark | 输入恒为 0.5 的常量张量，batch 扫 {1,2,4,8,16}，CUDA Event 计时 | `src/infer.cpp:167-175`、`src/main.cpp:169+` |
-| TRT 版本提示 | README 记录：1660 Ti **无 FP16 Tensor Core**（FP16 只省带宽）、**有 INT8 Tensor Core**；TRT 10.15 已把 `kINT8` + Calibrator 标记为废弃，推荐 Q/DQ | `README.md:9-10,141` |
+| TRT 版本提示 | ~~README 记录：1660 Ti **无 FP16 Tensor Core**（FP16 只省带宽）、**有 INT8 Tensor Core**~~；**更正（2026-10-01）**：1660 Ti（TU116）**无 Tensor Core**（FP16 / INT8 都只省带宽）；TRT 10.15 已把 `kINT8` + Calibrator 标记为废弃，推荐 Q/DQ | 现行 `README.md:92`（原文引的 `README.md:9-10,141` 行号已漂移，那份 README 也已重写）；更正依据见 `docs/future_iterations.md` + OI-INT8-CALIB |
 
 ### 1.2 该继承什么 / 该弃用什么
 
