@@ -3,7 +3,7 @@
 | 字段 | 取值 |
 | --- | --- |
 | workflow | feature |
-| feature | onnx-subgraph-replacement |
+| feature | REQ-019-onnx-subgraph |
 | phase | P3-Review |
 | phase_index | 3 |
 | status | waiting-human-gate |
@@ -53,8 +53,8 @@ PF-7 的结论决定这条 feature 的走向：
 
 ## Recovery Notes
 
-- 本条与 `llm-int8-quant` 的 ONNX 路线耦合：若两者都做，外部图路径的 decode 图应在这里一并补齐，
+- 本条与 `REQ-017-llm-int8-quant` 的 ONNX 路线耦合：若两者都做，外部图路径的 decode 图应在这里一并补齐，
   否则 INT8 走 ONNX 路线时要再改一次同一段代码。
-- 与 `continuous-batching` 的写冲突点在运行时入口（外部图路径要接进运行时）。
+- 与 `REQ-016-continuous-batching` 的写冲突点在运行时入口（外部图路径要接进运行时）。
 - 前置事实来源：`docs/future_iterations.md` §10.1 / §10.2、§0.1 的 PF-7 行、
   `docs/TROUBLESHOOTING.md` + TS-017（两条路的 I/O 契约差异）。

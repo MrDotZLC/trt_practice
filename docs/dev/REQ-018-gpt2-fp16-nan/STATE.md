@@ -3,7 +3,7 @@
 | 字段 | 取值 |
 | --- | --- |
 | workflow | bugfix |
-| feature | gpt2-fp16-nan |
+| feature | REQ-018-gpt2-fp16-nan |
 | phase | B2-MinimalFix |
 | phase_index | 2 |
 | status | waiting-human-gate |

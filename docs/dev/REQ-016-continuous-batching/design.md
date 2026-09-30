@@ -141,7 +141,7 @@ while 还有序列没结束:
 
 ### D5 与另外两条 feature 的写冲突
 
-本 feature 与 `llm-int8-quant`（改权重精度与 cache 元素宽度）、`onnx-subgraph-replacement`
+本 feature 与 `REQ-017-llm-int8-quant`（改权重精度与 cache 元素宽度）、`REQ-019-onnx-subgraph`
 （让 ONNX 路径接入运行时）都要改运行时入口。**三者不能并行改同一个文件**——若都批准，
 顺序建议：本 feature 先做（它定义批量契约）→ INT8（在批量契约上扩精度）→ ONNX 路径接入。
 

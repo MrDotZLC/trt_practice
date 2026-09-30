@@ -3,7 +3,7 @@
 | 字段 | 取值 |
 | --- | --- |
 | workflow | feature |
-| feature | llm-int8-quant |
+| feature | REQ-017-llm-int8-quant |
 | phase | P3-Review |
 | phase_index | 3 |
 | status | waiting-human-gate |
@@ -47,7 +47,7 @@
 
 - **必须先读 `docs/PROGRESS.md` §3.0j**：ResNet18 的 INT8 per-channel 退化根因是产图脚本取错
   权重源（未折 BN），这条教训直接适用于 LLM 权重量化——**量化对象与 scale 来源必须是同一份张量**。
-- **依赖关系**：本 feature 的 ONNX 路线依赖 `onnx-subgraph-replacement`（ONNX 路径目前没有
+- **依赖关系**：本 feature 的 ONNX 路线依赖 `REQ-019-onnx-subgraph`（ONNX 路径目前没有
   decode 图与 KV cache）；原生路线不依赖任何其他 feature。
 - ~~**文档矛盾待修**~~ **已修（2026-10-01，作者确认）**：`docs/future_iterations.md` §1.2 与
   `docs/phase4_development_plan.md` D2 / 依据表里的"有 INT8 Tensor Core"已更正为

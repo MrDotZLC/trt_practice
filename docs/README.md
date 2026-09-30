@@ -57,8 +57,16 @@
 
 ### 2.4 开发状态（`docs/dev/`：技能产出的开发 artifact）
 
-入口是该目录的 `STATE.md`（该 feature 状态的唯一落点）；文件构成、阶段链与 Gate 见技能
-`trt-inference-engineering` 与 `AGENTS.md` §5，本文不复述。状态数字仍只有 `PROGRESS.md` 一个出处。
+入口是 `dev/INDEX.md`（全部条目一览），每个 feature 目录里 `STATE.md` 是该条目状态的唯一落点；
+文件构成、阶段链与 Gate 见技能 `trt-inference-engineering` 与 `AGENTS.md` §5，本文不复述。
+状态数字仍只有 `PROGRESS.md` 一个出处。
+
+条目目录一律命名为 `REQ-NNN-<slug>`（**编号只承载身份，不承载状态**）。
+**未触发与冻结的需求不进编号**——它们由 `future_iterations.md` 自己保存，被点名开工时才建目录。
+
+条目分两类：**进行中**（按技能流程推进）与**历史**（2026-10-01 起需求回填，`status = completed`，
+不代表仍在推进）。**过渡期权威**：同一需求同时存在于本目录与历史文档时，**以本目录为准**；
+历史文档在删除前只作快照，**删除是最后一步且需单独批准**。
 
 > 项目总入口是根目录 `README.md`；本文只负责 `docs/` 内部的组织规则。
 
@@ -136,6 +144,7 @@
 | 缺口 / 门 | `GAP-` | `GAP-G5` | `future_iterations.md` |
 | 冻结阶段文档锚点 | `PH<n>` | `PH4-INT8-CRITERIA`、`PH1.5-ACCEPTANCE` | `phaseN_*.md` |
 | 冻结设计文档锚点 | `DESIGN-` | `DESIGN-NATIVE-BUILD` | `mini_trt_llm_design.md` |
+| **需求编号** | `REQ-` | `REQ-017`（目录名 = `REQ-NNN-<slug>`） | `docs/dev/INDEX.md` |
 
 ### 4.4 保持原样的本地编号
 
@@ -145,6 +154,9 @@
 - 用例号：`E1`~`E4`、`S-14`、`L0`~`L3`、`B1-4`、`T1`~`T3`
 - 决策项：`Q1`~`Q15`、`F1`~`F4`、各阶段的 `Dn`
 - 计量点旧名：`PF-n`、`PP-n`
+- **技能流程阶段**：`P0-Requirement` ~ `P9-Interview`（feature）、`B0-Reproduce` ~ `B4-Summary`（bugfix）、
+  里程碑 `S1`/`S2`/`S3`——**只允许出现在 `docs/dev/<feature>/` 内**。它们与优先级 `P0`~`P3`、
+  验收条目 `B1`~`B4`、用例号 `B1-4` **不是同一族**；跨文档引用必须写成"文件 + 阶段名"。
 
 **条件**：跨文档使用这些编号时，必须同时写出它所属的文档名（R1 已覆盖），不得只丢一个裸编号过去。
 
@@ -227,7 +239,7 @@ rg -n '^\s*#{2,3}\s+[0-9][0-9.]*[a-z]?\s+\[(DEC|TS|OI|MP|GAP|PH)' docs/*.md
 
 | 文档 | 现值（总 / 可见） | 上限（可见） | 超限动作 |
 |---|---|---|---|
-| `PROGRESS.md` | 1901 / **588** ✅ | **600** | 历史叙述折进 `<details>`，结论压成表 |
+| `PROGRESS.md` | 1953 / **589** ✅（2026-10-01 瘦身：折 §4.2/§4.3/§4.4/§4.6 + 清掉 21 处双重折叠） | **600** | 历史叙述折进 `<details>`，结论压成表（**余量仅 11 行，下次改动前先折**） |
 | `TROUBLESHOOTING.md` | 2971 / 2971（append-only） | 无上限 | 必须维护顶部索引（✅ 48 条已建）；单条 ≤ 80 行，超出折进 `<details>` |
 | `future_iterations.md` | 817 / **377** ✅ | **400** | 已交付条目移出正文（只留索引行） |
 | `future_iterations_development_plan.md` | 2123 / **574** ✅ | **800** | 已交付条目的计划段折进文末"附录：已完成" |

@@ -3,7 +3,7 @@
 | 字段 | 取值 |
 | --- | --- |
 | workflow | feature |
-| feature | continuous-batching |
+| feature | REQ-016-continuous-batching |
 | phase | P3-Review |
 | phase_index | 3 |
 | status | waiting-human-gate |
@@ -45,7 +45,7 @@
 ## Recovery Notes
 
 - 设计要点：`design.md` 的 S1/S2/S3 里程碑与 D1~D5 决策。
-- **写冲突**：本 feature 与 `llm-int8-quant`、`onnx-subgraph-replacement` 都要改同一段
+- **写冲突**：本 feature 与 `REQ-017-llm-int8-quant`、`REQ-019-onnx-subgraph` 都要改同一段
   `LLMRunner` 代码（前者改批量入口与每序列状态，后者改 ONNX 路径接入 runner）。
   三者不能并行改同一个文件；若都要做，顺序应在 Gate-A 时一并拍板。
 - 只要设计没有变化，恢复时不必重读 `docs/future_iterations.md`，看本文 + `analysis.md` 即可。

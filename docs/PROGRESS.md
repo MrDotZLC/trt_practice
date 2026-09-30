@@ -465,13 +465,12 @@
 ### 3.0a [DEC-PHASE2-DELIVERY] Phase 2 交付（GPT-2 原生构建，2026-09-25）
 
 
-<details><summary>展开：3.0a [DEC-PHASE2-DELIVERY] Phase 2 交付（GPT-2  全文</summary>
+<details><summary>展开：3.0a [DEC-PHASE2-DELIVERY] Phase 2 交付（GPT-2 原生 全文</summary>
 
 | 文件 / 模块 | 说明 |
 |---|---|
 
 
-<details><summary>展开：3.0a [DEC-PHASE2-DELIVERY] Phase 2 交付（GPT-2 原生 全文</summary>
 
 | `core/gpt2_model_builder.{hpp,cpp}` | GPT-2 原生建图；`kSingle` / `kPrefill` / `kDecode` 三种切面共用同一份代码，只有注意力分支不同 |
 | `core/llm_runner.{hpp,cpp}` + `core/llm_runner_kernel.{hpp,cu}` | Prefill→Decode→Sampler 自回归循环；循环内零 H2D/D2H（`position_ids` 由设备端 `context_lens` 填） |
@@ -498,20 +497,18 @@
 #16 追加按层推进语境长度、#18（前半）FP16 缓冲按**假定**精度分配 → 越界写。
 同一条 #18 的**后半**是另一码事：FP16 图本身产生 NaN，已登记为已知限制（§5.11），按政策不修。
 
-</details>
 
 </details>
 
 ### 3.0b [DEC-PHASE3-DELIVERY] Phase 3 交付（GPT-2 ONNX 路径，2026-09-25）
 
 
-<details><summary>展开：3.0b [DEC-PHASE3-DELIVERY] Phase 3 交付（GPT-2  全文</summary>
+<details><summary>展开：3.0b [DEC-PHASE3-DELIVERY] Phase 3 交付（GPT-2 ON 全文</summary>
 
 | 文件 / 模块 | 说明 |
 |---|---|
 
 
-<details><summary>展开：3.0b [DEC-PHASE3-DELIVERY] Phase 3 交付（GPT-2 ON 全文</summary>
 
 | `core/builder.{hpp,cpp}` | `BuildFromOnnx(model_dir, onnx_path, engine_path, subgraph_names)`：复用方案 A 的 profile/精度语义、I/O 契约校验、parse 错误逐条打印、只挂 prefill 一组 profile |
 | `tools/inspect_onnx.py` | 图结构探针：基线比对 + `absent_ops` 护栏 + 三类子图识别断言（**人工执行，未接入 ctest**） |
@@ -527,20 +524,18 @@
 **性能结论未定**：两次测量的方向相反（±25%，小于构建间噪声），不能据此判断 ONNX 路径
 是否更优，更不能据此决定是否做子图替换——见 `docs/future_iterations.md` §10.2。
 
-</details>
 
 </details>
 
 ### 3.0c [DEC-PHASE2-PATCH] Phase 2 补丁（诊断输出开关 + CUDA 环境判定，2026-09-25）
 
 
-<details><summary>展开：3.0c [DEC-PHASE2-PATCH] Phase 2 补丁（诊断输出开关 +  全文</summary>
+<details><summary>展开：3.0c [DEC-PHASE2-PATCH] Phase 2 补丁（诊断输出开关 + CU 全文</summary>
 
 | 文件 / 模块 | 说明 |
 |---|---|
 
 
-<details><summary>展开：3.0c [DEC-PHASE2-PATCH] Phase 2 补丁（诊断输出开关 + CU 全文</summary>
 
 | `core/imodel_builder.hpp` + `core/builder.{hpp,cpp}` | `BuildOptions::export_diagnostics` / `EngineBuilder::Config::export_diagnostics`，**默认关** |
 | `core/gpt2_model_builder.cpp` | 4 处诊断 `markOutput` 改由开关控制 → 默认构建的输出数回到 `2*n_layer + 1` |
@@ -554,7 +549,6 @@
 计划与验收见 `docs/phase2_supplement_plan.md`；缺陷与实测见 `docs/TROUBLESHOOTING.md` #19 / #20。
 **真机全量结果**：146 条，0 跳过（`MINI_TRT_REQUIRE_GPU=1`），**1 条红 = FP16 NaN 复现器（按设计红）**。
 
-</details>
 
 </details>
 
@@ -563,10 +557,9 @@
 计划与测试计划：`docs/phase4_development_plan.md`、`docs/phase4_test_plan.md`；
 INT8 子计划：`docs/phase4_int8_plan.md`；缺陷与排查：#21 ~ #31。
 
-<details><summary>展开：3.0d [DEC-PHASE4-DELIVERY] Phase 4 交付（ResNet 全文</summary>
-
-
 <details><summary>展开：3.0d [DEC-PHASE4-DELIVERY] Phase 4 交付（ResNet18 全文</summary>
+
+
 
 
 | 文件 / 模块 | 说明 |
@@ -599,7 +592,6 @@ INT8 子计划：`docs/phase4_int8_plan.md`；缺陷与排查：#21 ~ #31。
 
 **开放项**：见 §6.6（P4-INT8-a / P4-INT8-b / P4-FP16-a 等）。
 
-</details>
 
 </details>
 
@@ -608,10 +600,9 @@ INT8 子计划：`docs/phase4_int8_plan.md`；缺陷与排查：#21 ~ #31。
 按 `docs/future_iterations_development_plan.md` 的分批，**批次 A（可立即开工）**两项已落地；
 计划 / 用例 / 判据出处见该文件与 `docs/future_iterations_test_plan.md`。
 
-<details><summary>展开：3.0e [DEC-BATCH-A-DELIVERY] future_iteration 全文</summary>
-
-
 <details><summary>展开：3.0e [DEC-BATCH-A-DELIVERY] future_iterations  全文</summary>
+
+
 
 
 | 文件 / 模块 | 说明 |
@@ -667,7 +658,6 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
 > **原"A2-5 尚未申请"已不成立**：C 批（C-1 / C-2 / C-3）已在真机跑通并把 artefact 落盘，口径交叉校验完成；
 > 收尾事项见 §3.0f 末尾。
 
-</details>
 
 </details>
 
@@ -676,10 +666,9 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
 **背景**：真机全量出现一条新红 `Gpt2OnnxTest.MatchesAcrossProfileShapes`（seq=512 逐行 argmax）。
 机制已被**定量**为"两实现差异之下的并列"——数据与三个可核对事实见 `TROUBLESHOOTING.md` **#34**
 
-<details><summary>展开：3.0f [DEC-ENGINE-FINGERPRINT] 判据修正 + 引擎缓存指纹（ 全文</summary>
-
-
 <details><summary>展开：3.0f [DEC-ENGINE-FINGERPRINT] 判据修正 + 引擎缓存指纹（20 全文</summary>
+
+
 
 （`TROUBLESHOOTING.md` §34.6 定量、`TROUBLESHOOTING.md` §34.8 为何 Phase 3 曾绿、`TROUBLESHOOTING.md` §34.9 判据、`TROUBLESHOOTING.md` §34.10 指纹）。
 
@@ -708,7 +697,6 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
    → 指纹生效。这是真机上唯一能证明该机制的观察点。
 3. 仍待触发：`docs/future_iterations.md` §11 的 **SP-1**（SentencePieceTokenizer 未验证）。
 
-</details>
 
 </details>
 
@@ -717,10 +705,9 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
 **计划落点**：开发计划 `future_iterations_development_plan.md` **§10**（P9_2-5b 见 §10.12）、
 测试计划 `future_iterations_test_plan.md` **§9**；归因与测量协议的教训在 `TROUBLESHOOTING.md`
 
-<details><summary>展开：3.0g [DEC-SAMPLER-KERNEL] `future_iterations 全文</summary>
-
-
 <details><summary>展开：3.0g [DEC-SAMPLER-KERNEL] `future_iterations.m 全文</summary>
+
+
 
 **#35 / #37 / #38**（本节只留决策与状态）。
 
@@ -766,7 +753,6 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
   ② 跨协议 / 跨 session 的差值**不能直接比**（#38）；③ 判"改动有没有用"要**同二进制、同轮交替测**，
   并用**斜率** `(T4−T1)/3` 扣掉每窗口固定开销；④ 这台机器对这类问题的**判别下限约 ±400 µs**。
 
-</details>
 
 </details>
 
@@ -775,10 +761,9 @@ golden + 来源 SHA256 + meta 自证 + 负例）；资产需联网取或由作�
 **计划落点**：`future_iterations.md` §6.3 与 §11 的 **G6**；开发计划 **§11**（P6_3-0 ~ P6_3-7）、
 测试计划 **§10**（PF-1 ~ PF-7）。本节只记"落点 + 状态"，口径与判据在开发计划 §11.3 / §11.4。
 
-<details><summary>展开：3.0h [DEC-PERF-PROFILE] decode 性能画像基建（2026-0 全文</summary>
-
-
 <details><summary>展开：3.0h [DEC-PERF-PROFILE] decode 性能画像基建（2026-09- 全文</summary>
+
+
 
 
 | 落点 | 说明 |
@@ -888,7 +873,6 @@ FP32、greedy、prompt 4 token、生成 32、n=15 + warmup 3、每轮 ABBA）：
   缺的只是有 GPU 跟踪能力的机器（#41）。**别在下一轮把它当欠账去补**。
 - **PF-7 移交 `future_iterations.md` §10.2**（ONNX 子图替换的前置），不再算 §11 的尾巴。
 
-</details>
 
 </details>
 
@@ -897,10 +881,9 @@ FP32、greedy、prompt 4 token、生成 32、n=15 + warmup 3、每轮 ABBA）：
 **计划落点**：`future_iterations.md` **§2.2**；开发计划 **§12**（12.1 计划对账 → 12.10 真机执行清单）；
 测试计划 **§11**（H 组 PS-* / G 组 PG-* / P 组 PP-*）。
 
-<details><summary>展开：3.0i [DEC-FLASHDECODING] §2.2 长上下文 attention 全文</summary>
-
-
 <details><summary>展开：3.0i [DEC-FLASHDECODING] §2.2 长上下文 attention 交 全文</summary>
+
+
 
 
 | 落点 | 说明 |
@@ -953,7 +936,6 @@ PP-1 与 PP-2 对同一笔代价差 1.97× 未解释）→ 见 `TROUBLESHOOTING.
 **开放观察（不是缺陷）**：PP-1 的 kernel 级预测（+0.95%）与 PP-2 的端到端实测（+1.877%）
 差约 2×，**差因未查**。
 
-</details>
 
 </details>
 
@@ -962,10 +944,9 @@ PP-1 与 PP-2 对同一笔代价差 1.97× 未解释）→ 见 `TROUBLESHOOTING.
 **计划落点**：`future_iterations.md` **§1.5**；开发计划 **§13**（13.1 计划对账 → 13.10 回填）；
 测试计划 **§3**（B1-1~B1-4 / B1-H1 / B1-H2）。排查全过程：`TROUBLESHOOTING.md` **#46**。
 
-<details><summary>展开：3.0j [DEC-INT8-WEIGHT-SOURCE] P4-INT8-a 结案：p 全文</summary>
-
-
 <details><summary>展开：3.0j [DEC-INT8-WEIGHT-SOURCE] P4-INT8-a 结案：per 全文</summary>
+
+
 
 
 **结论（一句话）**：根因**在产图脚本，不在 TRT**——`quantize_resnet18.py` 的**权重范围**取自
@@ -1040,9 +1021,24 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 | ① 把 `--weight-range-source` 默认切到 `onnx` | 产图规则 | **数值**：per-tensor 饱和权重 **3.919% → 0.000%（20 个）**，但 64 张上判据与一致率**完全不变**（60.9% / 100%） | 换了默认 = 换了正式产物 → `phase4_int8_plan` §4 / `PROGRESS` §3.0d / R2.6 / C 批交叉校验的数全要真机重测回填；而"更准"的证据不足（余量子集只有 11 张） |
 | ② 重生成 per-channel 产物 | 一份非默认产物 | **零功能收益**（默认路径无人读它） | 它是 B1-4 的承重件；重生成会让 B1-4 变红（现象消失），必须与"退役/改写 B1-4"打包做 |
 
-</details>
 
 </details>
+
+### 3.0k [DEC-REQ-NUMBERING] 需求归档与统一编号（2026-10-01）
+
+- **做了什么**：把历史文档里的需求抽成独立落点 `docs/dev/REQ-NNN-<slug>/`，共 **19 条**
+  （9 个阶段 + 6 个已关闭批次 + 4 个进行中）；编号**只承载身份、不承载状态**。
+  索引 = `docs/dev/INDEX.md`，逐条出处写在各自 `requirement.md` 首部。写作规约同步新增
+  **"过渡期权威"**（新落点为准，历史文档在删除前只作快照）与 **"编号隔离"**（`REQ-` 族；
+  技能阶段号与优先级 `P0`~`P3`、验收条目 `B1`~`B4`、用例号 `B1-4` 不是同一族）。
+- **为什么**：整理前"需求"散在 6 处——阶段计划的**目标侧**、测试计划的**判据侧**、迭代清单、
+  设计文档、交付回填、开放项索引；且编号空间互相撞名，不消歧时同一编号在一仓内有多个同样合法的答案。
+  迁移元工作（原 `docs/dev/REQ-000-docs-migration/`）完成后同日退休，其余结论已并入本条与上述规则。
+- **边界**：**未触发与冻结的条目不进编号**，仍由 `future_iterations.md` 保存
+  （技能把 `status` 限定为三值，"未开始"无合法取值；建目录必然复制内容 → 漂移）；开工时才建目录。
+- **⚠️ 待办（最后一步）：删除 16 份历史冻结文档**。`phaseN_*.md` 形式的跨文档引用数百处，
+  仓外另有 55 个文件引用 `docs/`；删除方案须附**引用影响清单**并**单独提请批准**。
+  **在此之前不得删除任何历史文档。**
 
 ### 3.1 目录与构建
 
@@ -1071,7 +1067,6 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 |---|---|
 
 
-<details><summary>展开：3.3 Core 通用化骨架 全文</summary>
 
 | `include/mini_trt_llm/core/precision.hpp` + `src/core/precision.cpp` | 精度枚举与 TRT 映射（已补注释） |
 | `include/mini_trt_llm/core/builder.hpp` + `src/core/builder.cpp` | 统一 EngineBuilder（已补默认值注释）；入口按**构建指纹**决定复用还是重建 |
@@ -1084,7 +1079,6 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 | `include/mini_trt_llm/core/llm_runner.hpp/.cpp` | Phase 0 仅接口声明 |
 | `include/mini_trt_llm/core/cv_runner.hpp/.cpp` | Phase 0 仅接口声明 |
 
-</details>
 
 </details>
 
@@ -1100,7 +1094,6 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 <details><summary>展开：3.5 [DEC-TEST-INVENTORY] 测试 全文</summary>
 
 
-<details><summary>展开：3.5 [DEC-TEST-INVENTORY] 测试 全文</summary>
 
 - 当前状态（2026-09-27 实测，含 Phase 4 + 批次 A/B/C + `future_iterations.md` §9.2 采样器迭代 + §3.0h 性能画像基建
   + §3.0i 的 §2.2 split-K + **§3.0j 的 `future_iterations.md` §1.5 仪器**）：
@@ -1140,7 +1133,6 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 - 待补（不阻塞 Phase 2）：`docs/phase0_model_loading_test_plan.md` 里 T2（ONNX→Engine）仍未实施；
   T1 / T3 的能力已由 Phase 1.5 的 E1/E2 以更强的形式覆盖。
 
-</details>
 
 </details>
 
@@ -1152,7 +1144,6 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 <details><summary>展开：3.6 工具与文档 全文</summary>
 
 
-<details><summary>展开：3.6 工具与文档 全文</summary>
 
 - `requirements.txt`：转换工具依赖（已移到项目根目录）。
 - `docs/mini_trt_llm_design.md`：v1.0 设计文档。
@@ -1197,7 +1188,6 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 
 > 历史文档：`docs/phase1_pending_confirmations.md` 的内容已全部合并进 `docs/phase1_development_plan.md` §10，原文件已删除。
 
-</details>
 
 </details>
 
@@ -1223,7 +1213,6 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 |---|---|
 
 
-<details><summary>展开：3.9 [DEC-PHASE1-DELIVERY] Phase 1 插件与采样器 全文</summary>
 
 | `include/mini_trt_llm/plugins/rmsnorm_{kernel,plugin}.hpp` + `src/plugins/rmsnorm_plugin.cu` | RMSNorm Plugin（一行一 block，FP32 `float4` / FP16 8×half 向量化，不能整除时回退标量） |
 | `include/mini_trt_llm/plugins/rope_{kernel,plugin}.hpp` + `src/plugins/rope_plugin.cu` | RoPE Plugin（half-split 约定，双输入双输出，`position_ids` 作为输入） |
@@ -1246,20 +1235,18 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 - 参考数据脚本：`scripts/ref_rope.py`（与 HuggingFace `apply_rotary_pos_emb` 交叉验证，最大差异 0.0）、
   `scripts/ref_sampler.py`（Top-K/Top-P 截断语义与理论概率）。
 
-</details>
 
 </details>
 
 ### 3.10 [DEC-PHASE15-DELIVERY] Phase 1.5：全流程测试基建与收尾
 
 
-<details><summary>展开：3.10 [DEC-PHASE15-DELIVERY] Phase 1.5：全流程测试基 全文</summary>
+<details><summary>展开：3.10 [DEC-PHASE15-DELIVERY] Phase 1.5：全流程测试基建与 全文</summary>
 
 | 文件 | 说明 |
 |---|---|
 
 
-<details><summary>展开：3.10 [DEC-PHASE15-DELIVERY] Phase 1.5：全流程测试基建与 全文</summary>
 
 | `tests/e2e_safetensors_writer.{hpp,cpp}` | 测试用 Safetensors 写入 helper（B/F16/BF16），让端到端夹具自包含、不依赖 Python |
 | `tests/e2e_fixture.{hpp,cpp}` | 临时模型目录（`mkdtemp` + 析构清理），组装 `config.json` + `model.safetensors` |
@@ -1295,7 +1282,6 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 
 ---
 
-</details>
 
 </details>
 
@@ -1322,7 +1308,6 @@ Phase 5 也已完成（阶段 0~4，见 §4.6）。**Phase 之后的四条工作
 <details><summary>展开：4.1 Phase 1：Plugin 基础（已完成） 全文</summary>
 
 
-<details><summary>展开：4.1 Phase 1：Plugin 基础（已完成） 全文</summary>
 
 - ✅ 实现 `RMSNormPlugin` + 单元测试（GPU 用例已在真机验证通过）。
 - ✅ `RMSNormPlugin` 接入 `PluginRegistry`，并补 L2 集成测试（真实 TRT network → engine 序列化/反序列化 → 推理）。
@@ -1340,11 +1325,12 @@ Phase 1 明确不在本次范围内、留待后续的项：
   行内并行"；Top-K 快速路径正确但性能不达标、已撤出生产）。剩下的是把采样器参考数据固化成数据文件
   = `future_iterations.md` §9.3（P2，纯 host）。
 
-</details>
 
 </details>
 
 ### 4.2 Phase 1.5：全流程测试基建与收尾（已完成）
+<details><summary>展开：4.2 全文（Phase 1.5，已完成）</summary>
+
 
 - ✅ P1.5-0：修复 `SafetensorsLoader` 转换路径的 3 个缺陷（详见 `docs/TROUBLESHOOTING.md` #5）。
 - ✅ P1.5-1 / P1.5-2：Safetensors 写入 helper；E4 错误路径用例。
@@ -1358,7 +1344,11 @@ Phase 1 明确不在本次范围内、留待后续的项：
 
 真机复验：E1 / E2 / E3 与 E4 的 2 条用例**已通过**。
 
+</details>
+
 ### 4.3 Phase 2：GPT-2 原生构建（已完成，见 §3.0a）
+<details><summary>展开：4.3 全文（Phase 2，已完成）</summary>
+
 
 - 开工顺序与风险提示见 **§6.2**；关键事实（GPT-2 不用 RMSNorm / RoPE）见 **§6.1**。
 - 先做多权重加载 spike（约 150 个张量、BF16/FP16 源），再确认 LayerNorm / GELU(tanh)
@@ -1367,21 +1357,26 @@ Phase 1 明确不在本次范围内、留待后续的项：
   的 `Prefill → Decode` 自回归循环。
 - 精度对比基准：`1_gpt2_onnx/ref_output.bin`（PyTorch FP32）。
 
+</details>
+
 ### 4.4 Phase 3：GPT-2 ONNX + Plugin（已完成，见 §3.0b）
+<details><summary>展开：4.4 全文（Phase 3，已完成）</summary>
+
 
 - 实现 `OnnxBuilder` + subgraph replacer。
 - 对 `1_gpt2_onnx/gpt2.onnx` 替换 RoPE / RMSNorm / Attention 子图。
 - 验证与方案 A 输出一致。
+
+</details>
 
 ### 4.5 [DEC-PHASE4-STATUS] Phase 4：ResNet18 替换（✅ 已完成，2026-09-26）
 
 **交付清单与实测数字见 §3.0d**。计划文档 `docs/phase4_development_plan.md`（§1 保留了
 "先读 `0_resnet18_onnx` 历史工程"的四条关键发现，供后续参考）：
 
-<details><summary>展开：4.5 [DEC-PHASE4-STATUS] Phase 4：ResNet18 替换（ 全文</summary>
-
-
 <details><summary>展开：4.5 [DEC-PHASE4-STATUS] Phase 4：ResNet18 替换（✅  全文</summary>
+
+
 
 
 1. 该 ONNX **已在导出时折叠 BatchNorm**（42 个 FP32 张量全是 Conv/Gemm 的 weight+bias），
@@ -1398,11 +1393,12 @@ Phase 1 明确不在本次范围内、留待后续的项：
 **结论**：ResNet18 的 **FP32 / FP16 都健康**；**INT8 走 Q/DQ 显式量化、判据用"FP32 余量子集一致率"**
 （实测 12/12 = 100%），权重默认 per_tensor。**per-channel 的整网退化原因未知** → 开放项 §6.6。
 
-</details>
 
 </details>
 
 ### 4.6 [DEC-PHASE5-REOPENED] Phase 5：清理旧模块（🔄 2026-09-26 取消 → 2026-09-27 重新立项）
+<details><summary>展开：4.6 全文（Phase 5，已完成）</summary>
+
 
 > 原 ID 为 `DEC-PHASE5-CANCELLED`；因决定被改回，ID 随标题一并更新（该 ID 无跨文档引用）。
 
@@ -1433,6 +1429,8 @@ Phase 1 明确不在本次范围内、留待后续的项：
   `docs/phase5_development_plan.md` §3。
 
 ---
+
+</details>
 
 ## 5. 已知问题与坑
 
@@ -1518,10 +1516,9 @@ Phase 1 明确不在本次范围内、留待后续的项：
 - **问题**：真实 GPT-2 在本项目的**弱类型 FP16** 引擎下端到端产生 NaN（贪心输出恒为 0）。
   出现 NaN 的层随构建变化（实测 0/1/2），而激活幅值远未触及 FP16 上限 65504。
 
-<details><summary>展开：5.11 [DEC-GPT2-FP16-LIMIT] GPT-2 的 FP16 端到端不 全文</summary>
-
-
 <details><summary>展开：5.11 [DEC-GPT2-FP16-LIMIT] GPT-2 的 FP16 端到端不可用 全文</summary>
+
+
 
 - **影响**：**GPT-2 的推荐精度是 FP32**。FP16 只能用于算子/网络层验证（Phase 1.5 已覆盖），
   不能用于 GPT-2 的端到端推理。
@@ -1540,7 +1537,6 @@ Phase 1 明确不在本次范围内、留待后续的项：
   完整证据与教训见 **`docs/TROUBLESHOOTING.md` #19**，任务与验收见
   **`docs/phase2_supplement_plan.md`**。
 
-</details>
 
 </details>
 
@@ -1575,10 +1571,9 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 - **问题**：2026-09-26 真机全量里，`batch=1 seq=512` 的**逐行 argmax 相等**断言失败；
   同一次运行中 `cosine`（`> 0.999999`）与相对界（`< 1e-5`）**都通过**
 
-<details><summary>展开：5.13 [DEC-ARGMAX-CASE] 真机新红：`Gpt2OnnxTest.Ma 全文</summary>
-
-
 <details><summary>展开：5.13 [DEC-ARGMAX-CASE] 真机新红：`Gpt2OnnxTest.Matc 全文</summary>
+
+
 
   （实测 `max_abs 0.000274658 / 相对 1.97989e-06 / cosine 1`），其余形状（`(1,1)`、`(1,64)`、`(2,4)`、`(2,64)`）也都通过。
 - **机制（2026-09-26 定量，证据见 `TROUBLESHOOTING.md` #34.6）**：翻转只有 **1 行 / 512**（行 118，类别 79 vs 325），
@@ -1609,7 +1604,6 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 - **完整路径与判读规则**：`docs/TROUBLESHOOTING.md` **#34**；执行入口见
   `docs/future_iterations_development_plan.md` §8.5。
 
-</details>
 
 </details>
 
@@ -1701,10 +1695,9 @@ B 触发即做 / C 需外部前置 / D 冻结；含文件级改动面、步序�
 对 `1_gpt2_onnx/gpt2.onnx` 做过算子统计：
 
 
-<details><summary>展开：6.1 [DEC-GPT2-OPS] 关键事实：GPT-2 用不上 Phase 1 的  全文</summary>
-
-
 <details><summary>展开：6.1 [DEC-GPT2-OPS] 关键事实：GPT-2 用不上 Phase 1 的 RM 全文</summary>
+
+
 
 ```
 LayerNormalization × 25   （2/block × 12 + 最终 1 层）
@@ -1725,7 +1718,6 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 > （`RMSNorm → RoPE → PagedAttention`）是 **LLaMA 风格**的，与 GPT-2 结构不同。
 > 该类比曾写进文档，已更正，见 `docs/phase1_5_development_plan.md` §0.1。
 
-</details>
 
 </details>
 
@@ -1746,7 +1738,6 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 <details><summary>展开：6.3 Phase 1.5 已扫清的前置 全文</summary>
 
 
-<details><summary>展开：6.3 Phase 1.5 已扫清的前置 全文</summary>
 
 - 端到端骨架（模型目录 fixture / safetensors 写入 helper / 参考实现 meta-test）可直接复用。
 
@@ -1761,7 +1752,6 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 ---
 
-</details>
 </details>
 
 </details>
