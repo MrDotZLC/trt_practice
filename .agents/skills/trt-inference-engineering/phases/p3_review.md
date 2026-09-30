@@ -4,20 +4,13 @@
 
 对设计进行工程审查。
 
-
-
 # Entry
 
 读取：
 
-
 design.md
 
-
-
 加载：
-
-
 
 checklists/cpp.md
 
@@ -27,20 +20,11 @@ checklists/tensorrt.md
 
 checklists/llm_runtime.md
 
-
-
-
-
 # Actions
 
 生成：
 
-
 review.md
-
-
-
-
 
 # Review Classification
 
@@ -58,8 +42,6 @@ review.md
 
 阻止进入P4。
 
-
-
 ## P1 Risk
 
 需要人工确认。
@@ -68,8 +50,6 @@ review.md
 
 - 性能风险
 - 异常恢复不足
-
-
 
 ## P2 Quality
 
@@ -80,8 +60,6 @@ review.md
 - 命名风格
 - 文档完善
 
-
-
 # Exit Gate
 
 ## Self Check
@@ -90,8 +68,6 @@ review.md必须包含：
 
 | Issue | Level | Action |
 ||||
-
-
 
 ## Human Gate
 
@@ -109,8 +85,6 @@ Gate-B规则：
 
 自动进入P4。
 
-
-
 # Failure Route
 
 P0失败：
@@ -119,16 +93,11 @@ P0失败：
 
 设计重新修改。
 
-
-
 # Output
 
 生成：
 
-
 docs/dev//review.md
-
-
 
 更新：
 

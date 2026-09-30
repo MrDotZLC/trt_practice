@@ -12,17 +12,11 @@
 
 禁止提出最终实现方案。
 
-
-
 # Entry
 
 读取：
 
-
 requirement.md
-
-
-
 
 # Actions
 
@@ -35,8 +29,6 @@ requirement.md
 - 调用链
 - 数据流
 
-
-
 ## 2. Runtime Analysis
 
 针对TensorRT / LLM Runtime：
@@ -48,8 +40,6 @@ requirement.md
 - Memory ownership
 - CUDA Stream关系
 - Kernel调用路径
-
-
 
 ## 3. Generate analysis.md
 
@@ -65,8 +55,6 @@ requirement.md
 
 ## Extension Points
 
-
-
 # Rules
 
 analysis.md：
@@ -80,13 +68,10 @@ analysis.md：
 出现：
 
 - 修改计划
-    
+
 - 新架构设计
-    
+
 - 新代码方案
-    
-
-
 
 # Exit Gate
 
@@ -95,28 +80,22 @@ Self Check：
 必须回答：
 
 1. 修改入口在哪里？
-    
+
 2. 数据如何流动？
-    
+
 3. 哪些模块受影响？
-    
 
 如果无法回答：
 
 回P0。
 
-
-
 # Output
 
 生成：
 
-
 docs/dev/<feature>/analysis.md
 
-
 更新：
-
 
 STATE.md
 

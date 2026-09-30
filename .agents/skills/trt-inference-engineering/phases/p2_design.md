@@ -8,32 +8,19 @@
 
 可执行设计文档。
 
-
-
 # Entry
 
 读取：
-
-
 
 requirement.md
 
 analysis.md
 
-
-
-
-
 # Actions
 
 生成：
 
-
 design.md
-
-
-
-
 
 # Design Requirements
 
@@ -45,16 +32,12 @@ design.md
 
 新增模块和关系。
 
-
-
 ## Module Design
 
 格式：
 
 | Module | Responsibility | Dependency |
 ||||
-
-
 
 ## Data Structure
 
@@ -68,8 +51,6 @@ design.md
 - Request state
 - Tensor metadata
 
-
-
 ## Runtime Flow
 
 必须包含：
@@ -77,7 +58,6 @@ design.md
 ASCII流程图。
 
 例如：
-
 
 Request
 
@@ -97,10 +77,6 @@ Kernel
 
 Output
 
-
-
-
-
 ## Resource Lifecycle
 
 说明：
@@ -112,8 +88,6 @@ Output
 
 生命周期。
 
-
-
 ## Performance Consideration
 
 说明：
@@ -122,23 +96,17 @@ Output
 - memory
 - communication
 
-
-
 ## Trade-off
 
 至少包含：
 
 两个方案比较。
 
-
-
 # Rules
 
 设计阶段：
 
 禁止修改源码。
-
-
 
 # Exit Gate
 
@@ -151,8 +119,6 @@ Self Check：
 - 是否说明资源生命周期
 - 是否说明性能影响
 
-
-
 # Human Gate
 
 Gate-A：
@@ -163,21 +129,15 @@ Gate-A：
 
 Human Gate格式。
 
-
-
 # Output
 
 生成：
 
-
 docs/dev//design.md
-
-
 
 更新：
 
 STATE:
-
 
 phase: P3-Review
 

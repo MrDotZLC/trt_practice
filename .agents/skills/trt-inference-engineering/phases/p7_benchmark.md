@@ -4,20 +4,13 @@
 
 验证性能变化。
 
-
-
 # Entry
 
 必须存在：
 
-
 benchmark_before.md
 
 test_passed
-
-
-
-
 
 # Actions
 
@@ -31,8 +24,6 @@ Before和After：
 - 相同输入
 - 相同配置
 
-
-
 # Measurement Protocol
 
 必须记录：
@@ -44,8 +35,6 @@ Before和After：
 - TensorRT
 - Driver
 
-
-
 ## Workload
 
 包含：
@@ -55,48 +44,33 @@ Before和After：
 - dtype
 - shape
 
-
-
 ## Timing
 
 要求：
 
 Warmup:
 
-
 > =10
-
-
 
 Iteration:
 
-
 > =100
-
-
 
 统计：
 
 - median
 - P95
 
-
-
 # Output
 
 生成：
 
-
 benchmark.md
-
-
 
 格式：
 
 | Metric | Before | After | Change |
 |||||
-
-
 
 # Performance Decision
 
@@ -104,23 +78,15 @@ benchmark.md
 
 提升：
 
-
 > =5%
 
-
-
 自动接受。
-
-
 
 ## Marginal
 
 范围：
 
-
 0% ~ 5%
-
-
 
 需要说明：
 
@@ -128,8 +94,6 @@ benchmark.md
 - 是否有其他收益
 
 等待Human确认。
-
-
 
 ## Negative
 
@@ -142,8 +106,6 @@ benchmark.md
 
 等待Human确认。
 
-
-
 # Exit Gate
 
 Self Check：
@@ -154,13 +116,10 @@ Human Gate：
 
 根据收益情况触发。
 
-
-
 # Output
 
 更新：
 
 STATE:
-
 
 phase: P8-Documentation

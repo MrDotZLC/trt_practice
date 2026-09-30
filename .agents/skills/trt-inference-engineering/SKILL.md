@@ -5,14 +5,12 @@
 该 Skill 用于在 C++ / CUDA / TensorRT / LLM Runtime 项目中，
 按照工程化流程开发、优化和维护推理系统。
 
-
 目标：
 
 - 保证功能开发具有明确设计依据
 - 保证代码修改具有测试验证
 - 保证性能优化具有可复现 benchmark
 - 保证长期项目维护具有状态恢复能力
-
 
 # Trigger
 
@@ -26,7 +24,6 @@
 - 优化 XXX 性能
 - 扩展 XXX 模块
 
-
 ## Bugfix Workflow
 
 以下请求触发 Bugfix Workflow：
@@ -35,7 +32,6 @@
 - XXX 崩溃
 - XXX 结果错误
 - XXX 性能退化
-
 
 ## Do Not Trigger
 
@@ -46,7 +42,6 @@
 - 阅读代码分析
 - 学习问题
 
-
 ## Ambiguous Request
 
 如果无法判断属于 Feature 或 Bugfix：
@@ -55,19 +50,15 @@
 
 禁止自动选择。
 
-
 # Directory Model
 
-
 该 Skill 使用双目录模型。
-
 
 ## Skill Directory
 
 路径：
 
 <project_root>/.codex/skills/trt-inference-engineering/
-
 
 用途：
 
@@ -78,29 +69,23 @@
 - Checklist规则
 - Template定义
 
-
 约束：
 
 - 只读
 - 禁止写入开发状态
 - 禁止生成项目artifact
 
-
 ## Artifact Directory
-
 
 路径：
 
 <project_root>/docs/dev/<feature>/
 
-
 用途：
 
 保存当前项目开发状态。
 
-
 标准结构：
-
 
 STATE.md
 
@@ -122,21 +107,15 @@ summary.md
 
 interview_notes.md
 
-
 规则：
 
 所有开发过程产物必须写入 Artifact Directory。
 
-
-
 # Global Rules
-
 
 ## Mandatory Rules
 
-
 所有 Workflow 必须遵守：
-
 
 1. 先分析，再设计，再修改代码。
 
@@ -150,11 +129,9 @@ interview_notes.md
 
 6. 每次修改必须保持项目可编译。
 
-
 ## Forbidden Rules
 
 禁止：
-
 
 1. 未生成 analysis.md 前修改源码。
 
@@ -170,14 +147,9 @@ interview_notes.md
 
 7. 修改Skill自身文件。
 
-
-
-
 # Workflow Routing
 
-
 ## Feature Workflow
-
 
 适用于：
 
@@ -186,9 +158,7 @@ interview_notes.md
 - 性能优化
 - 架构增强
 
-
 流程：
-
 
 P0 Requirement
 
@@ -240,33 +210,21 @@ P8 Documentation
 
 P9 Interview
 
-
-
 详细流程：
 
 读取：
 
-
 workflows/feature.md
-
-
 
 Phase执行规则：
 
 进入Phase时只读取对应：
 
-
 phases/pX_xxx.md
-
-
 
 禁止一次加载所有Phase。
 
-
-
-
 ## Bugfix Workflow
-
 
 适用于：
 
@@ -274,9 +232,7 @@ phases/pX_xxx.md
 - 崩溃修复
 - 正确性修复
 
-
 流程：
-
 
 B0 Reproduce
 
@@ -296,24 +252,15 @@ B3 Regression
 
 B4 Summary
 
-
-
 详细流程：
 
 读取：
 
-
 workflows/bugfix.md
-
-
-
-
 
 # Human Gate Protocol Summary
 
-
 该Skill包含三个Human Gate。
-
 
 ## Gate-A
 
@@ -321,13 +268,9 @@ workflows/bugfix.md
 
 P2 Design之后
 
-
 目的：
 
 确认设计方案。
-
-
-
 
 ## Gate-B
 
@@ -335,26 +278,19 @@ P2 Design之后
 
 P3 Review之后
 
-
 规则：
-
 
 P0 Blocker：
 
 必须暂停。
 
-
 P1 Risk：
 
 必须暂停等待确认。
 
-
 P2 Quality：
 
 记录即可继续。
-
-
-
 
 ## Gate-C
 
@@ -362,41 +298,29 @@ P2 Quality：
 
 P7 Benchmark之后
 
-
 规则：
-
 
 性能提升 >=5%：
 
 自动接受。
 
-
 性能变化 0~5%：
 
 等待确认。
-
 
 性能下降：
 
 等待确认。
 
-
-
-
 # Session Recovery
 
-
 Skill启动时：
-
 
 Step 1:
 
 搜索：
 
-
 <project_root>/docs/dev/*/STATE.md
-
-
 
 Step 2:
 
@@ -404,13 +328,11 @@ Step 2:
 
 恢复该feature。
 
-
 Step 3:
 
 如果存在多个feature：
 
 读取所有STATE.md。
-
 
 展示：
 
@@ -419,9 +341,7 @@ Step 3:
 - phase
 - status
 
-
 等待用户选择。
-
 
 Step 4:
 
@@ -429,9 +349,7 @@ Step 4:
 
 status = waiting-human-gate
 
-
 恢复Human Gate状态。
-
 
 Step 5:
 
@@ -441,36 +359,23 @@ Step 5:
 
 重新生成STATE.md。
 
-
 禁止：
 
 猜测恢复目标。
 
-
-
-
 # Multi Feature Handling
-
 
 当：
 
-
-
 docs/dev/
 
-
-
 存在多个feature时。
-
 
 用户输入：
 
 继续开发
 
-
 必须展示：
-
-
 
 Feature:
 
@@ -480,25 +385,15 @@ Phase:
 
 Status:
 
-
-
-
 等待用户选择。
-
 
 禁止：
 
 默认选择最近修改项目。
 
-
-
-
 # File Index
 
-
 ## Workflows
-
-
 
 workflows/
 
@@ -506,12 +401,7 @@ feature.md
 
 bugfix.md
 
-
-
-
 ## Phases
-
-
 
 phases/
 
@@ -535,23 +425,12 @@ p8_documentation.md
 
 p9_interview.md
 
-
-
-
 ## Future
-
 
 Checklist:
 
-
-
 checklists/
 
-
-
-
 Templates:
-
-
 
 templates/

@@ -16,8 +16,6 @@
 - 架构设计
 - 代码方案
 
-
-
 # Entry
 
 读取：
@@ -28,12 +26,7 @@
 
 读取：
 
-
 docs/dev//STATE.md
-
-
-
-
 
 # Actions
 
@@ -41,23 +34,13 @@ docs/dev//STATE.md
 
 创建：
 
-
 docs/dev//
-
-
-
-
 
 ## 2. 创建requirement.md
 
 模板：
 
-
 templates/requirement.md
-
-
-
-
 
 ## 3. 明确需求
 
@@ -88,8 +71,6 @@ templates/requirement.md
 - 单元测试通过
 - latency降低
 
-
-
 # Rules
 
 requirement.md：
@@ -109,8 +90,6 @@ requirement.md：
 
 需求文档不能被已有代码限制。
 
-
-
 # Exit Gate
 
 ## Self Check
@@ -121,8 +100,6 @@ requirement.md：
 - Problem明确
 - Goal明确
 - Acceptance Criteria可测试
-
-
 
 ## Human Gate
 
@@ -138,20 +115,13 @@ requirement.md：
 
 自动进入P1。
 
-
-
 # Output
 
 生成：
 
-
-
 docs/dev//requirement.md
 
-
-
 更新：
-
 
 STATE.md
 

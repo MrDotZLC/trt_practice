@@ -8,22 +8,15 @@
 
 小步修改，可验证。
 
-
-
 # Entry
 
 读取：
-
 
 design.md
 
 review.md
 
 benchmark_before.md
-
-
-
-
 
 # Actions
 
@@ -35,8 +28,6 @@ benchmark_before.md
 - 预计文件
 - 测试方式
 
-
-
 ## 2. Code Modification
 
 执行：
@@ -46,20 +37,15 @@ benchmark_before.md
 - TensorRT Plugin修改
 - Runtime修改
 
-
-
 # Change Scope Rules
 
 ## Soft Constraint
 
 单次commit目标：
 
-
 Files <=3
 
 Lines <=300
-
-
 
 如果超过：
 
@@ -69,8 +55,6 @@ Lines <=300
 - 涉及模块
 - 风险
 
-
-
 ## Hard Constraint
 
 禁止：
@@ -78,8 +62,6 @@ Lines <=300
 - 一个commit跨越两个无关模块
 - 未设计新增接口
 - 顺手重构
-
-
 
 # TensorRT Specific Check
 
@@ -93,8 +75,6 @@ Lines <=300
 - Dynamic Shape Profile
 - CUDA Stream同步
 
-
-
 # CUDA Specific Check
 
 修改CUDA Kernel时：
@@ -106,8 +86,6 @@ Lines <=300
 - synchronization
 - boundary condition
 - correctness
-
-
 
 # Exit Gate
 
@@ -123,13 +101,10 @@ Self Check:
 
 返回P2或P3重新设计。
 
-
-
 # Output
 
 更新：
 
 STATE:
-
 
 phase: P6-Test

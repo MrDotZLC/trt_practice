@@ -8,8 +8,6 @@
 
 方便未来开发者理解。
 
-
-
 # Entry
 
 读取：
@@ -20,18 +18,11 @@
 - review.md
 - benchmark.md
 
-
-
 # Actions
 
 生成：
 
-
 summary.md
-
-
-
-
 
 # summary.md Structure
 
@@ -41,37 +32,25 @@ summary.md
 
 解决的问题。
 
-
-
 ## Architecture
 
 整体架构。
-
-
 
 ## Implementation
 
 关键实现。
 
-
-
 ## Performance
 
 Benchmark结果。
-
-
 
 ## Limitation
 
 当前限制。
 
-
-
 ## Future Work
 
 未来方向。
-
-
 
 # Boundary
 
@@ -85,8 +64,6 @@ summary.md：
 
 生成面试话术。
 
-
-
 # Exit Gate
 
 Self Check:
@@ -97,13 +74,10 @@ Self Check:
 - 性能完整
 - 限制明确
 
-
-
 # Output
 
 更新：
 
 STATE:
-
 
 phase: P9-Interview
