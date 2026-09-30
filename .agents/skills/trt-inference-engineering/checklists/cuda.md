@@ -2,7 +2,7 @@
 
 ---
 
-# Kernel Correctness
+## Kernel Correctness
 
 - [P0] Kernel边界条件是否正确？
 
@@ -21,7 +21,7 @@
 
 ---
 
-# Memory
+## Memory
 
 - [P0] Global Memory访问是否安全？
 
@@ -35,7 +35,7 @@
 
 ---
 
-# Performance
+## Performance
 
 - [P0] 优化是否有benchmark证明？
 
@@ -47,7 +47,7 @@
 
 ---
 
-# CUDA Runtime
+## CUDA Runtime
 
 - [P0] Stream生命周期是否正确？
 

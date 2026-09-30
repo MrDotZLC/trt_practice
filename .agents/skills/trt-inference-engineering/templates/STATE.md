@@ -22,32 +22,32 @@ Codex
 
 ---
 
-# Completed Artifacts
+## Completed Artifacts
 
 -
 
 ---
 
-# Current Blockers
+## Current Blockers
 
 -
 
 ---
 
-# Next Action
+## Next Action
 
 -
 
 ---
 
-# Phase History
+## Phase History
 
 - YYYY-MM-DD:
   P0 -> P1
 
 ---
 
-# Recovery Notes
+## Recovery Notes
 
 说明：
 

@@ -4,7 +4,7 @@
 
 生成面试复盘材料。
 
-# Entry
+## Entry
 
 读取：
 
@@ -14,15 +14,15 @@ STATE.md
 
 Phase History
 
-# Actions
+## Actions
 
 生成：
 
 interview_notes.md
 
-# Content Requirement
+## Content Requirement
 
-## Project Introduction
+### Project Introduction
 
 包含：
 
@@ -30,7 +30,7 @@ interview_notes.md
 - 目标
 - 技术栈
 
-## Technical Decisions
+### Technical Decisions
 
 记录：
 
@@ -42,13 +42,13 @@ interview_notes.md
 - 为什么使用Plugin
 - 为什么采用某Kernel优化
 
-## Interview Questions
+### Interview Questions
 
 生成Level 1~5问题。
 
-# Difficulty Level
+## Difficulty Level
 
-## Level 1
+### Level 1
 
 基础概念。
 
@@ -56,7 +56,7 @@ interview_notes.md
 
 为什么需要KV Cache？
 
-## Level 2
+### Level 2
 
 工程实现。
 
@@ -64,7 +64,7 @@ interview_notes.md
 
 如何设计Runtime？
 
-## Level 3
+### Level 3
 
 性能优化。
 
@@ -72,7 +72,7 @@ interview_notes.md
 
 如何降低Decode latency？
 
-## Level 4
+### Level 4
 
 源码分析。
 
@@ -80,7 +80,7 @@ interview_notes.md
 
 TensorRT ExecutionContext如何执行？
 
-## Level 5
+### Level 5
 
 架构设计。
 
@@ -88,7 +88,7 @@ TensorRT ExecutionContext如何执行？
 
 如何扩展Continuous Batching？
 
-# Boundary
+## Boundary
 
 interview_notes.md：
 
@@ -99,7 +99,7 @@ interview_notes.md：
 
 不是项目维护文档。
 
-# Exit Gate
+## Exit Gate
 
 Self Check：
 
@@ -109,7 +109,7 @@ Self Check：
 - 有技术追问
 - 有trade-off
 
-# Output
+## Output
 
 更新：
 

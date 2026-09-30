@@ -8,7 +8,7 @@
 
 方便未来开发者理解。
 
-# Entry
+## Entry
 
 读取：
 
@@ -18,41 +18,41 @@
 - review.md
 - benchmark.md
 
-# Actions
+## Actions
 
 生成：
 
 summary.md
 
-# summary.md Structure
+## summary.md Structure
 
 必须包含：
 
-## Problem
+### Problem
 
 解决的问题。
 
-## Architecture
+### Architecture
 
 整体架构。
 
-## Implementation
+### Implementation
 
 关键实现。
 
-## Performance
+### Performance
 
 Benchmark结果。
 
-## Limitation
+### Limitation
 
 当前限制。
 
-## Future Work
+### Future Work
 
 未来方向。
 
-# Boundary
+## Boundary
 
 summary.md：
 
@@ -64,7 +64,7 @@ summary.md：
 
 生成面试话术。
 
-# Exit Gate
+## Exit Gate
 
 Self Check:
 
@@ -74,7 +74,7 @@ Self Check:
 - 性能完整
 - 限制明确
 
-# Output
+## Output
 
 更新：
 

@@ -10,7 +10,7 @@
 
 ---
 
-# Resource Management
+## Resource Management
 
 - [P0] RAII 是否用于管理资源生命周期？
 
@@ -31,7 +31,7 @@
 
 ---
 
-# Concurrency
+## Concurrency
 
 - [P0] 多线程访问是否存在数据竞争？
 
@@ -43,7 +43,7 @@
 
 ---
 
-# Interface Design
+## Interface Design
 
 - [P0] API 输入输出是否明确？
 
@@ -55,7 +55,7 @@
 
 ---
 
-# Build
+## Build
 
 - [P0] Debug/Release 是否均可编译？
 

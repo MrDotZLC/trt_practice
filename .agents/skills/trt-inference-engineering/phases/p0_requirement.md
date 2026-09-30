@@ -16,7 +16,7 @@
 - 架构设计
 - 代码方案
 
-# Entry
+## Entry
 
 读取：
 
@@ -28,40 +28,40 @@
 
 docs/dev//STATE.md
 
-# Actions
+## Actions
 
-## 1. 创建feature目录
+### 1. 创建feature目录
 
 创建：
 
 docs/dev//
 
-## 2. 创建requirement.md
+### 2. 创建requirement.md
 
 模板：
 
 templates/requirement.md
 
-## 3. 明确需求
+### 3. 明确需求
 
 记录：
 
-### Problem
+#### Problem
 
 当前存在的问题。
 
-### Goal
+#### Goal
 
 希望达到的目标。
 
-### Scope
+#### Scope
 
 包含：
 
 - 功能范围
 - 不包含范围
 
-### Acceptance Criteria
+#### Acceptance Criteria
 
 必须可验证。
 
@@ -71,7 +71,7 @@ templates/requirement.md
 - 单元测试通过
 - latency降低
 
-# Rules
+## Rules
 
 requirement.md：
 
@@ -90,9 +90,9 @@ requirement.md：
 
 需求文档不能被已有代码限制。
 
-# Exit Gate
+## Exit Gate
 
-## Self Check
+### Self Check
 
 确认：
 
@@ -101,7 +101,7 @@ requirement.md：
 - Goal明确
 - Acceptance Criteria可测试
 
-## Human Gate
+### Human Gate
 
 触发条件：
 
@@ -115,7 +115,7 @@ requirement.md：
 
 自动进入P1。
 
-# Output
+## Output
 
 生成：
 

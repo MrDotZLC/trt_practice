@@ -12,15 +12,15 @@
 
 禁止提出最终实现方案。
 
-# Entry
+## Entry
 
 读取：
 
 requirement.md
 
-# Actions
+## Actions
 
-## 1. Repository Analysis
+### 1. Repository Analysis
 
 分析：
 
@@ -29,7 +29,7 @@ requirement.md
 - 调用链
 - 数据流
 
-## 2. Runtime Analysis
+### 2. Runtime Analysis
 
 针对TensorRT / LLM Runtime：
 
@@ -41,21 +41,21 @@ requirement.md
 - CUDA Stream关系
 - Kernel调用路径
 
-## 3. Generate analysis.md
+### 3. Generate analysis.md
 
 必须包含：
 
-## Current Architecture
+### Current Architecture
 
-## Data Flow
+### Data Flow
 
-## Relevant Modules
+### Relevant Modules
 
-## Existing Limitations
+### Existing Limitations
 
-## Extension Points
+### Extension Points
 
-# Rules
+## Rules
 
 analysis.md：
 
@@ -73,7 +73,7 @@ analysis.md：
 
 - 新代码方案
 
-# Exit Gate
+## Exit Gate
 
 Self Check：
 
@@ -89,7 +89,7 @@ Self Check：
 
 回P0。
 
-# Output
+## Output
 
 生成：
 

@@ -4,7 +4,7 @@
 
 在修改代码前建立性能基线。
 
-# Entry
+## Entry
 
 条件：
 
@@ -12,7 +12,7 @@ design通过。
 
 review无Blocker。
 
-# Rule
+## Rule
 
 如果改动涉及性能：
 
@@ -23,13 +23,13 @@ Baseline必须发生在：
 Phase P5 Implementation  
 之前
 
-# Actions
+## Actions
 
 运行当前版本。
 
 记录：
 
-## Environment
+### Environment
 
 必须包含：
 
@@ -38,7 +38,7 @@ Phase P5 Implementation
 - CUDA版本
 - TensorRT版本
 
-## Workload
+### Workload
 
 必须固定：
 
@@ -47,7 +47,7 @@ Phase P5 Implementation
 - dtype
 - input shape
 
-## Measurement
+### Measurement
 
 要求：
 
@@ -64,21 +64,21 @@ Iteration：
 - median
 - P95
 
-# Output
+## Output
 
 生成：
 
 benchmark_before.md
 
-# Failure Handling
+## Failure Handling
 
-## Timeout / OOM
+### Timeout / OOM
 
 调整workload。
 
 必须记录原因。
 
-## Dependency Missing
+### Dependency Missing
 
 例如：
 
@@ -90,7 +90,7 @@ N/A: reason
 
 P7改为外部参考比较。
 
-## Continuous Failure
+### Continuous Failure
 
 连续3次失败：
 
@@ -98,7 +98,7 @@ P7改为外部参考比较。
 
 请求用户介入。
 
-# Exit Gate
+## Exit Gate
 
 Self Check:
 
@@ -112,7 +112,7 @@ Human Gate:
 
 无。
 
-# Output
+## Output
 
 更新：
 

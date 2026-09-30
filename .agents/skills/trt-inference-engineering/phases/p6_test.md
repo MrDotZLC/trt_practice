@@ -8,21 +8,21 @@
 
 功能未验证直接benchmark。
 
-# Entry
+## Entry
 
 读取：
 
 implementation changes
 
-# Actions
+## Actions
 
 创建：
 
 test_plan.md
 
-# Test Levels
+## Test Levels
 
-## Unit Test
+### Unit Test
 
 验证：
 
@@ -30,7 +30,7 @@ test_plan.md
 - Kernel
 - Plugin
 
-## Integration Test
+### Integration Test
 
 验证：
 
@@ -38,13 +38,13 @@ test_plan.md
 - Runtime execution
 - End-to-end flow
 
-## Regression Test
+### Regression Test
 
 验证：
 
 已有功能未损坏。
 
-## Failure Test
+### Failure Test
 
 验证：
 
@@ -56,7 +56,7 @@ test_plan.md
 - invalid shape
 - memory limit
 
-# Exit Gate
+## Exit Gate
 
 Self Check:
 
@@ -67,13 +67,13 @@ Self Check:
 - Regression Test通过
 - Failure Case通过
 
-## Hard Rule
+### Hard Rule
 
 P6未通过：
 
 禁止进入P7 Benchmark。
 
-# Failure Route
+## Failure Route
 
 测试失败：
 
@@ -83,7 +83,7 @@ P6未通过：
 
 暂停，请求用户介入。
 
-# Output
+## Output
 
 生成：
 

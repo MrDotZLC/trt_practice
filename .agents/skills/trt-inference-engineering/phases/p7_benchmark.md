@@ -4,7 +4,7 @@
 
 验证性能变化。
 
-# Entry
+## Entry
 
 必须存在：
 
@@ -12,7 +12,7 @@ benchmark_before.md
 
 test_passed
 
-# Actions
+## Actions
 
 运行After Benchmark。
 
@@ -24,18 +24,18 @@ Before和After：
 - 相同输入
 - 相同配置
 
-# Measurement Protocol
+## Measurement Protocol
 
 必须记录：
 
-## Environment
+### Environment
 
 - GPU
 - CUDA
 - TensorRT
 - Driver
 
-## Workload
+### Workload
 
 包含：
 
@@ -44,7 +44,7 @@ Before和After：
 - dtype
 - shape
 
-## Timing
+### Timing
 
 要求：
 
@@ -61,7 +61,7 @@ Iteration:
 - median
 - P95
 
-# Output
+## Output
 
 生成：
 
@@ -72,9 +72,9 @@ benchmark.md
 | Metric | Before | After | Change |
 |||||
 
-# Performance Decision
+## Performance Decision
 
-## Positive
+### Positive
 
 提升：
 
@@ -82,7 +82,7 @@ benchmark.md
 
 自动接受。
 
-## Marginal
+### Marginal
 
 范围：
 
@@ -95,7 +95,7 @@ benchmark.md
 
 等待Human确认。
 
-## Negative
+### Negative
 
 性能下降：
 
@@ -106,7 +106,7 @@ benchmark.md
 
 等待Human确认。
 
-# Exit Gate
+## Exit Gate
 
 Self Check：
 
@@ -116,7 +116,7 @@ Human Gate：
 
 根据收益情况触发。
 
-# Output
+## Output
 
 更新：
 

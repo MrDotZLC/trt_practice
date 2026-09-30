@@ -13,27 +13,19 @@
 
 最小修改。
 
-# Workflow State Machine
+## Workflow State Machine
 
-B0 Reproduce
-
-↓
-
-B1 Diagnose
-
-↓
-
-B2 Minimal Fix
-
-↓
-
-B3 Regression
-
-↓
-
+B0 Reproduce  
+↓  
+B1 Diagnose  
+↓  
+B2 Minimal Fix  
+↓  
+B3 Regression  
+↓  
 B4 Summary
 
-# B0 Reproduce
+## B0 Reproduce
 
 目标：
 
@@ -62,7 +54,7 @@ failure test必须可以运行。
 
 未复现直接修改代码。
 
-# B1 Diagnose
+## B1 Diagnose
 
 目标：
 
@@ -79,7 +71,7 @@ failure test必须可以运行。
 
 直接修改。
 
-# B2 Minimal Fix
+## B2 Minimal Fix
 
 目标：
 
@@ -99,7 +91,7 @@ Bugfix → Feature Decision。
 
 禁止自动转换。
 
-# B3 Regression
+## B3 Regression
 
 必须验证：
 
@@ -109,7 +101,7 @@ Bugfix → Feature Decision。
 
 3. 新修改没有引入回归。
 
-# B4 Summary
+## B4 Summary
 
 输出：
 
@@ -122,7 +114,7 @@ summary.md
 - Test Result
 - Limitation
 
-# Forbidden
+## Forbidden
 
 Bugfix禁止：
 

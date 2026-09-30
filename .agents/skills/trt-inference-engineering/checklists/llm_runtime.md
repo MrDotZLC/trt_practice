@@ -2,7 +2,7 @@
 
 ---
 
-# Request Scheduling
+## Request Scheduling
 
 - [P0] Request生命周期是否明确？
 
@@ -12,7 +12,7 @@
 
 ---
 
-# KV Cache
+## KV Cache
 
 - [P0] KV Cache ownership是否明确？
 
@@ -28,7 +28,7 @@
 
 ---
 
-# Continuous Batching
+## Continuous Batching
 
 - [P0] Dynamic request加入/退出是否安全？
 
@@ -40,7 +40,7 @@
 
 ---
 
-# Sampling
+## Sampling
 
 - [P0] Sampling结果是否正确？
 

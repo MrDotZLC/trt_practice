@@ -8,7 +8,7 @@
 
 可执行设计文档。
 
-# Entry
+## Entry
 
 读取：
 
@@ -16,30 +16,30 @@ requirement.md
 
 analysis.md
 
-# Actions
+## Actions
 
 生成：
 
 design.md
 
-# Design Requirements
+## Design Requirements
 
 必须包含：
 
-## Architecture
+### Architecture
 
 说明：
 
 新增模块和关系。
 
-## Module Design
+### Module Design
 
 格式：
 
 | Module | Responsibility | Dependency |
 ||||
 
-## Data Structure
+### Data Structure
 
 说明：
 
@@ -51,7 +51,7 @@ design.md
 - Request state
 - Tensor metadata
 
-## Runtime Flow
+### Runtime Flow
 
 必须包含：
 
@@ -59,25 +59,17 @@ ASCII流程图。
 
 例如：
 
-Request
-
-↓
-
-Scheduler
-
-↓
-
-Engine Context
-
-↓
-
-Kernel
-
-↓
-
+Request  
+↓  
+Scheduler  
+↓  
+Engine Context  
+↓  
+Kernel  
+↓  
 Output
 
-## Resource Lifecycle
+### Resource Lifecycle
 
 说明：
 
@@ -88,7 +80,7 @@ Output
 
 生命周期。
 
-## Performance Consideration
+### Performance Consideration
 
 说明：
 
@@ -96,19 +88,19 @@ Output
 - memory
 - communication
 
-## Trade-off
+### Trade-off
 
 至少包含：
 
 两个方案比较。
 
-# Rules
+## Rules
 
 设计阶段：
 
 禁止修改源码。
 
-# Exit Gate
+## Exit Gate
 
 Self Check：
 
@@ -119,7 +111,7 @@ Self Check：
 - 是否说明资源生命周期
 - 是否说明性能影响
 
-# Human Gate
+## Human Gate
 
 Gate-A：
 
@@ -129,7 +121,7 @@ Gate-A：
 
 Human Gate格式。
 
-# Output
+## Output
 
 生成：
 

@@ -4,7 +4,7 @@
 
 对设计进行工程审查。
 
-# Entry
+## Entry
 
 读取：
 
@@ -20,15 +20,15 @@ checklists/tensorrt.md
 
 checklists/llm_runtime.md
 
-# Actions
+## Actions
 
 生成：
 
 review.md
 
-# Review Classification
+## Review Classification
 
-## P0 Blocker
+### P0 Blocker
 
 必须修复。
 
@@ -42,7 +42,7 @@ review.md
 
 阻止进入P4。
 
-## P1 Risk
+### P1 Risk
 
 需要人工确认。
 
@@ -51,7 +51,7 @@ review.md
 - 性能风险
 - 异常恢复不足
 
-## P2 Quality
+### P2 Quality
 
 记录即可。
 
@@ -60,32 +60,32 @@ review.md
 - 命名风格
 - 文档完善
 
-# Exit Gate
+## Exit Gate
 
-## Self Check
+### Self Check
 
 review.md必须包含：
 
 | Issue | Level | Action |
 ||||
 
-## Human Gate
+### Human Gate
 
 Gate-B规则：
 
-### P0存在
+#### P0存在
 
 暂停。
 
-### P0不存在，P1存在
+#### P0不存在，P1存在
 
 暂停。
 
-### P0/P1不存在
+#### P0/P1不存在
 
 自动进入P4。
 
-# Failure Route
+## Failure Route
 
 P0失败：
 
@@ -93,7 +93,7 @@ P0失败：
 
 设计重新修改。
 
-# Output
+## Output
 
 生成：
 

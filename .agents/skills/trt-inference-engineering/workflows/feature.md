@@ -14,59 +14,35 @@
 
 先验证，后优化。
 
-# Workflow State Machine
+## Workflow State Machine
 
-P0 Requirement
-
-↓
-
-P1 Analysis
-
-↓
-
-P2 Design
-
-↓
-
-Gate-A
-
-↓
-
-P3 Review
-
-↓
-
-Gate-B
-
-↓
-
-P4 Baseline
-
-↓
-
-P5 Implementation
-
-↓
-
-P6 Test
-
-↓
-
-P7 Benchmark
-
-↓
-
-Gate-C
-
-↓
-
-P8 Documentation
-
-↓
-
+P0 Requirement  
+↓  
+P1 Analysis  
+↓  
+P2 Design  
+↓  
+Gate-A  
+↓  
+P3 Review  
+↓  
+Gate-B  
+↓  
+P4 Baseline  
+↓  
+P5 Implementation  
+↓  
+P6 Test  
+↓  
+P7 Benchmark  
+↓  
+Gate-C  
+↓  
+P8 Documentation  
+↓  
 P9 Interview
 
-# Phase Loading
+## Phase Loading
 
 进入Phase：
 
@@ -84,9 +60,9 @@ phases/p3_review.md
 
 一次加载全部Phase。
 
-# Gate Rules
+## Gate Rules
 
-## Gate-A
+### Gate-A
 
 位置：
 
@@ -104,7 +80,7 @@ design.md
 
 返回P2。
 
-## Gate-B
+### Gate-B
 
 位置：
 
@@ -116,19 +92,19 @@ review.md
 
 判断：
 
-### P0 Blocker
+#### P0 Blocker
 
 立即阻塞。
 
-### P1 Risk
+#### P1 Risk
 
 等待用户确认。
 
-### P2 Quality
+#### P2 Quality
 
 记录并继续。
 
-## Gate-C
+### Gate-C
 
 位置：
 
@@ -140,19 +116,19 @@ benchmark.md
 
 判断：
 
-### >=5%
+#### >=5%
 
 Accept。
 
-### 0~5%
+#### 0~5%
 
 Human Review。
 
-### <0%
+#### <0%
 
 Human Review。
 
-# Required Artifacts
+## Required Artifacts
 
 Feature Workflow必须产生：
 
@@ -176,7 +152,7 @@ summary.md
 
 interview_notes.md
 
-# Commit Rules
+## Commit Rules
 
 每个commit：
 

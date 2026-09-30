@@ -12,9 +12,9 @@
 - 保证性能优化具有可复现 benchmark
 - 保证长期项目维护具有状态恢复能力
 
-# Trigger
+## Trigger
 
-## Feature Workflow
+### Feature Workflow
 
 以下请求触发 Feature Workflow：
 
@@ -24,7 +24,7 @@
 - 优化 XXX 性能
 - 扩展 XXX 模块
 
-## Bugfix Workflow
+### Bugfix Workflow
 
 以下请求触发 Bugfix Workflow：
 
@@ -33,7 +33,7 @@
 - XXX 结果错误
 - XXX 性能退化
 
-## Do Not Trigger
+### Do Not Trigger
 
 以下情况不启动 Workflow：
 
@@ -42,7 +42,7 @@
 - 阅读代码分析
 - 学习问题
 
-## Ambiguous Request
+### Ambiguous Request
 
 如果无法判断属于 Feature 或 Bugfix：
 
@@ -50,11 +50,11 @@
 
 禁止自动选择。
 
-# Directory Model
+## Directory Model
 
 该 Skill 使用双目录模型。
 
-## Skill Directory
+### Skill Directory
 
 路径：
 
@@ -75,7 +75,7 @@
 - 禁止写入开发状态
 - 禁止生成项目artifact
 
-## Artifact Directory
+### Artifact Directory
 
 路径：
 
@@ -111,9 +111,9 @@ interview_notes.md
 
 所有开发过程产物必须写入 Artifact Directory。
 
-# Global Rules
+## Global Rules
 
-## Mandatory Rules
+### Mandatory Rules
 
 所有 Workflow 必须遵守：
 
@@ -129,7 +129,7 @@ interview_notes.md
 
 6. 每次修改必须保持项目可编译。
 
-## Forbidden Rules
+### Forbidden Rules
 
 禁止：
 
@@ -147,9 +147,9 @@ interview_notes.md
 
 7. 修改Skill自身文件。
 
-# Workflow Routing
+## Workflow Routing
 
-## Feature Workflow
+### Feature Workflow
 
 适用于：
 
@@ -160,54 +160,30 @@ interview_notes.md
 
 流程：
 
-P0 Requirement
-
-↓
-
-P1 Analysis
-
-↓
-
-P2 Design
-
-↓
-
-Gate-A
-
-↓
-
-P3 Review
-
-↓
-
-Gate-B
-
-↓
-
-P4 Baseline
-
-↓
-
-P5 Implementation
-
-↓
-
-P6 Test
-
-↓
-
-P7 Benchmark
-
-↓
-
-Gate-C
-
-↓
-
-P8 Documentation
-
-↓
-
+P0 Requirement  
+↓  
+P1 Analysis  
+↓  
+P2 Design  
+↓  
+Gate-A  
+↓  
+P3 Review  
+↓  
+Gate-B  
+↓  
+P4 Baseline  
+↓  
+P5 Implementation  
+↓  
+P6 Test  
+↓  
+P7 Benchmark  
+↓  
+Gate-C  
+↓  
+P8 Documentation  
+↓  
 P9 Interview
 
 详细流程：
@@ -224,7 +200,7 @@ phases/pX_xxx.md
 
 禁止一次加载所有Phase。
 
-## Bugfix Workflow
+### Bugfix Workflow
 
 适用于：
 
@@ -234,22 +210,14 @@ phases/pX_xxx.md
 
 流程：
 
-B0 Reproduce
-
-↓
-
-B1 Diagnose
-
-↓
-
-B2 Minimal Fix
-
-↓
-
-B3 Regression
-
-↓
-
+B0 Reproduce  
+↓  
+B1 Diagnose  
+↓  
+B2 Minimal Fix  
+↓  
+B3 Regression  
+↓  
 B4 Summary
 
 详细流程：
@@ -258,11 +226,11 @@ B4 Summary
 
 workflows/bugfix.md
 
-# Human Gate Protocol Summary
+## Human Gate Protocol Summary
 
 该Skill包含三个Human Gate。
 
-## Gate-A
+### Gate-A
 
 位置：
 
@@ -272,7 +240,7 @@ P2 Design之后
 
 确认设计方案。
 
-## Gate-B
+### Gate-B
 
 位置：
 
@@ -292,7 +260,7 @@ P2 Quality：
 
 记录即可继续。
 
-## Gate-C
+### Gate-C
 
 位置：
 
@@ -312,7 +280,7 @@ P7 Benchmark之后
 
 等待确认。
 
-# Session Recovery
+## Session Recovery
 
 Skill启动时：
 
@@ -363,7 +331,7 @@ Step 5:
 
 猜测恢复目标。
 
-# Multi Feature Handling
+## Multi Feature Handling
 
 当：
 
@@ -391,9 +359,9 @@ Status:
 
 默认选择最近修改项目。
 
-# File Index
+## File Index
 
-## Workflows
+### Workflows
 
 workflows/
 
@@ -401,7 +369,7 @@ feature.md
 
 bugfix.md
 
-## Phases
+### Phases
 
 phases/
 
@@ -425,7 +393,7 @@ p8_documentation.md
 
 p9_interview.md
 
-## Future
+### Checklists and Templates
 
 Checklist:
 
