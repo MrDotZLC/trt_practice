@@ -664,8 +664,8 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
             network->addActivation(*mlp, nvinfer1::ActivationType::kGELU_TANH);
         // 数值定位：第 0 层 MLP 的两个切点（gelu 前 / gelu 后）。
         // "NaN 是 c_fc 造出来的、还是 gelu 造出来的"是这次排查的关键分界，
-        // 在图上留两个输出比逐次猜算子便宜（见 TROUBLESHOOTING #18）。
-        // 仅在显式打开 export_diagnostics 时挂：它们会改 I/O 契约（#19）。
+        // 在图上留两个输出比逐次猜算子便宜（见 TROUBLESHOOTING + TS-018）。
+        // 仅在显式打开 export_diagnostics 时挂：它们会改 I/O 契约（TS-019）。
         if (export_diagnostics && layer == 0) {
             mlp->setName("mlp_fc_0");
             network->markOutput(*mlp);

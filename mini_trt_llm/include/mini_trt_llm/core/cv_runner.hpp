@@ -18,7 +18,7 @@ namespace mini_trt_llm {
 //
 // **为什么必须显式传 `pixels_per_channel`**：NCHW 下通道下标是 `(i / (H*W)) % C`，
 // 分母必须是 H*W 而不是 "总元素数/C"——后者等于 B*H*W，**在 batch=1 时恰好等价**，
-// 于是写法错了也测不出来，直到多 batch 才暴露（本项目真栽过一次，见 TROUBLESHOOTING #23）。
+// 于是写法错了也测不出来，直到多 batch 才暴露（本项目真栽过一次，见 TROUBLESHOOTING + TS-023）。
 //
 // 参数不合法时返回空 vector（调用方 `CVRunner::Infer` 会因此失败并打日志）。
 std::vector<float> NormalizePixelsToNchw(const std::vector<float>& pixels_nchw,
@@ -38,7 +38,7 @@ std::vector<float> NormalizePixelsToNchw(const std::vector<float>& pixels_nchw,
 //
 // **维度与 batch 范围一律向引擎查询**，不写死 224 / 1000 / 16：引擎自己知道 I/O 形状与
 // profile 范围（`getProfileShape`），问它即可。弱类型网络下连 dtype 都要问（见 TROUBLESHOOTING
-// #18 / #21）——这正是把"模型是什么"焊进 Runner 会踩的坑。
+// TS-018 / TS-021）——这正是把"模型是什么"焊进 Runner 会踩的坑。
 class CVRunner {
  public:
     CVRunner(std::shared_ptr<Engine> engine,

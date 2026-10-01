@@ -6,12 +6,12 @@
 // **本文件只测量、不判定正确性**：P 层用例把观测值打印出来（中位数 / 分位 / 极差 /
 // 斜率），不 assert 任何数值阈值。为什么：这是"回答一问"而不是"达标判据"——
 // 给它设阈值会退化成 `AGENTS.md` §7 禁止的"用阈值换绿"（判据出处：
-// `TROUBLESHOOTING.md` #37 / #38，判别下限约 ±400~600 µs）。
+// `TROUBLESHOOTING.md` + TS-037 / TS-038，判别下限约 ±400~600 µs）。
 //
 // **唯一的 assert 是"这一轮跑起来了"**（runner 构造成功、`Generate` 没返回空 vector）。
 // 那是失败信号，不是性能阈值；测量质量的观测量（同 session 两次测量的漂移）只打印，
 // 因为它没有可推导的阈值——真机第一次跑就是在这里把 profile target 判失败的
-// （`TROUBLESHOOTING.md` #39）。
+// （`TROUBLESHOOTING.md` + TS-039）。
 
 #include "perf_stats.hpp"
 #include "gpt2_test_support.hpp"
@@ -116,7 +116,7 @@ constexpr int32_t kMaxNewTokens = 32;  // decode 步数（决定 KV 增长与每
 constexpr int32_t kRounds = 15;        // G6：≥15 轮（同一 session、同一二进制）
 constexpr int32_t kWarmup = 3;
 
-// **采样器类**比较的判别下限（出处：`TROUBLESHOOTING.md` #37 / #38 的实测）。
+// **采样器类**比较的判别下限（出处：`TROUBLESHOOTING.md` + TS-037 / TS-038 的实测）。
 // **只用来提醒"别把采样器那把尺子套到整步 decode 上"**——量级不同、阈值不可跨场景复用。
 constexpr double kDiscriminationFloorMs = 0.6;
 
@@ -291,16 +291,16 @@ TEST(Gpt2DecodePerf, StepLatencyByPhase) {
     std::cout << "[Gpt2DecodePerf] 派生：decode 每步=" << per_decode_step
               << " ms（斜率口径 (T32−T1)/31）；prefill≈" << prefill_estimate << " ms\n";
     std::cout << "[Gpt2DecodePerf] 采样器类的判别下限=" << kDiscriminationFloorMs
-              << " ms（#37/#38）；**它不套用到整步 decode 上**——量级不同，见下\n";
+              << " ms（`docs/TROUBLESHOOTING.md` + TS-037/TS-038）；**它不套用到整步 decode 上**——量级不同，见下\n";
     PrintGpuState("(after)");
 
     // 同一 session 内把整组测量再跑一遍，报**绝对与相对**两次漂移。
     //
     // **为什么只打印、不 assert**：这是"测量质量"的观测量，不是被测量的正确性属性。
     // 曾经在这里写死 `EXPECT_LT(drift, 0.6 ms)`——那个 0.6 ms 是**采样器类**比较的
-    // 判别下限（#37/#38），套到量级大一到两个数量级的整步 decode 上属于"阈值跨场景
+    // 判别下限（TS-037/TS-038），套到量级大一到两个数量级的整步 decode 上属于"阈值跨场景
     // 复用"，正是 `AGENTS.md` §7 禁止的"阈值来路不明"。真机第一次跑就因此把整个
-    // profile target 判失败（`TROUBLESHOOTING.md` #39）。
+    // profile target 判失败（`TROUBLESHOOTING.md` + TS-039）。
     // 现在的口径：打印绝对 / 相对漂移，由读者判断"漂移是否远小于待判信号"。
     std::vector<double> repeat_one;
     std::vector<double> repeat_full;
@@ -319,12 +319,12 @@ TEST(Gpt2DecodePerf, StepLatencyByPhase) {
                  "本次测量无阈值判据（测试计划 §10.3）\n";
 
     // ------------------------------------------------------------------
-    // 同 session 的 sampler 净成本 → **占 decode 一步的比例**（`TROUBLESHOOTING.md` #41 绕法 1）
+    // 同 session 的 sampler 净成本 → **占 decode 一步的比例**（`TROUBLESHOOTING.md` + TS-041 绕法 1）
     //
     // 为什么放在这里而不是另起一个用例：本机两条 CLI profiling 路径都拿不到 kernel
     // 时间线（nsys 无 kernel 数据、ncu 报 `Unknown Error on device 0`），
     // 而"sampler 占整步 decode 多少"只要两个数**同处一个 session** 就能回答。
-    // 放在同一个用例里 → 顺序、温度、时钟全部一致，不存在跨 session 可比性问题（#38）。
+    // 放在同一个用例里 → 顺序、温度、时钟全部一致，不存在跨 session 可比性问题（`docs/TROUBLESHOOTING.md` + TS-038）。
     //
     // 量法沿用 §9.2 的**斜率口径**：同一份 logits 上发射 1 次与 4 次，取 `(T4−T1)/3`
     // ——扣掉每窗口固定开销（事件 + 同步 + 首次发射），剩下的才是 kernel 净成本。
@@ -332,7 +332,7 @@ TEST(Gpt2DecodePerf, StepLatencyByPhase) {
     // **边界（必须一起读）**：
     //   * 这是**比值**，不是逐 kernel 分解；attention / MLP 仍然包在"decode 一步"里；
     //   * logits 是静态缓冲（不是引擎刚写出来的那份），cache 状态与真实循环不同；
-    //   * 因此结论只到"占比量级"，要精确分解仍得靠 profiler（见 #41）。
+    //   * 因此结论只到"占比量级"，要精确分解仍得靠 profiler（见 `docs/TROUBLESHOOTING.md` + TS-041）。
     // ------------------------------------------------------------------
     {
         DeviceBuffer d_logits(static_cast<size_t>(kRealVocab) * sizeof(float));
@@ -355,7 +355,7 @@ TEST(Gpt2DecodePerf, StepLatencyByPhase) {
             //   ① 全等输入是退化情形——真实的 logits 行不会全等，排序路径的负载也就不能代表它；
             //   ② 只有同一套输入，本段的数与 `SamplerPerf` 的数才**直接可比**：
             //      首轮实测两者对同一 (k=64, p=0.9, vocab=50257) 差了约 2.5 倍，
-            //      而 greedy（不排序）却几乎一致（见 TROUBLESHOOTING #42）。
+            //      而 greedy（不排序）却几乎一致（见 TROUBLESHOOTING + TS-042）。
             std::vector<float> host_logits(static_cast<size_t>(kRealVocab));
             for (int32_t i = 0; i < kRealVocab; ++i) {
                 host_logits[static_cast<size_t>(i)] =
@@ -431,7 +431,7 @@ TEST(Gpt2DecodePerf, StepLatencyByPhase) {
             report_share("top-k(k=64)", slope_samples(launch_topk));
             report_share("top-p(p=0.9)", slope_samples(launch_topp));
             std::cout << "[Gpt2DecodePerf] 边界：比值而非逐 kernel 分解；attention/MLP 仍包在"
-                         "decode 一步里；logits 是静态缓冲（见测试计划 §10.4、#41）\n";
+                         "decode 一步里；logits 是静态缓冲（见测试计划 §10.4、`docs/TROUBLESHOOTING.md` + TS-041）\n";
         }
     }
 }
@@ -439,7 +439,7 @@ TEST(Gpt2DecodePerf, StepLatencyByPhase) {
 // ---------------------------------------------------------------------------
 // PF-9：attention 随上下文长度的增长（profiler 拿不到 kernel 时间线时的替代）
 //
-// 依据：开发计划 §11.4.1、`TROUBLESHOOTING.md` #41。
+// 依据：开发计划 §11.4.1、`TROUBLESHOOTING.md` + TS-041。
 //
 // **为什么这样做能替代 profiler**：attention 的开销随**已缓存位置数**增长，而每步的
 // matmul / LayerNorm / GELU / KV 写入 / 位置填充 / 采样都与上下文无关。所以
@@ -578,7 +578,7 @@ TEST(Gpt2DecodePerf, ContextLengthSweep) {
 //
 // 为什么必须有这一条：F1 的达标线是"长上下文每步 decode 的斜率至少降 40%"，而
 // `ContextLengthSweep` 只跑生产路径 → 它给的是**跨 session** 的点值，
-// `TROUBLESHOOTING` #38 明令这种差值不可直接比。旧单趟 kernel 由 F3=A 保留，
+// `TROUBLESHOOTING` + TS-038 明令这种差值不可直接比。旧单趟 kernel 由 F3=A 保留，
 // override `< 0` 可以把插件切回它（见 `paged_attention_kernel.hpp` 的说明）——
 // 于是两版能在**同一个 session、同一个引擎、逐轮交替**下测出来。
 //
@@ -737,9 +737,9 @@ TEST(Gpt2DecodePerf, ContextLengthSweepSplitVsSinglePass) {
 
         // 两种"漂移"都要报，因为 F1-B 那句"退化不超过同 session 漂移"里的**漂移**没被钉死：
         //   ① 各臂自身的绝对漂移（max / min 都给）——**取 max 是宽松方向**（锚点越大越容易
-        //      判"在漂移内"），首版注释把这一点写反了（真机数据打脸，见 TROUBLESHOOTING #45）；
+        //      判"在漂移内"），首版注释把这一点写反了（真机数据打脸，见 TROUBLESHOOTING + TS-045）；
         //   ② **配对差 `split - single` 的跨块漂移**——ABBA 已抵消轮内漂移，它才是"这次比较
-        //      自身的不确定度"（`TROUBLESHOOTING` #37 / #38 的同一逻辑）。
+        //      自身的不确定度"（`TROUBLESHOOTING` + TS-037 / TS-038 的同一逻辑）。
         const double drift_split = std::fabs(split_median_repeat - split_median);
         const double drift_single = std::fabs(single_median_repeat - single_median);
         const double rel_drift_split =
@@ -794,7 +794,7 @@ TEST(Gpt2DecodePerf, ContextLengthSweepSplitVsSinglePass) {
               << (single_slope > 0.0 ? (1.0 - split_slope / single_slope) * 100.0 : 0.0)
               << "%（F1 达标线 = 40%）\n";
     std::cout << "[split-K A/B] 读法：这是**同 session 同引擎**的对照，可直接比；"
-                 "跨 session 的单点值（如 PF-9 那次）不可与它相减（#38）\n";
+                 "跨 session 的单点值（如 PF-9 那次）不可与它相减（`docs/TROUBLESHOOTING.md` + TS-038）\n";
 
     // 短上下文档（prompt=4，平均上下文≈20）的退化：**观测项，不设判据**（作者 2026-09-27 决定）。
     //
@@ -818,7 +818,7 @@ TEST(Gpt2DecodePerf, ContextLengthSweepSplitVsSinglePass) {
                                                               : "退化不可分辨（噪声内）")
               << "\n";
     std::cout << "[split-K A/B]   → 该项为**观测项、不设判据**（作者 2026-09-27 决定；"
-                 "曾议的 2% 因唯一数值输入无出处被否，见 TROUBLESHOOTING #45.1）\n";
+                 "曾议的 2% 因唯一数值输入无出处被否，见 TROUBLESHOOTING + #45.1）\n";
     PrintGpuState("(after)");
 }
 

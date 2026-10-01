@@ -28,8 +28,8 @@
 | 文档 | 覆盖了什么 | 是否覆盖本次任务 |
 |---|---|---|
 | `docs/TROUBLESHOOTING.md` #19 | 缺陷的现象 / 根因 / 三重证据 / 6 条实测红 | ❌ 只记事实，**不定义修复方案与验收** |
-| `docs/phase2_test_plan.md` §5（G2-1） | FP16 端到端的缺口与结论 | ❌ 不涉及诊断输出开关 |
-| `docs/phase2_development_plan.md` | Phase 2 的建模与 runner 任务 | ❌ 本缺陷发生在该阶段**收口之后** |
+| `docs/dev/REQ-004-gpt2-native/phase2_test_plan.md` §5（G2-1） | FP16 端到端的缺口与结论 | ❌ 不涉及诊断输出开关 |
+| `docs/dev/REQ-004-gpt2-native/phase2_development_plan.md` | Phase 2 的建模与 runner 任务 | ❌ 本缺陷发生在该阶段**收口之后** |
 | `docs/future_iterations.md` §1.4 | FP16 NaN 的后续解决路径 | ❌ 不涉及开关 |
 
 → 因此**先产出本文件并等确认**，不直接开工。
@@ -45,7 +45,7 @@
 
 ### 0.3 偏差怎么处理
 
-**先改文档、再改代码**：本文件（新增）→ `docs/phase2_test_plan.md` 的 L1 行修正 → 再动代码。
+**先改文档、再改代码**：本文件（新增）→ `docs/dev/REQ-004-gpt2-native/phase2_test_plan.md` 的 L1 行修正 → 再动代码。
 同时把新约定写进 `PROGRESS.md` §2.15 的"勿回改"表（见 §2 的 P2S-5）。
 
 ### 0.4 反向查：文档里与代码现状矛盾之处（本次当场修）
@@ -53,7 +53,7 @@
 | 矛盾 | 证据 | 处理 |
 |---|---|---|
 | `tests/test_gpt2_network_build.cpp:73-74` 注释写"建网络不需要 CUDA 设备，可以在沙箱 / CI 里跑" | 本轮实测：沙箱内 `createInferBuilder` 报 `Error Code 6 ... CUDA initialization failure with error: 35` → 返回 null → `GTEST_SKIP` | **以实测为准改注释**；这条错误假设正是缺陷藏身处（它把"本该红"的断言伪装成"环境不具备"） |
-| `docs/phase2_test_plan.md` §3 的 L1 行写"真机（`createInferBuilder` 需要 CUDA，实测确认）" | 与上一条直接矛盾 | 保留这条（它是对的），并在测试注释里指向它 |
+| `docs/dev/REQ-004-gpt2-native/phase2_test_plan.md` §3 的 L1 行写"真机（`createInferBuilder` 需要 CUDA，实测确认）" | 与上一条直接矛盾 | 保留这条（它是对的），并在测试注释里指向它 |
 | `PROGRESS.md` 曾写"真机只有 1 条预期失败" | 已实测 6 条红 | 已在 §5.11 / §6.5 更正；本计划执行完再按结果复述一次 |
 
 ---
@@ -64,7 +64,7 @@
 
 | 判据 | 出处 |
 |---|---|
-| 默认构建下 `network->getNbOutputs() == 2 * n_layer + 1`（= 5） | 测试既有断言（`test_gpt2_network_build.cpp:147` / `:274`），来源 `docs/phase2_test_plan.md` `phase2_development_plan.md` §4.6 的 I/O 契约 |
+| 默认构建下 `network->getNbOutputs() == 2 * n_layer + 1`（= 5） | 测试既有断言（`test_gpt2_network_build.cpp:147` / `:274`），来源 `docs/dev/REQ-004-gpt2-native/phase2_test_plan.md` `docs/dev/REQ-004-gpt2-native/phase2_development_plan.md` §4.6 的 I/O 契约 |
 | 打开开关后多出 4 个输出：`mlp_fc_0` / `mlp_gelu_0` / `attn_res_0` / `mlp_res_0` | `docs/TROUBLESHOOTING.md` #18.1 轮次 3/4（当时的人工读数） |
 | `kSingle` 切面永远是 1 个输出 | `test_gpt2_network_build.cpp:184`（既有对照） |
 | 沙箱内 GPU 用例**允许**跳过 | `PROGRESS.md` §5.7 / §5.10：无 GPU 的 CI 必须能绿，否则真实回归信号被固定噪声淹没 |
@@ -169,7 +169,7 @@ Gpt2GenerateTest.RejectsUnsupportedTemperature                 (对照)
    同类改动：`getNbOutputs()` 计数断言 + `MINI_TRT_REQUIRE_GPU` 闸门）。
 2. `docs/PROGRESS.md`：§2.15 增两行"勿回改"约定——**诊断输出必须显式 opt-in、默认关**、
    **引擎缓存路径不得在两种契约间共用**；同步 `PROGRESS.md` §5.11 / `PROGRESS.md` §6.5 / 表头第 4 条的失败计数。
-3. `docs/phase2_test_plan.md`：G2-1 行补"诊断仪器已改为 opt-in"；修正 L1 行与测试注释的矛盾。
+3. `docs/dev/REQ-004-gpt2-native/phase2_test_plan.md`：G2-1 行补"诊断仪器已改为 opt-in"；修正 L1 行与测试注释的矛盾。
 4. 本文件 §8 回填执行结果。
 
 ### P2S-6 修复 #20：`PagedKVCacheTest` 的追加用例与 `AppendDecodeStep` 契约对齐
@@ -213,7 +213,7 @@ Gpt2GenerateTest.RejectsUnsupportedTemperature                 (对照)
 | B4 | 沙箱仍 145 条 0 失败（GPU 用法例照常跳过） | `PROGRESS.md` §5.7 |
 
 **破坏性动作**：覆盖修改 `mini_trt_llm/tests/test_paged_kv_cache.cpp`（1 处调用 + 1 条新用例）；
-文档 3 处（`TROUBLESHOOTING.md` #20 状态、`phase2_test_plan.md` 的 `PagedKVCacheTest.*` 状态行、
+文档 3 处（`TROUBLESHOOTING.md` #20 状态、`docs/dev/REQ-004-gpt2-native/phase2_test_plan.md` 的 `PagedKVCacheTest.*` 状态行、
 `PROGRESS.md` 的失败计数）；本文件 §8 追加一行。**不删文件、不动产品代码、不碰 git。**
 
 ---
@@ -224,7 +224,7 @@ Gpt2GenerateTest.RejectsUnsupportedTemperature                 (对照)
 
 | 文件 | 内容 |
 |---|---|
-| `docs/phase2_supplement_plan.md` | 本文件 |
+| `docs/dev/REQ-005-diagnostics-fix/phase2_supplement_plan.md` | 本文件 |
 
 **修改（覆盖）**
 
@@ -239,7 +239,7 @@ Gpt2GenerateTest.RejectsUnsupportedTemperature                 (对照)
 | 7 | `mini_trt_llm/tests/test_gpt2_generate.cpp` | 诊断用例 opt-in + 独立引擎路径 |
 | 8 | 约 10 个测试文件的 `GTEST_SKIP` → `SkipIfNoCuda()`（机械替换，保留各自附加条件） | `test_cuda_check` / `test_e2e_*` / `test_fp16_paths` / `test_gpt2_*` |
 | 9 | `mini_trt_llm/tests/CMakeLists.txt` | **仅当采纳 P2S-3c** 时改（label / 注册 `GpuEnvProbe`） |
-| 10 | `docs/TROUBLESHOOTING.md` / `docs/PROGRESS.md` / `docs/phase2_test_plan.md` | 见 P2S-5 |
+| 10 | `docs/TROUBLESHOOTING.md` / `docs/PROGRESS.md` / `docs/dev/REQ-004-gpt2-native/phase2_test_plan.md` | 见 P2S-5 |
 
 **删除**：无文件删除。**不执行** `git commit` / `git push`（按 AGENTS.md §0.2 归你）。
 
@@ -260,9 +260,9 @@ Gpt2GenerateTest.RejectsUnsupportedTemperature                 (对照)
 
 ## 5. 破坏性动作清单（一次性确认，`PROGRESS.md` + `DEC-EVIDENCE-DISCIPLINE`（§2.14 B））
 
-1. **新建** `docs/phase2_supplement_plan.md`（本文件，已落盘等你确认）。
+1. **新建** `docs/dev/REQ-005-diagnostics-fix/phase2_supplement_plan.md`（本文件，已落盘等你确认）。
 2. **覆盖修改** §3 表里的 1–8 共 8 个源文件 / 测试文件（其中 #8 是批量机械替换）。
-3. **覆盖修改** 3 份文档（`TROUBLESHOOTING.md`、`PROGRESS.md`、`phase2_test_plan.md`）。
+3. **覆盖修改** 3 份文档（`TROUBLESHOOTING.md`、`PROGRESS.md`、`docs/dev/REQ-004-gpt2-native/phase2_test_plan.md`）。
 4. **可选**：`mini_trt_llm/tests/CMakeLists.txt`（仅当采纳 P2S-3c）。
 5. **不删除任何文件**；**不删 `/tmp` 引擎缓存**（已确认真机无遗留）；**不碰 git 历史**。
 6. 真机回归会**构建新引擎**（写入 `/tmp`，分钟级），并在 `build/` 下重编译。
@@ -303,7 +303,7 @@ Gpt2GenerateTest.RejectsUnsupportedTemperature                 (对照)
 | P2S-3 | ✅ 完成 | `test_gpu_guard.hpp` 重写（`ProbeCudaDevice` / `MINI_TRT_SKIP_IF_NO_CUDA` 宏 / `MINI_TRT_REQUIRE_GPU`）；`Gpt2NetworkBuildTest::SetUp` 三分支；新增 `GpuEnvProbe.ReportsCudaAvailability`；19 个测试文件、59 处跳过点统一（比计划的"约 10 个文件"多——凡是 `HasCudaDevice()` 的跳过点都在内，否则闸门会半生效） |
 | P2S-3c | ⛔ 按用户决定不做 | 未引入 CTest label |
 | P2S-4 | ✅ 完成 | 真机全量 `MINI_TRT_REQUIRE_GPU=1 ctest`：145 条、**0 跳过**、538 s、2 条红（见下表） |
-| P2S-5 | ✅ 完成 | #19 转"已修复 + 回归防护"、新增 #20、`PROGRESS.md`（§2.13/§2.15/§3.0c/§3.5/§5.11/§6.5/表头）、`phase2_test_plan.md`（L1 更正 + G2-1） |
+| P2S-5 | ✅ 完成 | #19 转"已修复 + 回归防护"、新增 #20、`PROGRESS.md`（§2.13/§2.15/§3.0c/§3.5/§5.11/§6.5/表头）、`docs/dev/REQ-004-gpt2-native/phase2_test_plan.md`（L1 更正 + G2-1） |
 | P2S-6 | ✅ 完成 | `test_paged_kv_cache.cpp`：追加调用改每层一对 + 两层读回断言 + 新负例（层数不匹配必须被拒且不留副作用）。真机 `PagedKVCacheTest.*` 4/4 通过；真机全量 **146 条 / 1 红**（仅 FP16 按设计红） |
 
 ### 8.1 验收判据逐条结果

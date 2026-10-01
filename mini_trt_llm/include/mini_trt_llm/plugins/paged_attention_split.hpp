@@ -65,7 +65,7 @@ __host__ __device__ inline int32_t PagedAttentionResolveSplits(int32_t total_len
 //
 // **空片是合法的**：`effective_splits == 0`、`split_idx` 越界、或 `total_len < effective_splits`
 // 时返回 `begin == end`。调用方必须显式处理它（写哨兵 `m = -inf, l = 0, acc = 0`），
-// 否则归并会读到未初始化的显存（`PROGRESS.md` §2.12 / `TROUBLESHOOTING` #4）。
+// 否则归并会读到未初始化的显存（`PROGRESS.md` §2.12 / `TROUBLESHOOTING` + TS-004）。
 __host__ __device__ inline void PagedAttentionSplitRange(int32_t total_len, int32_t split_idx,
                                                         int32_t effective_splits,
                                                         int32_t* begin, int32_t* end) {

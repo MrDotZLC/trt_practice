@@ -1,8 +1,13 @@
 # Requirement
 
 > **性质**：历史需求回填（2026-10-01）。内容从下列来源抽取，**未新增任何当时的决定**。
-> **来源**：`docs/phase4_int8_plan.md` §2 方案 / §4 判据与出处 / §5 风险。
-> **判据的另一半**：同文件 §4（判据表本身即出处清单）。
+> **来源**：`docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §2 方案 / §4 判据与出处 / §5 风险。
+> **判据的另一半**：见本目录 `test_plan.md`（原出处：同文件 §4（判据表本身即出处清单））
+> **设计**：见本目录 `design.md`。
+> **谁引用这里**：`tools/validate/README.md`（2 处）、`tools/validate/int8_eval.py`（2 处）、
+> `tests/test_resnet18_int8.cpp`（2 处）、`src/core/builder.cpp`（PH4-INT8-TOOLCHAIN）、
+> `include/mini_trt_llm/core/builder.hpp`（PH4-INT8-TOOLCHAIN 的 S3）。
+> **⚠️ 耦合**：其中一处 provenance 字符串在**三个文件里同时出现**并被交叉校验比对，**改动必须三处同改**。
 > **数字与结论**：不在本文重复。
 > **状态**：已交付。
 
@@ -33,7 +38,7 @@
 
 ## Acceptance Criteria
 
-来源：`docs/phase4_int8_plan.md` §4 判据表（逐条状态如下）。
+来源：`docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §4 判据表（逐条状态如下）。
 
 1. ~~分布外输入（合成 ramp）逐样本 argmax 一致~~ **已作废**——该口径对低精度不成立：
    输入与标定分布不同必然饱和。这是"判据的有效性依赖被测量对象的机制"的实例。

@@ -4,7 +4,7 @@
 为什么需要它（Phase 5 阶段 0 的 P5-0-2）：ctest 把 Skipped 记作 **Passed**，所以"一批用例
 因为缺资产 / 别的原因不再跑了"这件事对 CI 完全不可见——2026-09-27 实测：把两个历史示例工程
 改名后，全量仍报 265 条 / 100% passed / 0 failed，只有跳过集合从 112 变 113
-（见 docs/phase5_development_plan.md §3）。资产闸门（`MINI_TRT_REQUIRE_ASSETS`）挡住了
+（见 docs/dev/REQ-009-retire-legacy/phase5_development_plan.md §3）。资产闸门（`MINI_TRT_REQUIRE_ASSETS`）挡住了
 "缺资产"，本脚本挡住**其余**原因：只要出现没被登记过的跳过就判红。
 
 输入是 ctest 的 `LastTest.log`（`ctest --test-dir build` 跑完就有，路径

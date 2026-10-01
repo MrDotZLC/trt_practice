@@ -46,7 +46,7 @@ class EngineBuilder {
         // 历史工程 0_resnet18_onnx/src/builder.cpp 用的就是 min/opt/max = 1/8/16
         // （该工程已于 Phase 5 下线；原始实现见删除前的提交：`git show ba3ea7a:0_resnet18_onnx/src/builder.cpp`），
         // 沿用 1 会让 batch ≥ 2 的推理走非最优 kernel、性能结论失真。
-        // 见 docs/phase4_development_plan.md + PH4-CV-PROFILE。
+        // 见 docs/dev/REQ-007-resnet18/phase4_development_plan.md + PH4-CV-PROFILE。
         int min_batch = 1;
         int opt_batch = 8;
         int max_batch = 16;
@@ -79,7 +79,7 @@ class EngineBuilder {
         // **为什么需要它**：`IEngineInspector::getLayerInformation` 在默认的
         // `kLAYER_NAMES_ONLY` 下**只返回层名**，读不出每层的实际精度——那就无法证明
         // "这个引擎真的在跑 INT8"（而不是静默回落 FP16/FP32）。实测与结论见
-        // docs/phase4_int8_plan.md + PH4-INT8-TOOLCHAIN 的 S3。
+        // docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md + PH4-INT8-TOOLCHAIN 的 S3。
         // 默认关的理由：它会增加引擎体积与构建时间，只有"需要自证精度"的场合才开。
         bool detailed_profiling = false;
     };

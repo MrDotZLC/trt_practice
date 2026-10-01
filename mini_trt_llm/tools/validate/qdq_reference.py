@@ -183,13 +183,13 @@ def dump(output_dir: str, records: List[Tuple[str, np.ndarray, str, str]],
 
 
 def self_test() -> None:
-    """护栏自证：标尺自己必须先被校准（`TROUBLESHOOTING.md` #29.1 / #30.4 的教训）。"""
+    """护栏自证：标尺自己必须先被校准（`TROUBLESHOOTING.md` + #29.1 / #30.4 的教训）。"""
     failures: List[str] = []
 
     def build_tiny() -> onnx.ModelProto:
         """输入 (1,2,3,3) → 输入 Q/DQ（per-tensor）→ Conv(4 通道, 权重 per-channel Q/DQ)
         → 输出 Q/DQ。权重故意让第 2 个输出通道量级大 10× ——这样"per-channel 与 per-tensor
-        可分辨"是数学必然（沿用 #29.1 的手法）。"""
+        可分辨"是数学必然（沿用 `docs/TROUBLESHOOTING.md` + #29.1 的手法）。"""
         rng = np.random.default_rng(0)
         w = rng.normal(size=(4, 2, 3, 3)).astype(np.float32)
         w[1] *= 100.0
@@ -276,7 +276,7 @@ def self_test() -> None:
             failures.append(f"参考实现与手算的 ONNX 语义不一致：max_abs = {diff}")
 
         # ② 可分辨性：per-channel 与 per-tensor 在同一张图上必须给出**差得远**的输出
-        #    （否则这把尺子根本量不出权重粒度的差别，整条结论就无从谈起 —— #29.1 的手法）。
+        #    （否则这把尺子根本量不出权重粒度的差别，整条结论就无从谈起 —— `docs/TROUBLESHOOTING.md` + #29.1 的手法）。
         w_pt_scale = float(np.abs(w).max()) / 127.0
         w_pt = np.clip(np.round(w / w_pt_scale), -128, 127).astype(np.float32) * w_pt_scale
         out_pc = quant(conv_same(padded, w_dq), out_scale).astype(np.float32) * out_scale

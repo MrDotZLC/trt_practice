@@ -4,15 +4,19 @@
 > 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
 > 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
 
+> **名称更正（2026-10-01）**：本文多处写的 `ref_output.bin` / `ref_meta.json` 是 **P4-1 产出之前**的临时命名；
+> **实际产物**是 `models/resnet18/ref_{ramp,pixels}_b8.bin` 与同名 `.meta.json`（另含契约输入张量）。
+> 权威再生命令见 `PROGRESS.md` §7；本文下方的基线生成命令处另有同批注。原文保留不改，只加此注。
+
 > **状态**：P4-0 产出（2026-09-25）；用例随 P4-1～P4-8 落地后在本文件 §7 回填结果。
 >
 > **与开发计划的分工（唯一来源原则，`PROGRESS.md` §2.13）**：
-> - **任务、顺序、依赖、验收、决策（D1～D4）** → `docs/phase4_development_plan.md`（本文件不复述）；
+> - **任务、顺序、依赖、验收、决策（D1～D4）** → `docs/dev/REQ-007-resnet18/phase4_development_plan.md`（本文件不复述）；
 > - **历史工程的事实与结论** → 同上 §1；
 > - **分层、用例清单、判据出处、执行口径、覆盖缺口** → 本文件；
 > - 排查过程 → `docs/TROUBLESHOOTING.md`；整体进度 → `docs/PROGRESS.md`。
 >
-> 已确认的决策（细节见开发计划 §0.5）：**D1** 先 ONNX 再原生 ｜ **D2** INT8 纳入、走 Q/DQ ｜
+> 已确认的决策（D1/D3/D4 细节见开发计划 §0.5；**D2 已移至 `docs/dev/REQ-008-int8-qdq/phase4-excerpts.md`**）：**D1** 先 ONNX 再原生 ｜ **D2** INT8 纳入、走 Q/DQ ｜
 > **D3** 基线用 torchvision FP32 ｜ **D4** 前处理由 `CVRunner` 负责。
 
 ---
@@ -81,7 +85,7 @@
 | R2.5c | `ResNet18Fp16PathTest.CvRunnerOnFp16EngineMatchesFp32Baseline` | CVRunner 驱动 FP16 引擎（pixels 输入） | 同 R2.5a 口径；验"调用方接口在 FP16 下不变"（**P4-6**） |
 | R2.5d | `ResNet18Fp16PathTest.NativeEngineMatchesFp32Baseline` | **原生 FP16 vs 外部基线**（torchvision FP32，ramp） | 同 R2.5a 口径。**P4-6 补验**：此前原生 FP16 与外部真值之间只有传递推断（0.0076+0.031），而"两条路共享同一个 bug"恰好能躲过互拍、躲不过外部基线 |
 | R2.5e | R2.5b 内的 **I/O 契约比对** | 两条 FP16 引擎的 `input`/`output` 名字与**声明精度**必须一致 | 逐字段相等；实测两条都是 `input=FP32, output=FP32`（弱类型网络下 FP16 引擎的 I/O 常被 TRT 定成 FP32，见 #18）——调用方靠声明精度决定喂什么，不一致则"同一份调用代码"不成立（**P4-6 补验**） |
-| R2.6 | `ResNet18Int8EngineTest.IsActuallyInt8` + `ResNet18Int8AccuracyTest.{RampInputIsOutOfDistribution,Top1AgreementOnRealImages}`（D2 选②） | Q/DQ INT8 引擎：① 层信息自证在跑 INT8；② ramp 只记录不判（分布外）；③ 真实图按**分层**判 | ① ≥20 层含 `Format/Datatype: Int8` 且 ≥1 个 `i8i8` tactic（对照 FP32 引擎为 0）；③ **主判据：FP32 余量子集（margin≥5）一致率 ≥90%**（实测 12/12），整体一致率 ≥30% 仅作下界（实测 38.3%） |
+| R2.6 | INT8 引擎自证与精度用例 | INT8 引擎 / 分层判据 | 已移至 `docs/dev/REQ-008-int8-qdq/phase4-excerpts.md`（逐字保留） |
 
 ### L3（真机）
 
@@ -103,7 +107,7 @@
 | **FP32 阈值** | **已定量**：`max_abs < 1e-4` ≈ 最大无关差异的 5 倍 | 无关差异实测：BN 折叠 **1.9e-5**、torch FP32 CPU-vs-GPU **7.6e-6**；观测值 TRT FP32 vs torch 基线 **9.5e-6**（ramp）/ **1.3e-5**（pixels）。三处同量级。阈值仍能拦住"精度选错"：FP16 引擎实测 **3.3e-2**（大 330 倍）。踩坑与完整推导见 `TROUBLESHOOTING.md` #21 |
 | 逐个样本 argmax 一致 | 历史工程判据（`0_resnet18_onnx/src/main.cpp:156-158`）+ 分类任务语义 | 与数值阈值**并列**，不互相替代 |
 | FP16 | **已按实测另定两档**（不再沿用 D4）：① **FP16 引擎 vs FP32 基线** `max_abs < 0.1`（≈ 实测上界 0.027 的 4 倍）；② **两条 FP16 路径互拍** `max_abs < 0.05`（≈ 实测 0.0076 的 6.6 倍）。两档都**并列要求 argmax 逐样本一致** | **阈值不跨精度复用**（`PROGRESS.md` §7）。FP16 的噪声底实测 0.018~0.027（纯舍入），因此 D4 的 `rel < 1e-3` 对"网络级 FP16 vs FP32"根本不适用。完整测量表、三角证据与"为什么这次放宽合规"见 `TROUBLESHOOTING.md` #26 |
-| INT8 | 需先测再定（argmax 一致 + top-1 一致率） | 校准集用现成的 500 张真实图；**不引用历史数字**（历史没留） |
+| INT8 | 需先测再定 | 已移至 `docs/dev/REQ-008-int8-qdq/phase4-excerpts.md` |
 | 前处理一致性 | R0.3 | 与基线**同一套参数**；这是"误差归因"的前提（否则数值差会被误判成引擎错） |
 | batch 超范围 | 必须显式失败 | 与 Phase 1.5 的 E3.3 同一纪律 |
 
@@ -167,6 +171,11 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
 python3 scripts/ref_resnet18.py --input ramp --output models/resnet18/ref_output.bin
 ```
 
+> **更正（2026-10-01）**：上面的基线生成命令写于 P4-1 产出**之前**，**产物名与实际不符**——
+> 实际基线是**两套输入各一份**：`models/resnet18/ref_{ramp,pixels}_b8.bin`（另含契约输入张量与元数据）。
+> 照原命令跑会生成测试**读不到**的 `ref_output.bin`（用例找的是 `ref_ramp_b8.bin`）；
+> **权威再生命令见 `PROGRESS.md` §7**。本段原文保留不改，只加此批注。
+
 **注意**：
 
 1. 引擎缓存**只按路径名区分、不随代码或开关失效**——改了建图/开关后必须清理（`TROUBLESHOOTING.md` #19）；
@@ -223,8 +232,8 @@ python3 scripts/ref_resnet18.py --input ramp --output models/resnet18/ref_output
 | R2.5c | ✅ | 真机：CVRunner + ONNX-FP16 vs FP32 基线（pixels）`max_abs = 0.06207`（rel 2.49e-3）、argmax 0/8 不一致（P4-6） |
 | R2.5d | ✅ | 真机：原生-FP16 vs torchvision-FP32（ramp）`max_abs = 0.0329475`（rel 3.64e-3）、argmax 0/8 不一致（P4-6 补验；与三角推断一致） |
 | R2.5e | ✅ | 真机：两条 FP16 引擎的 I/O 名字与声明精度逐字段相等，均为 `input=FP32, output=FP32`（P4-6 补验） |
-| R2.6 | ✅ | 真机：QDQ 引擎 43 层 / **38 层含 Int8** / **4 层 `i8i8` tactic**（对照 FP32 引擎 0 层 Int8）；真实图 256 张整体一致 38.3%、**余量子集 12/12 = 100%**、`max_abs = 21.6`；ramp 只记录（0/8 不一致）。产物形态 `prequant_dq`（13.3 MB）。**开放项**：per-channel 整网退化（`TROUBLESHOOTING.md` #29/#30/#31，P4-INT8-a）。**"整体 38.3%"的成因已用交叉统计固化进用例输出**：按 FP32 余量分层 → `<1: 23.6%`、`1~2: 39.7%`、`2~5: 73.7%`、`5~10: 100%`、`>10: 100%`（58% 的样本余量<1，即类别本身不可判） |
-| R2.6 的后续（判据升级） | 未开始 | **验收集到位后要补报的两项**：① 带真值标签的 top-1 **正确率**（不只是与 FP32 的一致率）；② 绝对误差在**余量子集**上的 p50 / p95 / p99（不报全样本 max）。规格与脚本：`mini_trt_llm/tools/validate/README.md` + `int8_eval.py`（`--self-test` 已进 ctest）；**唯一来源**：`docs/future_iterations.md` §1.6（P4-INT8-b，前置 = 联网取带标签验收集，须先获批） |
+| R2.6 | ✅ | 已移至 `docs/dev/REQ-008-int8-qdq/phase4-excerpts.md`（执行回填） |
+| R2.6 的后续（判据升级） | 未开始 | 已移至 `docs/dev/REQ-008-int8-qdq/phase4-excerpts.md` |
 | R3.1 | ✅ | 真机：`CVRunner::Infer` batch=1 与 8 均 `max_abs = 1.33514e-05`（rel 8.9e-7 / 5.4e-7），与 P4-1 基线一致（P4-3） |
 | R3.2 | ✅ | 真机：batch=17、batch=0、元素数不匹配均返回空；同一 runner 在合法输入上返回 `[1,1000]`（有对照）（P4-3） |
 | R3.3 | ✅ | 真机：batch=8 时 `mean=8.357ms p50=8.231ms p99=8.592ms throughput=957.2 img/s`；只验统计自洽；非法参数返回零值（P4-3，两次运行数值差异属正常抖动，不作为判据） |

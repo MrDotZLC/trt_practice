@@ -84,7 +84,7 @@ cudaError_t LaunchTopPSamplerLegacy(const TopPSamplerArgs& args, cudaStream_t st
 // 用**两级**定位（块和 → 元素，即改动前的形态）。**只用于性能对照，不接生产路径。**
 //
 // 为什么需要一个专门的入口：这一改动的效果此前一直判不了——分段口径没有判别力
-// （`TROUBLESHOOTING.md` #37），配对口径又跨 session/跨协议（#38）。把两版编进同一个二进制、
+// （`TROUBLESHOOTING.md` + TS-037），配对口径又跨 session/跨协议（TS-038）。把两版编进同一个二进制、
 // 在**同一轮里交替测量**，噪声对二者同向、差值可加，结论才干净。
 cudaError_t LaunchTopPSamplerTwoLevel(const TopPSamplerArgs& args, cudaStream_t stream,
                                       void* workspace, size_t workspace_bytes);

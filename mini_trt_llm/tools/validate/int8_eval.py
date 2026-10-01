@@ -24,10 +24,10 @@ import tempfile
 from array import array
 
 # 阈值出处：tests/test_resnet18_int8.cpp（kConfidentMargin / kBucketEdges）与
-# docs/phase4_int8_plan.md + PH4-INT8-CRITERIA。**改动它们等于改判据**，所以报告里必须回显出处。
+# docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md + PH4-INT8-CRITERIA。**改动它们等于改判据**，所以报告里必须回显出处。
 DEFAULT_CONFIDENT_MARGIN = 5.0
 DEFAULT_BUCKET_EDGES = (1.0, 2.0, 5.0, 10.0)
-THRESHOLD_PROVENANCE = "tests/test_resnet18_int8.cpp + docs/phase4_int8_plan.md + PH4-INT8-CRITERIA"
+THRESHOLD_PROVENANCE = "tests/test_resnet18_int8.cpp + docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md + PH4-INT8-CRITERIA"
 
 # 报告里必须写清的"本判据不覆盖什么"（§1.6 验收判据第 3 条）。
 NOT_COVERED = [

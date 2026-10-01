@@ -67,7 +67,7 @@ MINI_TRT_REQUIRE_GPU=1 MINI_TRT_REQUIRE_ASSETS=1 ctest --test-dir build --output
    而**退出码仍是 0**——判据是输出里的 `Test #N` 行数，不是退出码（见 `TS-043`）。
 2. 真机唯一允许的红是 GPT-2 的 FP16 复现器；出现别的红、或出现**未登记的跳过**，都按回归处理。
    跳过集合由 `mini_trt_llm/tools/check_skips.py` 比对，基线是
-   `mini_trt_llm/tests/data/expected_skips.txt`（用法见 `docs/phase5_development_plan.md` §4）。
+   `mini_trt_llm/tests/data/expected_skips.txt`（用法见 `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md` §4）。
 
 **测试基线**（沙箱 / 真机的条数、红、跳过）只在一处维护：`docs/PROGRESS.md` 的「当前基线」。
 
@@ -84,7 +84,8 @@ MINI_TRT_REQUIRE_GPU=1 MINI_TRT_REQUIRE_ASSETS=1 ctest --test-dir build --output
 - 排查记录（现象 / 命令 / 证据 / 根因，只增不改）：`docs/TROUBLESHOOTING.md`
 - 后续迭代（**触发驱动**，不是待办队列）：`docs/future_iterations.md`
 - 面向面试的项目总结与问答：`docs/interview_summary.md`
-- 历史阶段的设计与判据出处：`docs/phaseN_*.md`（已冻结，不代表现状）
+- 历史阶段的设计与判据出处：`docs/dev/REQ-NNN-*/phaseN_*.md`（已冻结，不代表现状；
+  每份原文收在它所属的需求目录里，清单见 `docs/dev/INDEX.md` §5）
 
 ## 开发环境
 

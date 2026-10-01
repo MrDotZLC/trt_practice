@@ -66,7 +66,7 @@ constexpr float kFp16MaxAbs = 0.1f;
 //
 // 阈值取实测值的约 6.6 倍，理由与 kFp16MaxAbs 同源：给 TRT 的 tactic 选择留余量；
 // **语义正确性仍由 argmax 逐样本一致来保证**，而两条 FP16 路径也各自与 FP32 基线对过
-// （R2.5a 与本文件对 native 那侧）。见 TROUBLESHOOTING #26。
+// （R2.5a 与本文件对 native 那侧）。见 TROUBLESHOOTING + TS-026。
 constexpr float kFp16CrossPathMaxAbs = 0.05f;
 
 std::string FindModelDir() {
@@ -89,7 +89,7 @@ std::string FindOnnxPath() {
 EngineBuilder::Config Fp16Config() {
     EngineBuilder::Config config;
     // 显式写出目标精度：`Config{}` 的默认值恰好也是 FP16，但"恰好"不是证据——
-    // 第一版 ResNet18 对拍把默认值当 FP32 用，白查了一轮（TROUBLESHOOTING #21）。
+    // 第一版 ResNet18 对拍把默认值当 FP32 用，白查了一轮（TROUBLESHOOTING + TS-021）。
     config.precision = Precision::FP16;
     return config;
 }
@@ -117,7 +117,7 @@ std::vector<float> RunEngine(Engine* engine, const std::vector<float>& input) {
         return {};
     }
     // 按**引擎声明的** dtype 绑定输入：FP16 引擎的 I/O 未必是 FP16（弱类型网络下由 TRT 决定，
-    // 实测通常是 FP32）——猜错会得到"数值全错"或直接失败。见 TROUBLESHOOTING #18。
+    // 实测通常是 FP32）——猜错会得到"数值全错"或直接失败。见 TROUBLESHOOTING + TS-018。
     const nvinfer1::DataType input_dtype = cuda->getTensorDataType("input");
     if (input_dtype == nvinfer1::DataType::kHALF) {
         std::vector<__half> half_input(input.size());
@@ -216,7 +216,7 @@ TEST(ResNet18Fp16PathTest, NativeMatchesOnnxInFp16) {
     // 先把**I/O 契约**比一遍：名字与声明精度必须一致。
     // 为什么值得断言：FP16 引擎的 I/O 未必声明成 FP16（弱类型网络下由 TRT 决定，实测常为 FP32），
     // 调用方要靠声明精度决定喂什么——两条路若不一致，"同一份调用代码"就不成立了。
-    // 见 TROUBLESHOOTING #18。
+    // 见 TROUBLESHOOTING + TS-018。
     {
         nvinfer1::ICudaEngine* a = onnx_engine.GetCudaEngine();
         nvinfer1::ICudaEngine* b = native_engine.GetCudaEngine();

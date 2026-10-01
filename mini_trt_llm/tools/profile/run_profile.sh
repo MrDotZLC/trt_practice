@@ -85,7 +85,7 @@ gpu_state() {
 print_digest() {
     echo "[profile] ---- 摘要（完整日志：${app_log}）----"
     # 两类都要：① gtest 的结论行与错误行；② **我们自己的报告行**（形如 `[Gpt2DecodePerf] ...`）。
-    # 只留 gtest 就看不到测量值——那正是 `profile_*` 存在的意义（第一次跑就漏了，见 #39）。
+    # 只留 gtest 就看不到测量值——那正是 `profile_*` 存在的意义（第一次跑就漏了，见 `docs/TROUBLESHOOTING.md` + TS-039）。
     # 第 ② 类的模式要求 tag 里**至少有一个小写字母**：这样 `[Gpt2DecodePerf]` / `[SamplerPerf]`
     # 会进来，而 `[INFO]` / `[WARN]` 这类全大写业务日志不会把摘要刷掉（实测吃过一次）。
     grep -aE '^\[  (PASSED|FAILED|SKIPPED)  \]|^\[==========\].*(ran|FAILED|list)|^\[[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*\]|does not contain CUDA kernel data|^E[0-9]+ |Error' \
@@ -150,7 +150,7 @@ if [[ "${tool}" == "nsys" ]]; then
         printf '%s\n' \
             "[profile] 提示：报告里没有 GPU kernel 时间线。WSL2 上这是**已知限制**" \
             "（CUDA API 能采到，GPU kernel 采不到）。**注意**：把这份 .nsys-rep 拷到 Windows" \
-            " 也看不到 kernel 时间线——数据压根没被采集，不是查看器的问题（#39 已更正）。" \
+            " 也看不到 kernel 时间线——数据压根没被采集，不是查看器的问题（TS-039 已更正）。" \
             "可行路径见 docs/TROUBLESHOOTING.md + TS-041：① 在 Windows 宿主侧做采集；" \
             "② 不用 profiler，用同一 session 的 SamplerPerf + 本用例取比值。" >&2
     fi
@@ -198,7 +198,7 @@ else
     if grep -aqE "Unknown Error on device|ERR_NVGPUCTRPERM|Permission|not supported" \
             "${app_log}"; then
         echo "[profile] ncu 在 WSL2 上不可用（拿不到 GPU performance counter）——已知限制，" >&2
-        echo "[profile]   本机两条 CLI profiling 路径都到不了 kernel 时间线，见 #39 / #41。" >&2
+        echo "[profile]   本机两条 CLI profiling 路径都到不了 kernel 时间线，见 `docs/TROUBLESHOOTING.md` + TS-039 / TS-041。" >&2
     else
         echo "[profile] 警告：没有生成 .ncu-rep；见 ${app_log}" >&2
     fi

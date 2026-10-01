@@ -36,8 +36,8 @@
 
 - `future_iterations_development_plan.md` §6.6 第 6 条写"不擅自删旧模块（Phase 5 **已永久取消**）"
   → 与本次立项矛盾，**同批修正**（2026-09-27）：改为"未经点名批准不得删除/移动；Phase 5 已重新立项，
-  方案见 `docs/phase5_development_plan.md`"。
-- 冻结文档（`mini_trt_llm_design.md` §3、`phase0_development_plan.md`、`phase4_development_plan.md`）
+  方案见 `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md`"。
+- 冻结文档（`mini_trt_llm_design.md` §3、`docs/dev/REQ-001-bootstrap/phase0_development_plan.md`、`docs/dev/REQ-007-resnet18/phase4_development_plan.md`）
   里的"Phase 5 已永久取消 / Agent 不要删除"**已按"冲突修正"批注**：原文保留（可加删除线）、
   只追加带日期的更新注，指向本文；规则见 `docs/README.md` §7 的例外条。结论由本文取代。
 - 我此前口头说过"`future_iterations.md` §11 有'永久取消'表述"——**那是错的**：该文件里没有这句；

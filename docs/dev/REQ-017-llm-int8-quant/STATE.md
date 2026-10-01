@@ -50,5 +50,5 @@
 - **依赖关系**：本 feature 的 ONNX 路线依赖 `REQ-019-onnx-subgraph`（ONNX 路径目前没有
   decode 图与 KV cache）；原生路线不依赖任何其他 feature。
 - ~~**文档矛盾待修**~~ **已修（2026-10-01，作者确认）**：`docs/future_iterations.md` §1.2 与
-  `docs/phase4_development_plan.md` D2 / 依据表里的"有 INT8 Tensor Core"已更正为
+  `docs/dev/REQ-007-resnet18/phase4_development_plan.md` D2 / 依据表里的"有 INT8 Tensor Core"已更正为
   "TU116 无 Tensor Core、收益来自显存带宽"（冻结文档按 `docs/README.md` §7 用日期批注保留原文）。

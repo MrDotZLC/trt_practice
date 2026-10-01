@@ -103,7 +103,7 @@ class LLMRunner {
     int32_t token_capacity_ = 0;
 
     // 引擎**实际声明**的边界精度（弱类型网络下 TRT 决定，不由 weight_dtype 决定；
-    // 见 TROUBLESHOOTING #18）。缓冲分配、logits 行步长与采样器都按它们走，
+    // 见 TROUBLESHOOTING + TS-018）。缓冲分配、logits 行步长与采样器都按它们走，
     // 而不是按 config_.is_half——那正是导致 FP16 端到端非法访存的那个假定。
     bool prefill_kv_half_ = false;
     bool decode_kv_half_ = false;

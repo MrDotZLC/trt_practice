@@ -6,7 +6,7 @@
 > 权威顺序：`AGENTS.md` > 本文（写作规约） > 各文档正文。
 > 建立基线（2026-09-27，实测量得）：**本文之外的 21 份**共 13,005 行 / 1012 KB
 > （5 份活文档 7766 行 + 16 份冻结文档 5239 行；本文自身不计入这个数）。
-> **该基线之后新增的文档不计入**（2026-09-27：`phase5_development_plan.md`、`interview_summary.md`；2026-10-01：`docs/dev/` 整支）。
+> **该基线之后新增的文档不计入**（2026-09-27：`docs/dev/REQ-009-retire-legacy/phase5_development_plan.md`、`interview_summary.md`；2026-10-01：`docs/dev/` 整支）。
 > 其中 `§x.y` 形式引用 1627 处、`#N` 形式引用 554 处、文件名提及 486 处；
 > `docs/` 被仓外（代码 / 脚本 / 根 `README.md`）引用 **79 行 / 37 个文件**（已排除 `third_party/`）。
 
@@ -29,7 +29,7 @@
 
 ## 2. 文档地图
 
-### 2.1 活文档（6 份：描述现状或当前工作，随项目更新）
+### 2.1 活文档（5 份：描述现状或当前工作，随项目更新）
 
 | 文档 | 角色 | 读它的时机 |
 |---|---|---|
@@ -38,16 +38,16 @@
 | `future_iterations.md` | 开放项的唯一事实来源：是什么 / 触发条件 / 前置 / 判据 / 优先级 | 想知道"还能做什么、什么时候才做" |
 | `future_iterations_development_plan.md` | 条目化计划的"怎么做"：任务分解 / 接口 / 破坏性清单（**含已执行条目的安排与回填**） | 拿到批准、准备动手时 |
 | `future_iterations_test_plan.md` | 条目化计划的"怎么验"：用例 / 判据 / 出处 / 环境（含结果回填） | 写用例、或裁决"算不算过"时 |
-| `phase5_development_plan.md` | Phase 5 计划与执行记录：**已完成（2026-09-28）**——资产已迁到 `assets/legacy/`、两个历史目录已删除（阶段 0~3），阶段 4 的真机验收与回填也已完成 | 要追"那两个目录去哪了"、或复核迁移前后的判据 / 跳过集合时（`PROGRESS.md` §4.6） |
 
-### 2.2 冻结文档（16 份：只作设计与判据出处）
+### 2.2 冻结文档（只作设计与判据出处）
 
-`mini_trt_llm_design.md` 与 `phase0_*` ~ `phase4_*` 的全部计划/测试文档（共 16 份）：
-`phase0_development_plan` / `phase0_code_review_plan` / `phase0_model_loading_test_plan` /
-`phase1_development_plan` / `phase1_test_plan` / `phase1_5_*` / `phase2_development_plan` /
-`phase2_supplement_plan` / `phase2_test_plan` / `phase3_*` / `phase4_*`。
+**留在本层的 1 份**：`mini_trt_llm_design.md`（架构设计总纲）。
 
-冻结口径见 §7。**这些文档里的"待办 / 待回填 / 下一步"一律不代表现状。**
+**已按功能迁入 `docs/dev/` 的 16 份**（2026-10-01）：原 `phase0_*` ~ `phase5_*` 的开发计划与测试计划，
+现各自收在对应条目目录里，**文件名不变**（锚点 ID 如 `PH2-*` 继续有效）。清单见 `dev/INDEX.md` §5。
+
+冻结口径见 §7。**这些文档里的"待办 / 待回填 / 下一步"一律不代表现状**；每个条目的**现行陈述**
+以其 `requirement.md` / `design.md` / `test_plan.md` 为准。
 
 ### 2.3 材料类（1 份：**不参与 SSOT**）
 
@@ -181,7 +181,7 @@ rg -n --no-heading '§[0-9]+(\.[0-9]+)*' docs/*.md | sort -u
 | 落在代码块内（脚本注释） | 5 | 已逐条判：2 处补名、3 处是同文档引用，保留 |
 
 > **警告（给做引用自检的人）**：`AGENTS.md` 也有 `§0.1`~`§0.7` / `§5` / `§7` 这些编号，但它不在
-> `docs/` 里。任何"编号全仓唯一就补名"的自检脚本都会把这些引用误判成 `phase2_development_plan.md`
+> `docs/` 里。任何"编号全仓唯一就补名"的自检脚本都会把这些引用误判成 `docs/dev/REQ-004-gpt2-native/phase2_development_plan.md`
 > 的 §0.6 之类（**2026-09-27 实际发生过一次**）。做自检时先把 `AGENTS.md` 加进合法目标集。
 
 **判据演进留痕（用这套判据前先看这段）**：初版只扫 `##`/`###`，漏掉 78 个 `####` 四级标题；
@@ -190,14 +190,18 @@ rg -n --no-heading '§[0-9]+(\.[0-9]+)*' docs/*.md | sort -u
 **别相信一版判据就够**——每次下调都要问"是不是我的匹配又漏了一类"。
 
 **自动补名这一批自己踩的坑（2026-09-27，已全部修回）**：一是对"已经是简称"的引用又插了一次文件名
-（5 处）；二是 **`AGENTS.md` 的条目被误判**——在 `phase4_development_plan.md`、`PROGRESS.md` §4.6、
-`phase2_supplement_plan.md` 各犯过一次。**这正是"130 处真歧义不要脚本猜"的直接证据**：连
+（5 处）；二是 **`AGENTS.md` 的条目被误判**——在 `docs/dev/REQ-007-resnet18/phase4_development_plan.md`、`PROGRESS.md` §4.6、
+`docs/dev/REQ-005-diagnostics-fix/phase2_supplement_plan.md` 各犯过一次。**这正是"130 处真歧义不要脚本猜"的直接证据**：连
 "编号全仓唯一"这种强判据都会在这里翻车。
 
-### 4.6 代码注释里的 docs 引用（2026-09-27 完成）
+### 4.6 代码注释里的 docs 引用（2026-09-27 起，2026-10-01 补齐）
 
 代码 / 脚本 / 构建脚本里引用 `docs/` 时与正文同规则：**路径 + ID**（`docs/TROUBLESHOOTING.md + TS-046`）。
-本轮把 **69 行 / 35 个文件**（含 `src/core/`、`src/plugins/`、`include/`）里的 `§N` / `#N` 全部换成 ID 形式。
+2026-09-27 把**当时那批 69 行 / 35 个文件**（含 `src/core/`、`src/plugins/`、`include/`）里的
+`§N` / `#N` 换成 ID 形式。**更正（2026-10-01）**：原文写的是"全部换成"——复扫发现**仍有 121 处
+`#NN`，其中 27 处该行及其 ±3 行上下文完全没写文档名**（读代码的人无从判断是哪份文档的哪一条）。
+这 27 处已全部补成 `` `docs/TROUBLESHOOTING.md` + TS-0NN ``（14 个不同 ID，均在排查记录里），
+**孤立引用归零**；"全部换成"这个说法只对当时那批成立，以本段为准。
 
 **两个坑**：① **有耦合的运行期字符串**——`thresholds["provenance"]` 同时出现在
 `tests/test_resnet18_int8.cpp`、`tools/validate/int8_eval.py`、`tools/validate/README.md` 三处并被
@@ -245,8 +249,8 @@ rg -n '^\s*#{2,3}\s+[0-9][0-9.]*[a-z]?\s+\[(DEC|TS|OI|MP|GAP|PH)' docs/*.md
 | `future_iterations_development_plan.md` | 2123 / **574** ✅ | **800** | 已交付条目的计划段折进文末"附录：已完成" |
 | `future_iterations_test_plan.md` | 677 / **344** ✅ | **350** | 同上 |
 | `docs/README.md`（本文） | —（自引用，现值随编辑漂移，不登记） | **260** | 规约只留规则；实例与清单移进对应文档 |
-| `docs/dev/<feature>/*`（技能产出，按 feature 增删） | 不登记 | `STATE.md` ≤ 60 行；其余单文档 ≤ 200 行 | 超限就拆文档或折进 `<details>`；本文只登记落点与上限 |
-| 16 份冻结文档 | 5303 / 5303 | 冻结，**不再增长** | 新结论一律回写活文档（含各 +4 行冻结横幅） |
+| `docs/dev/REQ-NNN/*` 的**活文档**（`STATE` / `requirement` / `design` / `test_plan` / `analysis`） | 不登记 | `STATE.md` ≤ 60 行；其余单文档 ≤ 200 行 | 超限就拆文档或折进 `<details>`；本文只登记落点与上限 |
+| `docs/dev/REQ-NNN/*` 的**归档原文**（迁入的 `phaseN_*.md`）与根目录 `mini_trt_llm_design.md` | 不登记 | **不受行数限制**（冻结、不再增长） | 新结论一律回写活文档 |
 
 瘦身优先级：**折叠 > 压表 > 移动**；删除是最后手段。
 
@@ -263,13 +267,16 @@ rg -n '^\s*#{2,3}\s+[0-9][0-9.]*[a-z]?\s+\[(DEC|TS|OI|MP|GAP|PH)' docs/*.md
 
 > **例外（2026-09-27 起）**：冻结文档里**与现行决定直接冲突**的表述，允许**加日期批注修正**
 > （保留原文 + 删除线，只追加带日期的更新注）；**除此以外的冻结文档不更新**。已用过两例：
-> ① "Phase 5 已永久取消" → `phase5_development_plan.md`；② "1660 Ti 有 INT8 Tensor Core"
-> → `phase4_development_plan.md` D2 / 依据表（2026-10-01，依据 `future_iterations.md` + OI-INT8-CALIB）。
+> ① "Phase 5 已永久取消" → `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md`；② "1660 Ti 有 INT8 Tensor Core"
+> → `docs/dev/REQ-007-resnet18/phase4_development_plan.md` D2 / 依据表（2026-10-01，依据 `future_iterations.md` + OI-INT8-CALIB）。
 
-**为什么原地冻结、不搬进 `docs/archive/`**：
+**冻结文档现在放在哪**（2026-10-01 变更）：
 
-- `AGENTS.md` §5 自 2026-10-01 起改了计划落点（`phaseN_*.md` 只作判据出处），但仓外仍有 79 行 / 37 个文件按老路径引用 `docs/`；
-- 搬目录的唯一收益是好看，代价是一批产品代码注释的连带改动。
+- **阶段文档已按功能迁入 `docs/dev/REQ-NNN-*/`**（文件名不变、锚点 ID 不变），迁移时同步改写了
+  全仓 240 处引用；每个条目因此**自包含**（现行陈述 + 归档原文在同一目录）。
+- 原"原地冻结、不搬进归档目录"的结论**已被这次迁移取代**：当时的理由是"引用是承重的、
+  搬目录只有好看处"；而这次迁移**同时给出了新落点并改完了引用**，那两条理由不再成立。
+- **`mini_trt_llm_design.md` 留在根目录**：它不是阶段文档，也没有对应的功能条目。
 
 **冻结横幅模板**（加在文件第 1 行之后）：
 

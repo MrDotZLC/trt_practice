@@ -1,8 +1,10 @@
 # Requirement
 
 > **性质**：历史需求回填（2026-10-01）。内容从下列来源抽取，**未新增任何当时的决定**。
-> **来源**：`docs/phase2_development_plan.md` §1 阶段目标与非目标 / §6 验收标准。
-> **判据的另一半**：`docs/phase2_test_plan.md`。
+> **来源**：`docs/dev/REQ-004-gpt2-native/phase2_development_plan.md` §1 阶段目标与非目标 / §6 验收标准。
+> **判据的另一半**：见本目录 `test_plan.md`（原出处：`docs/dev/REQ-004-gpt2-native/phase2_test_plan.md`）
+> **设计**：见本目录 `design.md`。
+> **谁引用这里**：无仓外引用。
 > **数字与结论**：不在本文重复。
 > **状态**：已交付。
 
@@ -39,7 +41,7 @@
 
 ## Acceptance Criteria
 
-来源：`docs/phase2_development_plan.md` §6（10 条）。
+来源：`docs/dev/REQ-004-gpt2-native/phase2_development_plan.md` §6（10 条）。
 
 1. 沙箱 `ctest` 全绿（主机用例实际执行，GPU 用例显式跳过）。
 2. 能由真实配置与权重建出预填充 / 解码两个引擎。

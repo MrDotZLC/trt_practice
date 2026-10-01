@@ -25,7 +25,7 @@ std::vector<float> NormalizePixelsToNchw(const std::vector<float>& pixels_nchw,
     std::vector<float> normalized(pixels_nchw.size());
     for (size_t i = 0; i < pixels_nchw.size(); ++i) {
         // NCHW 下通道下标是 (i / (H*W)) % C。**分母必须是 H*W，不是"总元素数/C"**：
-        // 后者等于 B*H*W，batch=1 时恰好等价、多 batch 才错（TROUBLESHOOTING #23）。
+        // 后者等于 B*H*W，batch=1 时恰好等价、多 batch 才错（TROUBLESHOOTING + TS-023）。
         const size_t channel = (i / plane) % channel_count;
         normalized[i] = (pixels_nchw[i] / 255.0f - mean[channel]) / std[channel];
     }
@@ -146,7 +146,7 @@ std::vector<float> CVRunner::Infer(const std::vector<float>& image_nchw,
         return {};
     }
     if (!engine_->Enqueue(nullptr)) {
-        // enqueueV3 的返回值必须查：漏绑输出等错误只在这里体现（TROUBLESHOOTING #19）。
+        // enqueueV3 的返回值必须查：漏绑输出等错误只在这里体现（TROUBLESHOOTING + TS-019）。
         MINI_TRT_LOG_ERROR("CVRunner: enqueue failed");
         return {};
     }

@@ -8,7 +8,7 @@
 
 ## 1. 为什么需要这份规格
 
-当前 INT8 的判据是**分层的**（`docs/phase4_int8_plan.md` + PH4-INT8-CRITERIA）：
+当前 INT8 的判据是**分层的**（`docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` + PH4-INT8-CRITERIA）：
 
 | 判据 | 现状 | 弱点 |
 |---|---|---|
@@ -116,7 +116,7 @@ JSON 数组，每个元素：
 ```jsonc
 {
   "thresholds": { "confident_margin": 5.0, "bucket_edges": [1,2,5,10],
-                  "provenance": "tests/test_resnet18_int8.cpp + docs/phase4_int8_plan.md + PH4-INT8-CRITERIA" },
+                  "provenance": "tests/test_resnet18_int8.cpp + docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md + PH4-INT8-CRITERIA" },
   "provenance": { "validation_set": {...}, "calibration_set": {...}, "labels": {...} },
   "overall":    { "n": 512, "agree": 196, "agree_rate": 0.383, "correct": ..., "top1_accuracy": ... },
   "confident":  { "n": 12, "agree": 12, "agree_rate": 1.0, ... },

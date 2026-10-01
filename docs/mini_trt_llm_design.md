@@ -459,7 +459,7 @@ builder.BuildFromOnnx(onnx_path, engine_path);
 > **实测修正（2026-09-25）**：`1_gpt2_onnx/gpt2.onnx` **不含 RMSNorm、也不含 RoPE**
 > （实测用 LayerNormalization + 学习式位置编码），因此本节"替换 RoPE / RMSNorm 子图"
 > **在这张图上没有替换对象**；Phase 3 实际交付的是"ONNX 路径可用 + 与方案 A 数值对齐 +
-> 子图识别断言"。推导与实测见 `docs/phase3_development_plan.md` §0.2 与 §P3 执行结果。
+> 子图识别断言"。推导与实测见 `docs/dev/REQ-006-gpt2-onnx/phase3_development_plan.md` §0.2 与 §P3 执行结果。
 
 1. 实现 `OnnxBuilder` 与 subgraph replacer。
 2. 对现有 `1_gpt2_onnx/gpt2.onnx` 进行 RoPE/RMSNorm/Attention 子图替换。
@@ -480,7 +480,7 @@ builder.BuildFromOnnx(onnx_path, engine_path);
 ### Phase 5：清理旧模块（0.5 周）—— **🔄 2026-09-26 曾取消 → 2026-09-27 重新立项**
 
 > **〔2026-09-27 更新〕** 本节原写"已永久取消（2026-09-26 用户决定）"，现由作者改回**重新立项**：
-> 迁移方案见 `docs/phase5_development_plan.md`（资产盘点 / 阶段 0~4 / 删除清单 / 验收判据 / 回退）。
+> 迁移方案见 `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md`（资产盘点 / 阶段 0~4 / 删除清单 / 验收判据 / 回退）。
 > 以下原文保留为历史设计记录，**不代表现状**，执行口径一律以新方案为准。
 
 > 本节保留为历史设计记录。**当时的结论是"Phase 5 不做"**：旧模块由作者本人按需处理，Agent
@@ -531,4 +531,4 @@ builder.BuildFromOnnx(onnx_path, engine_path);
 ---
 
 *文档版本：v1.0*  
-*详见 `docs/phase0_development_plan.md` 与 `docs/future_iterations.md`。*
+*详见 `docs/dev/REQ-001-bootstrap/phase0_development_plan.md` 与 `docs/future_iterations.md`。*

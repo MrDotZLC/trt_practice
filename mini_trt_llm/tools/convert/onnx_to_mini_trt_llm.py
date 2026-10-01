@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """把 ResNet18 的 ONNX 转成 mini_trt_llm 原生路径需要的 `model.safetensors` + `config.json`。
 
-**为什么源是 ONNX 而不是 PyTorch 的 state_dict**（docs/phase4_development_plan.md + PH4-ONNX-SOURCE-DECISION 的决定）：
+**为什么源是 ONNX 而不是 PyTorch 的 state_dict**（docs/dev/REQ-007-resnet18/phase4_development_plan.md + PH4-ONNX-SOURCE-DECISION 的决定）：
 这份 ONNX 在导出时已经把 BatchNorm **折叠进 Conv**（42 个张量里没有 BN 的 running stats，
 也没有独立的 Mul/Div）。直接取 ONNX 里的权重，就保证了**原生路径与 ONNX 路径用的是逐位相同的
 权重**——"两条路对拍"才谈得上干净。若改从 state_dict 折叠，折叠顺序/精度与当年导出的结果
@@ -37,7 +37,7 @@ def require_assets() -> bool:
 
     为什么需要：ctest 把"跳过"记成 Passed，于是**缺资产导致的覆盖下降对 CI 不可见**
     （实测 2026-09-27：把两个历史示例工程改名后全量仍报 265 条 / 100% passed / 0 failed，
-    只有跳过集合变了 3 项；见 docs/phase5_development_plan.md 阶段 0）。设了这个变量，
+    只有跳过集合变了 3 项；见 docs/dev/REQ-009-retire-legacy/phase5_development_plan.md 阶段 0）。设了这个变量，
     缺资产以 1 退出（失败）而不是 77（跳过）。
 
     **`tools/inspect_onnx.py` 里有同名同义的实现**，改一处要两处同改。
@@ -238,7 +238,7 @@ def _expect_rejected(label: str, mutate, model: onnx.ModelProto) -> None:
     """把模型改坏，确认自检**真的会拦**。
 
     为什么要有这个自检：护栏没有用例证明"它会拦人"，就等于没有护栏——项目里已经吃过
-    "声明了却没人核对"的亏（Phase 3 的子图名核对一栏，见 docs/phase3_test_plan.md + PH3-GAPS）。
+    "声明了却没人核对"的亏（Phase 3 的子图名核对一栏，见 docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md + PH3-GAPS）。
     """
     broken = onnx.ModelProto()
     broken.CopyFrom(model)

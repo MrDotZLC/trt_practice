@@ -29,7 +29,7 @@ namespace mini_trt_llm {
 namespace test_support {
 
 // ---------------------------------------------------------------------------
-// "跨实现比较 argmax" 的可判性判据（对应 TROUBLESHOOTING.md #34，方案 B）
+// "跨实现比较 argmax" 的可判性判据（对应 TROUBLESHOOTING.md + TS-034，方案 B）
 //
 // 背景：两条**独立实现**（例如 ONNX 图 vs 原生图）的 logits 只做到"有界接近"，
 // 而 argmax 判等是**精确**判据。在"并列间距小于两侧差异"的行上，argmax 归谁

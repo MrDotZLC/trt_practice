@@ -107,7 +107,7 @@ class RoPEE2eBuilder : public IModelBuilder {
     bool Build(nvinfer1::INetworkDefinition* network, const WeightLoader&,
                const ModelConfig&, const BuildOptions&) override {
         // RoPE 没有可学习权重，因此只验证"多输入多输出算子经真实 engine 调用"这一面。
-        // rotary_dim = 4 < head_size = 8，覆盖部分旋转（TROUBLESHOOTING #4 的场景）。
+        // rotary_dim = 4 < head_size = 8，覆盖部分旋转（TROUBLESHOOTING + TS-004 的场景）。
         constexpr int32_t kHeads = 2;
         constexpr int32_t kSeq = 3;
         constexpr int32_t kHeadSize = 8;

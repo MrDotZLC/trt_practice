@@ -124,6 +124,6 @@ INT8 张量指令但该芯片不具备对应硬件。
 
 **影响**：这是本 feature 立项理由的一句话依据，写错会让"为什么 INT8 有收益"的论证立不住。
 **处置（已完成，2026-10-01）**：作者确认后，`docs/future_iterations.md` §1.2 已改为
-"收益来自**显存带宽**（decode 访存受限），不是张量核心吞吐"；`docs/phase4_development_plan.md`
+"收益来自**显存带宽**（decode 访存受限），不是张量核心吞吐"；`docs/dev/REQ-007-resnet18/phase4_development_plan.md`
 的 D2 与依据表同源那句已按冻结文档的"冲突修正"口径加日期批注（保留原文 + 删除线）。
 **决策未变**：INT8 仍走显式 Q/DQ——理由是隐式量化在 TRT 10.15 已废弃，与 Tensor Core 无关。

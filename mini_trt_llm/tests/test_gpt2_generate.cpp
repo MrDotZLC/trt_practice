@@ -444,7 +444,7 @@ TEST(Gpt2GenerateTest, RealGpt2Fp16GreedyMatchesReferenceTokens) {
 // **从引擎查询 I/O**（名字 + 声明精度），通用地绑定全部输出。
 //
 // 它取代了"猜哪个算子产生 NaN"：逐输出给出 max|v| 与 NaN 标记，
-// 先把范围钉到**具体的张量**，再决定改什么（见 TROUBLESHOOTING #18）。
+// 先把范围钉到**具体的张量**，再决定改什么（见 TROUBLESHOOTING + TS-018）。
 TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindRealModelDir();
@@ -456,7 +456,7 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
     EngineBuilder::Config builder_config;
     builder_config.precision = Precision::FP16;
     // 这是**唯一**该打开诊断输出的用例：它逐输出读回中途张量，正是靠这些输出才不用猜
-    // 哪个算子产生 NaN。默认关闭是刻意的——诊断输出会改 I/O 契约（见 TROUBLESHOOTING #19）。
+    // 哪个算子产生 NaN。默认关闭是刻意的——诊断输出会改 I/O 契约（见 TROUBLESHOOTING + TS-019）。
     builder_config.export_diagnostics = true;
     builder_config.min_prefill_batch = 1;
     builder_config.opt_prefill_batch = 1;
@@ -469,7 +469,7 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
     // 引擎路径必须与 `RealGpt2Fp16Greedy...` 用的那个分开：引擎缓存只按路径名区分、
     // 不随代码或开关失效，共用一条路径会让"要诊断输出"与"不要诊断输出"互相踩成假结果。
     const std::string prefill_path = "/tmp/mini_trt_llm_gpt2_real_prefill_fp16_diag.engine";
-    // 同 `RealGpt2Fp16Greedy...`：复用与否交给指纹，不做"文件存在就跳过"（#40）。
+    // 同 `RealGpt2Fp16Greedy...`：复用与否交给指纹，不做"文件存在就跳过"（`docs/TROUBLESHOOTING.md` + TS-040）。
     ASSERT_TRUE(builder.BuildFromConfig(dir, prefill_path, BuildStage::kPrefill));
     Engine engine(prefill_path, logger);
     nvinfer1::ICudaEngine* cuda = engine.GetCudaEngine();

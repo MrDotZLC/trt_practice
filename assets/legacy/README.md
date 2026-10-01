@@ -4,7 +4,7 @@
 > 但这两个目录里的**数据资产**是现行用例的判据来源，不能跟着目录一起消失。所以数据搬到这里、
 > 迁移期曾用**相对软链接**指回原路径（让同批的 `mini_trt_llm/` 路径与 provenance 字符串**一行都不改**）。
 > **那 4 条软链接连同两个目录已于 2026-09-28 的阶段 3 删除**——现在代码 / 测试 / 工具 / provenance
-> 都直接指向本目录。方案见 `docs/phase5_development_plan.md`（阶段 1 / 阶段 3）。
+> 都直接指向本目录。方案见 `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md`（阶段 1 / 阶段 3）。
 >
 > **本目录的内容全部不入库**（`.gitignore` 命中 `*.onnx` / `*.bin` / `**/calib_data/`），
 > 换机器要按下面的命令重建。
@@ -22,7 +22,7 @@
 ## 怎么发现链接断了
 
 设 `MINI_TRT_REQUIRE_ASSETS=1` 跑全量：缺资产会**判失败**而不是静默跳过——这道闸门就是
-Phase 5 阶段 0 加的（见 `docs/phase5_development_plan.md` 阶段 0；沙箱基线 268 条 / 0 失败）。
+Phase 5 阶段 0 加的（见 `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md` 阶段 0；沙箱基线 268 条 / 0 失败）。
 全仓共 **62 处**资产跳过点走这道闸门（15 个测试文件）。
 
 ## 现在还需不需要 `0_resnet18_onnx` / `1_gpt2_onnx`

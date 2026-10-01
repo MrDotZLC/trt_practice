@@ -11,8 +11,8 @@
 >
 > **与既有文档的分工**：
 > - 任务/顺序/验收/决策 → 本文件；
-> - 测试用例清单与判据 → 并入 `phase4_test_plan.md`（R2.6 及其拆分，本文件只定原则）；
-> - Phase 4 整体状态 → `docs/phase4_development_plan.md` §10 与 `docs/PROGRESS.md`；
+> - 测试用例清单与判据 → 并入 `docs/dev/REQ-007-resnet18/phase4_test_plan.md`（R2.6 及其拆分，本文件只定原则）；
+> - Phase 4 整体状态 → `docs/dev/REQ-007-resnet18/phase4_development_plan.md` §10 与 `docs/PROGRESS.md`；
 > - 排查过程 → `docs/TROUBLESHOOTING.md`。
 
 ---
@@ -21,7 +21,7 @@
 
 ### 0.1 有没有计划文档
 
-**没有。** 此前 P4-7 只以一行形式存在于 `phase4_development_plan.md` §4 的任务表里
+**没有。** 此前 P4-7 只以一行形式存在于 `docs/dev/REQ-007-resnet18/phase4_development_plan.md` §4 的任务表里
 （"（按 D2 条件式）INT8"）。那份计划定义的是**整个 Phase 4**，不含 INT8 的技术路线、
 前置调研与验收判据。→ 因此先产出本文件并等确认。
 
@@ -37,7 +37,7 @@
 
 ### 0.3 偏差怎么处理
 
-**先改文档再改代码**：本文件 → 确认后补 `phase4_test_plan.md` 的 R2.6 用例设计 →
+**先改文档再改代码**：本文件 → 确认后补 `docs/dev/REQ-007-resnet18/phase4_test_plan.md` 的 R2.6 用例设计 →
 再动 Python/C++。落地时把新约定（量化图的 I/O 契约、INT8 的构建分支语义）写进
 `PROGRESS.md` §2.15 的"勿回改"表。
 
@@ -45,7 +45,7 @@
 
 | 矛盾 | 证据 | 处理 |
 |---|---|---|
-| `phase4_development_plan.md` §1.2 表格写"隐式量化（若不选 D2-③）→ 弃用"，但**没有说明 Q/DQ 在 TRT 10.15 里属于"强类型"体系** | §1.1 的头文件证据 | 本文件 §1.1 补齐；Phase 4 计划里的 P4-7 行改为指向本文件 |
+| `docs/dev/REQ-007-resnet18/phase4_development_plan.md` §1.2 表格写"隐式量化（若不选 D2-③）→ 弃用"，但**没有说明 Q/DQ 在 TRT 10.15 里属于"强类型"体系** | §1.1 的头文件证据 | 本文件 §1.1 补齐；Phase 4 计划里的 P4-7 行改为指向本文件 |
 | `PROGRESS.md` §2.15 未记录"FP16 目前仍用已废弃的 `kFP16` flag" | `NvInfer.h:9854-9855`（10.12 起废弃，superseded by strong typing）；`builder.cpp` 的 `SetupBuilder` 仍在用 | 本文件 §5 记为已知技术债（不影响当前结论：ResNet18 FP16 实测全绿），并在 P4-7-5 一并登记到 `future_iterations.md` |
 | 本计划若采用强类型，会与 `TROUBLESHOOTING #18` 记录的 C1 方案（"短期不划算"）冲突 | #18 的 C1/C2 对比 | §2.2 明确：**A 主线仍走弱类型**，只有 A 被证伪时才回到 C1，并说明届时的代价 |
 
@@ -179,7 +179,7 @@ torchvision ResNet18 (FP32, 本地权重)
 | **P4-7-2** | 让 INT8 走通：`Precision::INT8` 无需 flag（已在 `SetupBuilder` 注释里写明依据）+ `Config::detailed_profiling` 开关（**已完成**）；余下用**真实 ResNet18 QDQ 图**建 INT8 引擎并核对层信息 | P4-7-1 | 真机用 `models/resnet18/resnet18_qdq.onnx` 建出引擎；层信息里出现 `Format/Datatype: Int8` 与 i8i8 类 tactic（**不能**用 precision 参数当证据，见 §1.3 的 ⚠️） |
 | **P4-7-3** ✅ | 用例 R2.6：INT8 vs FP32 —— **分层判据**（主判据 = FP32 余量子集一致率；ramp 判据已作废） | P4-7-2 | ✅ 通过：余量子集 **12/12 = 100%**（阈值 ≥ 90%）、整体 37.9%（下界 ≥ 30%）。方案默认改 **per_tensor**（实测 100% vs per-channel 54.5%）。开放项：per-channel 整网更差的原因未知 |
 | **P4-7-4** ✅ | 真机定向 + **真机全量回归** | P4-7-3 | ✅ **182 条 / 1 红 / 0 跳过**（唯一红 = GPT-2 的 FP16 已知限制，非本阶段新增）；产物换 `prequant_dq` 后复跑通过 |
-| **P4-7-5** ✅ | 文档：本文件回填、`phase4_test_plan.md`、`phase4_development_plan.md` §10、`PROGRESS.md`（含把"FP16 走废弃 flag"登记到 `future_iterations.md`） | P4-7-4 | ✅ 完成（2026-09-26）：三份计划 + `PROGRESS.md` §3.0d/§6.6 + `future_iterations.md` §11 |
+| **P4-7-5** ✅ | 文档：本文件回填、`docs/dev/REQ-007-resnet18/phase4_test_plan.md`、`docs/dev/REQ-007-resnet18/phase4_development_plan.md` §10、`PROGRESS.md`（含把"FP16 走废弃 flag"登记到 `future_iterations.md`） | P4-7-4 | ✅ 完成（2026-09-26）：三份计划 + `PROGRESS.md` §3.0d/§6.6 + `future_iterations.md` §11 |
 
 **顺序理由**：先花低成本把**两条可能推翻方案的前提**验掉（S1/S2），再动手；
 否则会写完脚本才发现"弱类型网络不吃 Q/DQ"或"torch 导不出 QDQ"。
@@ -191,7 +191,7 @@ torchvision ResNet18 (FP32, 本地权重)
 | 判据 | 说明 |
 |---|---|
 | ~~**argmax 逐样本一致**（ramp 输入）~~ **已作废** | 原打算沿用 legacy 的 ramp 口径，实测"8/8 不一致"。**这不是缺陷**：ramp 未归一化、与标定分布不同，INT8 的 scale 按标定集定死 → 分布外输入必然饱和。**判据的有效性依赖被测量对象的机制**，见 `TROUBLESHOOTING.md` §29.3 |
-| **top-1 一致率**（真实图输入） | 正式预检实测：64 张里 6 张不一致（**90.6% 一致**）→ INT8 必须按**率**判。阈值由更大样本的实测得出再定，并写清"为什么这个率可接受"——**不许照搬 FP16/FP32 的"全一致"**。⚠️ 样本要够多：`calib_data` 是 tiny-imagenet 放大图，分类本身退化（8 张里 5 张同类），样本少时率的判别力很弱（同 `phase4_test_plan.md` §4.1 的坑） |
+| **top-1 一致率**（真实图输入） | 正式预检实测：64 张里 6 张不一致（**90.6% 一致**）→ INT8 必须按**率**判。阈值由更大样本的实测得出再定，并写清"为什么这个率可接受"——**不许照搬 FP16/FP32 的"全一致"**。⚠️ 样本要够多：`calib_data` 是 tiny-imagenet 放大图，分类本身退化（8 张里 5 张同类），样本少时率的判别力很弱（同 `docs/dev/REQ-007-resnet18/phase4_test_plan.md` §4.1 的坑） |
 | **（已决）权重图形态 = `prequant_dq`** | 实测与 `Q→DQ` **数值等价**（引擎 `max_abs` 逐位相同），但 ONNX 体积 **44.7 MB → 13.3 MB**。**已采纳**（2026-09-26，用户同意）：产物已重生成 + 重跑 INT8 与真机全量（182 条 / 1 红 / 0 跳过）。依据见 `TROUBLESHOOTING.md` #31.3 |
 | 数值上界 | 当前实测 `max_abs ≈ 21.6`（256 张、vs FP32 引擎）。**暂不作为判据**：这批图 FP32 自身摇摆，绝对差被少数样本放大；主判据用"余量子集一致率"。将来若要定数值界，需先在**有余量样本**上量分布（见 §5 开放项）。**判据规格与离线评估脚本的落点已定（2026-09-26）**：`mini_trt_llm/tools/validate/README.md`（meta 必需字段 / 重叠排除规则 / 率必带 n / 绝对误差只在余量子集报 p50·p95·p99）与 `mini_trt_llm/tools/validate/int8_eval.py`（含 `--self-test`，已进 ctest）；**在带真值标签的验收集到位前，本行仍然不作判据** |
 | 不许跨精度复用 | FP16 的 `0.05`/`0.1`、FP32 的 `1e-4`/`1e-5` 都不能套到 INT8 上 |
@@ -255,4 +255,4 @@ torchvision ResNet18 (FP32, 本地权重)
 | P4-7-2 | 🟡 部分完成（2026-09-26） | 已做：`EngineBuilder::Config::detailed_profiling`（默认关）+ `SetupBuilder` 的 `setProfilingVerbosity(kDETAILED)`；`SetupBuilder` 里写明"INT8 不需要 flag"的依据（`kINT8` 自 10.12 废弃、由 Q/DQ 取代）。**已验证开关生效**（最小 QDQ 图上读出 Int8 张量/权重与 i8i8 tactic）。余下：用**真实** ResNet18 QDQ 图建 INT8 引擎并核对层信息 |
 | P4-7-3 | ✅ 完成（2026-09-26，判据与方案同时定稿） | 新增 `tests/test_resnet18_int8.cpp`（3 条）：P4-7-2 余项 ✅（QDQ 引擎 44 层 / 38 层含 Int8 / 4 层 i8i8 tactic；对照 FP32 引擎 0 层 Int8）。**R2.6 未通过**，且过程暴露三件事：① 最小图 A/B 证明**我的 per-channel 写法与 TRT 的处理都正确**（与 numpy 模拟差 1.9e-6）；② 但整网上 per-channel 25.0% vs per-tensor 60.9%——**原因未知**（#29.2）；③ **ramp 判据对 INT8 作废**（分布外必然饱和，#29.3），而"全体一致率"也被测试集的不稳定性主导（55% 样本 margin<2，#29.4）。**阈值与方案同时定稿**：判据改为**分层**——主判据 = FP32 有余量（margin≥5）子集的一致率（≥90%，实测 12/12=100%），整体一致率只作"没崩坏"下界（≥30%，实测 37.9%）；方案默认改为 **per_tensor 权重**（实测更好：余量子集 100% vs per-channel 54.5%）。ramp 判据已作废（分布外输入，退化量随方案变）。**开放项**：per-channel 为何在整网上更差——**原因仍未找到**，但已排除四条假设（写法错 / 死通道 scale 跨度 / 模拟不忠实 / 残差融合），见 `TROUBLESHOOTING.md` #30；下一步是"逐层中间张量对拍" |
 | P4-7-4 | ✅ 完成（2026-09-26） | 真机全量回归 **182 条 / 1 红 / 0 跳过**（唯一的红仍是 GPT-2 的 FP16 已知限制，不属本阶段新增） |
-| P4-7-5 | ✅ 完成（2026-09-26） | 已回填本文件 §1.3/§2.1/§3/§4/§5/§7、`TROUBLESHOOTING.md` #27~#31、`PROGRESS.md` §3.0d/§6.6、`phase4_test_plan.md` 的 R2.6；开放项已登记进 `future_iterations.md` §11：**P4-INT8-a**（per-channel 整网退化）、**P4-INT8-b**（INT8 数值界未定）、**P4-FP16-a**（FP16 仍用废弃 `kFP16` flag）。**正式产物形态定为 `prequant_dq`**（13.3 MB，与 `Q→DQ` 数值等价） |
+| P4-7-5 | ✅ 完成（2026-09-26） | 已回填本文件 §1.3/§2.1/§3/§4/§5/§7、`TROUBLESHOOTING.md` #27~#31、`PROGRESS.md` §3.0d/§6.6、`docs/dev/REQ-007-resnet18/phase4_test_plan.md` 的 R2.6；开放项已登记进 `future_iterations.md` §11：**P4-INT8-a**（per-channel 整网退化）、**P4-INT8-b**（INT8 数值界未定）、**P4-FP16-a**（FP16 仍用废弃 `kFP16` flag）。**正式产物形态定为 `prequant_dq`**（13.3 MB，与 `Q→DQ` 数值等价） |

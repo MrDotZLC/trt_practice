@@ -113,14 +113,14 @@ maxdiff = 0.0），Conv1D 同样是 `[in, out]` 约定，LM head 单独物化为
   缺 `onnx` 包或缺 `1_gpt2_onnx/gpt2.onnx` 时返回 `SKIP_RETURN_CODE=77` → ctest 报 Skipped。
   负路径已验：`inspect_onnx.py <不存在路径> --check --skip-if-missing` 退出码 = 77。
 - [x] ONNX 路径能对 `1_gpt2_onnx/gpt2.onnx` 建出可推理 engine；失败路径有可诊断信息
-  （parse 错误逐条打印 + I/O 名校验；失败路径用例见 `docs/phase3_test_plan.md` G1a/G1b）。
+  （parse 错误逐条打印 + I/O 名校验；失败路径用例见 `docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` G1a/G1b）。
 - [x] 与方案 A 的 logits 按 D2 对齐（真机：相对偏差 `5.66e-07`，阈值 `1e-5`），
   并与 `ref_output.bin` 三方对照（ONNX/原生对 HF 均为 `9.92e-05`，逐位置 argmax 一致）。
 - [x] 子图替换范围按 D1=C 落实：只做**识别 + 断言**（探针的 `--check` 断言注意力 12 块 /
   LayerNorm 25 / 位置编码为学习式），不做替换；不靠人眼。
 - [x] 本文件（§P3 执行结果 + 本节）与 `docs/PROGRESS.md` 的执行结果已回填，且与代码一致。
 
-**未完成项汇总**：仅剩 `docs/phase3_test_plan.md` §5 的 G5 / G6（按触发条件处理）。
+**未完成项汇总**：仅剩 `docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` §5 的 G5 / G6（按触发条件处理）。
 §4 的五条验收标准**全部达成**；测试缺口 G1a/G1b/G1c/G3/G4/G4b/G7 均已关闭。
 
 ---
@@ -212,7 +212,7 @@ prefill(4 token): ONNX 4.545 ms  vs  原生 3.717 ms
 
 **沙箱状态**：`ctest` 133 用例 0 失败（新增的 ONNX 对拍用例在沙箱跳过）。
 
-**状态：Phase 3 完成**（测试口径与未覆盖缺口见 `docs/phase3_test_plan.md`）。
+**状态：Phase 3 完成**（测试口径与未覆盖缺口见 `docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md`）。
 
 ---
 

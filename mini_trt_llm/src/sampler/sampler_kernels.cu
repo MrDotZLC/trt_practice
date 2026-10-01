@@ -389,7 +389,7 @@ __global__ void TopPSampleKernel(const float* __restrict__ sorted_logits,
 // 摊到 256 个线程后（P9_2-5），每行只剩"常数个块和的合并 + 一次块内重扫"留给单线程；
 // 而那次重扫最多要 197（V=50257）/ 500（V=128000）个**相互依赖**的 global load，
 // 实测它（两次重扫之和）就是收尾段 67~129 µs 的来源——**延迟受限，不是吞吐受限**
-// （`TROUBLESHOOTING.md` #35）。P9_2-5b 在块和之下加一级子块和，把重扫长度按
+// （`TROUBLESHOOTING.md` + TS-035）。P9_2-5b 在块和之下加一级子块和，把重扫长度按
 // kTopPSubChunks 收窄到 ≤13 / ≤32 个元素，且两级定位都只在 shared 上做。
 //
 // 连续分块（而非 strided）是刻意的：它让"块内累加"本身就是一段连续前缀，三级定位因此退化成
@@ -403,8 +403,8 @@ __global__ void TopPSampleKernel(const float* __restrict__ sorted_logits,
 //
 // **模板参数 `kSubChunked`**：`true` = 生产版本（块和 + 子块和 + 元素，P9_2-5b）；
 // `false` = P9_2-5b 之前的两级版本（块和 + 元素），**只用于 A/B 对照**（`LaunchTopPSamplerTwoLevel`）。
-// 为什么要把它编译进同一个二进制：P9_2-5b 的效果此前一直判不了——分段口径没有判别力（#37）、
-// 配对口径又跨 session/跨协议（#38）。同二进制内两版**同轮配对**，噪声对二者同向，差值才是干净答案。
+// 为什么要把它编译进同一个二进制：P9_2-5b 的效果此前一直判不了——分段口径没有判别力（`docs/TROUBLESHOOTING.md` + TS-037）、
+// 配对口径又跨 session/跨协议（`docs/TROUBLESHOOTING.md` + TS-038）。同二进制内两版**同轮配对**，噪声对二者同向，差值才是干净答案。
 template <bool kSubChunked>
 __global__ void TopPParallelSampleKernel(const float* __restrict__ sorted_logits,
                                          const int32_t* __restrict__ sorted_indices,

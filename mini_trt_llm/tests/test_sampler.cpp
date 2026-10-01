@@ -415,7 +415,7 @@ TEST(SamplerReferenceTest, TruncatedSoftmaxProbabilitiesAgreesWithNucleus) {
     }
 }
 
-// 事故回归（`TROUBLESHOOTING.md` #36）：真机上 S-14 的第一版在这里是红的——
+// 事故回归（`TROUBLESHOOTING.md` + TS-036）：真机上 S-14 的第一版在这里是红的——
 // 128000 词表（`MakeLogits` 的 sin 造数据）第 64 名有 4 个 token 精确并列，
 // 采样到的 45721 是其中一员，而旧的 `partial_sort` 参考会把它排掉。这条用例把**事故本身**
 // 固化：同样的数据、同样的 k，新的参考必须包含 45721，且必须比"前 k 个"严格更宽（含并列组）。
@@ -648,7 +648,7 @@ TEST(SamplerKernelTest, TopKSamplingIsDeterministicForFixedSeed) {
 // 判据必须是**并列安全**的（`TopKSetByValue`：值 ≥ 第 k 大值）。**第一次真机运行就是红的**
 // （2026-09-27）：128000 词表上第 64 名有 4 个 token 精确并列，采样到的 45721 属于这个并列组，
 // 而参考当时用 `std::partial_sort` 取"前 65 个"——不稳定排序可能把 45721 排掉，于是**在实现
-// 完全正确时报红**。完整推导见 `TROUBLESHOOTING.md` #36；事故本身由
+// 完全正确时报红**。完整推导见 `TROUBLESHOOTING.md` + TS-036；事故本身由
 // `SamplerReferenceTest.IncidentRow64TieIsNotASetMembershipFailure` 固化。
 //
 // 走的是生产入口 `LaunchTopKSampler`（CUB 分段排序）：`LaunchTopKSamplerFast` 与它的
@@ -864,7 +864,7 @@ TEST(SamplerKernelTest, TopPDistributionMatchesTruncatedSoftmaxProbabilities) {
 // （PROGRESS.md §3.0d 里只有 CVRunner 的 benchmark）。本用例量的是**采样器自身**的耗时，
 // 用来做"改实现前后各跑一次"的对照。
 //
-// 协议按 G6（phase3_test_plan.md §5）：先 warmup，再多次采样，**报中位数与极差**，
+// 协议按 G6（docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md §5）：先 warmup，再多次采样，**报中位数与极差**，
 // 不报单次点值——单次点值已经在 Phase 3 的性能结论上吃过一次亏。
 //
 // 两点口径说明：
@@ -957,7 +957,7 @@ TEST(SamplerPerf, ThroughputByShape) {
         // 为什么需要它：这个环境里"一个窗口"的固定开销（事件 + 同步 + 首次发射，WSL2 尤其明显）
         // 与我们要看的信号同量级——实测一个平凡的 greedy 内核单发就要 64~154 µs。单发比较
         // 里这份固定开销会跟着差值一起进来，于是 P9_2-5b 那 16 倍的重扫缩短根本量不出来
-        // （`TROUBLESHOOTING.md` #38）。斜率把固定项减掉，只留"多做一次要花多少"。
+        // （`TROUBLESHOOTING.md` + TS-038）。斜率把固定项减掉，只留"多做一次要花多少"。
         const auto slope_of = [&time_n](const std::function<void()>& launch) {
             return (time_n(launch, 4) - time_n(launch, 1)) / 3.0f;
         };

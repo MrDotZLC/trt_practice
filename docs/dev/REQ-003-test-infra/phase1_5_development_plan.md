@@ -12,13 +12,13 @@
 > （GPT-2 的构建要依赖它产出的防线与基建）。立成 1.5 是为了让归属清晰，避免又一次
 > 「Phase 0 宣布完成、实际有漏项」的情况。
 >
-> **用例设计细节见** `docs/phase1_test_plan.md`（E1–E4 的设计背景与链路图）；
+> **用例设计细节见** `docs/dev/REQ-002-plugins/phase1_test_plan.md`（E1–E4 的设计背景与链路图）；
 > 本文档定义的是**任务、顺序、产出与验收**。
 >
 > **本阶段一度没有独立的测试计划文件**（有意，理由是"再写一份只会把 E1–E4 复述一遍"）。
-> **2026-09-25 起改为有**：`docs/phase1_5_test_plan.md`——但它的定位被限定为
+> **2026-09-25 起改为有**：`docs/dev/REQ-003-test-infra/phase1_5_test_plan.md`——但它的定位被限定为
 > **"用例 → 判据 → 出处 → 环境 → 状态"的索引与执行口径**（以及当时未登记的覆盖缺口），
-> **不复制 E1–E4 的设计**。设计仍以 `docs/phase1_test_plan.md` §4 为唯一来源，
+> **不复制 E1–E4 的设计**。设计仍以 `docs/dev/REQ-002-plugins/phase1_test_plan.md` §4 为唯一来源，
 > 任务/验收仍以本文档 §0 与 §5 为唯一来源。这样补上缺口又不重开"两处来源"的坑。
 
 ---
@@ -34,7 +34,7 @@
 | P1.5-4 | ✅ 完成 | `tests/test_e2e_mini_decoder.cpp`：多算子全链路串联 + 缺失权重用例。FP16 改为 L1 分层覆盖（见 §0.1 / §0.3） |
 | P1.5-5 | ✅ 完成 | `AddCvOptimizationProfile` / `AddLlmOptimizationProfiles` 实现并接入；`Engine::SetOptimizationProfile` |
 | P1.5-6 | ✅ 完成 | `tests/test_e2e_dynamic_shape.cpp`：3 条 |
-| P1.5-7 | ✅ 完成 | 文档归位 4/4（含修正 `phase0_development_plan.md` 的验收判据） |
+| P1.5-7 | ✅ 完成 | 文档归位 4/4（含修正 `docs/dev/REQ-001-bootstrap/phase0_development_plan.md` 的验收判据） |
 
 **真机验证记录**：E1 / E2 / E3 与 E4 的 2 条 GPU 用例、以及 FP16 覆盖用例
 （`--gtest_filter='Fp16PathTest.*:E2eMiniDecoderTest.*'`，共 5 条）**全部通过**。
@@ -89,13 +89,13 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 1. `future_iterations.md` 新增 §9，迁入三项有意延后的能力；
 2. `PROGRESS.md` §6 收敛为单入口，不再重复罗列条目；
-3. `phase1_test_plan.md` 改为引用式，进度归属以本计划为准；
-4. `phase0_development_plan.md` §4 改写为可执行判据，并补上 Phase 0 遗漏的
-   「Optimization profile 能力可用」一条（详见该文档 `phase0_development_plan.md` §4.1 / §4.2）。
+3. `docs/dev/REQ-002-plugins/phase1_test_plan.md` 改为引用式，进度归属以本计划为准；
+4. `docs/dev/REQ-001-bootstrap/phase0_development_plan.md` §4 改写为可执行判据，并补上 Phase 0 遗漏的
+   「Optimization profile 能力可用」一条（详见该文档 `docs/dev/REQ-001-bootstrap/phase0_development_plan.md` §4.1 / §4.2）。
 
 ### 0.3 [PH1.5-GAP-CLOSURE] 一并收口的覆盖缺口
 
-`docs/phase1_test_plan.md` §8 列的缺口，凡属于「Phase 2 建模前应具备的组件能力」，本次一并处理：
+`docs/dev/REQ-002-plugins/phase1_test_plan.md` §8 列的缺口，凡属于「Phase 2 建模前应具备的组件能力」，本次一并处理：
 
 | 缺口 | 处理 |
 |---|---|
@@ -336,8 +336,8 @@ key_cache / value_cache（网络输入）─────────────
 1. 把 `PROGRESS.md` §6 里的 **PagedAttention Prefill**、**Sampler 手写高性能 kernel**、
    **采样器分布数据固化** 三项迁入 `docs/future_iterations.md`——它们才是"有意延后"的能力。
 2. `PROGRESS.md` §6 改为只指向下一阶段入口，不重复罗列条目。
-3. 更新 `docs/phase1_test_plan.md`：E1–E4 的 phase 归属改为引用本计划，不再单独维护一份清单。
-4. 修正 `phase0_development_plan.md` 的验收判据：原文以"文件存在"通过（`AddCvOptimizationProfile`
+3. 更新 `docs/dev/REQ-002-plugins/phase1_test_plan.md`：E1–E4 的 phase 归属改为引用本计划，不再单独维护一份清单。
+4. 修正 `docs/dev/REQ-001-bootstrap/phase0_development_plan.md` 的验收判据：原文以"文件存在"通过（`AddCvOptimizationProfile`
    等只声明未定义也算过），改为可执行判据（"该方法有定义且被调用"），避免同类漏项重演。
 
 ---
@@ -376,7 +376,7 @@ scripts/
   > **更正（2026-09-25）**：下面这条原写"E4 五条用例在沙箱内实际执行并通过"，
   > 但 E4.4/E4.5 需要 `createInferBuilder`（→ CUDA），无 GPU 时只能跳过。
   > 实际口径：**3 条沙箱（E4.1/E4.2/E4.3）+ 2 条真机（E4.4/E4.5）**。
-  > 逐条状态见 `docs/phase1_5_test_plan.md` §2 与 §6（状态唯一来源已收敛到那里）。
+  > 逐条状态见 `docs/dev/REQ-003-test-infra/phase1_5_test_plan.md` §2 与 §6（状态唯一来源已收敛到那里）。
 - [ ] E4 三条沙箱用例实际执行并通过（CI 防线建立），另两条真机通过。
 - [ ] E1 四条用例在真机通过，FP32 绝对误差 < `1e-4`。
 - [ ] E2 的 logits 与 PyTorch 独立参考在阈值内，FP16 变体按 D4 判定。
@@ -412,4 +412,4 @@ scripts/
 ---
 
 *文档版本：v1.0*  
-*关联文档：`docs/phase1_test_plan.md`（用例设计）、`docs/PROGRESS.md`、`docs/TROUBLESHOOTING.md`*
+*关联文档：`docs/dev/REQ-002-plugins/phase1_test_plan.md`（用例设计）、`docs/PROGRESS.md`、`docs/TROUBLESHOOTING.md`*

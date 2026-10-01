@@ -11,7 +11,7 @@
 
 依赖：onnx（见 requirements.txt）。
 
-注意：`--check` 的基线是**首次实测值**（见 docs/phase3_development_plan.md + PH3-ASSETS），
+注意：`--check` 的基线是**首次实测值**（见 docs/dev/REQ-006-gpt2-onnx/phase3_development_plan.md + PH3-ASSETS），
 不是"随便定的期望"。图变了就让 `--check` 红着，先判断变化是有意为之还是意外。
 """
 
@@ -32,7 +32,7 @@ def require_assets() -> bool:
 
     为什么需要：ctest 把"跳过"记成 Passed，于是**缺资产导致的覆盖下降对 CI 不可见**
     （实测 2026-09-27：把两个历史示例工程改名后全量仍报 265 条 / 100% passed / 0 failed，
-    只有跳过集合变了 3 项；见 docs/phase5_development_plan.md 阶段 0）。设了这个变量，
+    只有跳过集合变了 3 项；见 docs/dev/REQ-009-retire-legacy/phase5_development_plan.md 阶段 0）。设了这个变量，
     缺资产返回 1（失败）而不是 77（跳过）。
 
     它只管**资产**缺失；缺 Python 包属环境问题，仍按跳过处理。

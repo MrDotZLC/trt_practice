@@ -1,8 +1,10 @@
 # Requirement
 
 > **性质**：历史需求回填（2026-10-01）。内容从下列来源抽取，**未新增任何当时的决定**。
-> **来源**：`docs/phase1_5_development_plan.md` §1 阶段目标 / §5 验收标准。
-> **判据的另一半**：`docs/phase1_5_test_plan.md` §2 / §6（状态唯一来源）。
+> **来源**：`docs/dev/REQ-003-test-infra/phase1_5_development_plan.md` §1 阶段目标 / §5 验收标准。
+> **判据的另一半**：见本目录 `test_plan.md`（原出处：`docs/dev/REQ-003-test-infra/phase1_5_test_plan.md` §2 / §6（状态唯一来源））
+> **设计**：见本目录 `design.md`。
+> **谁引用这里**：无仓外引用。
 > **数字与结论**：不在本文重复。
 > **状态**：已交付。
 
@@ -38,7 +40,7 @@ optimization profile 只声明未实现，是下一阶段的硬前置；另外�
 
 ## Acceptance Criteria
 
-来源：`docs/phase1_5_development_plan.md` §5（7 条）。
+来源：`docs/dev/REQ-003-test-infra/phase1_5_development_plan.md` §5（7 条）。
 
 1. 底层缺陷修复各有针对性回归用例，且**都不需要 GPU 即可运行**。
 2. 沙箱 `ctest` 全绿，GPU 用例以显式跳过方式呈现、不产生噪声。

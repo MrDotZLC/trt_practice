@@ -177,7 +177,7 @@ AttentionFixture MakeFixture(int32_t batch_size, int32_t num_heads, int32_t num_
 // 为什么需要它：`AttentionFixture` 里 `max_blocks_per_seq` 与 `context_lens` 是两个独立入参，
 // 手写时极易给出"上下文 300 个位置、块表只够 48 个位置"这种自相矛盾的组合——此时
 // `block_table[t / block_size]` 会读出行宽之外，**host 参考直接 SEGFAULT**
-// （2026-09-27 真机 #121~#123 三条崩溃全是这么来的，见 `TROUBLESHOOTING` #44）。
+// （2026-09-27 真机 #121~#123 三条崩溃全是这么来的，见 `TROUBLESHOOTING` + TS-044）。
 // **长上下文的夹具一律走这个 helper**；短上下文的老夹具保持原样（它们的宽度本来就够）。
 AttentionFixture MakeLongContextFixture(int32_t batch_size, int32_t num_heads,
                                         int32_t num_kv_heads, int32_t head_size,
@@ -212,7 +212,7 @@ void AssertFixtureConsistent(const AttentionFixture& fixture) {
             (context_len + fixture.block_size - 1) / fixture.block_size;
         ASSERT_LE(blocks_needed, fixture.max_blocks_per_seq)
             << "夹具不合格：batch=" << b << " 需要 " << blocks_needed << " 个块，块表只有 "
-            << fixture.max_blocks_per_seq << " 列（见 TROUBLESHOOTING #44）";
+            << fixture.max_blocks_per_seq << " 列（见 TROUBLESHOOTING + TS-044）";
         const int32_t* row =
             fixture.block_tables.data() + static_cast<size_t>(b) * fixture.max_blocks_per_seq;
         for (int32_t k = 0; k < blocks_needed; ++k) {
@@ -820,7 +820,7 @@ TEST(PagedAttentionSplitKernelTest, ZeroContextLengthProducesZeros) {
         ASSERT_EQ(actual.size(),
                   static_cast<size_t>(fixture.num_heads) * fixture.head_size);
         // num_heads == num_kv_heads == 2，所以 kv_head == h：**每个 head 用自己的那一段
-        // value_new**，不是共用同一段（写这条断言时把 GQA 的比例搞反过，见 TROUBLESHOOTING #44）
+        // value_new**，不是共用同一段（写这条断言时把 GQA 的比例搞反过，见 TROUBLESHOOTING + TS-044）
         for (int32_t h = 0; h < fixture.num_heads; ++h) {
             const int32_t kv_head = h / (fixture.num_heads / fixture.num_kv_heads);
             for (int32_t d = 0; d < fixture.head_size; ++d) {
@@ -892,8 +892,8 @@ TEST(PagedAttentionSplitKernelTest, MatchesSinglePassKernelDiagnostic) {
 
 // PP-1：kernel 级同 session A/B（**P 层，只打印**）。
 //
-// 为什么必须是"同二进制 + 同 session + 同轮交替"：`TROUBLESHOOTING` #37（分段测量没有判别力）
-// 与 #38（跨协议、跨 session 的差值不可直接比）。F3=A 保留了旧单趟 kernel，所以两版都在
+// 为什么必须是"同二进制 + 同 session + 同轮交替"：`TROUBLESHOOTING` + TS-037（分段测量没有判别力）
+// 与 TS-038（跨协议、跨 session 的差值不可直接比）。F3=A 保留了旧单趟 kernel，所以两版都在
 // **同一个二进制**里，交替跑即可——不需要建引擎、不占真机往返预算。
 //
 // **计时口径**：每轮把同一版**连续发射 kLaunchesPerRound 次、只同步一次**，再除以次数。

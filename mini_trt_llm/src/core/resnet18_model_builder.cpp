@@ -101,7 +101,7 @@ nvinfer1::ITensor* AddConv(nvinfer1::INetworkDefinition* network, nvinfer1::ITen
                            int32_t kernel, int32_t stride, int32_t pad) {
     // 卷积的权重/偏置**直接以 nvinfer1::Weights 传给 addConvolutionNd**：
     // 这是该 API 的既有契约（不是 setInput 挂常量）。指针在本次 build 期间保持有效——
-    // WeightLoader 的转换缓存已按张量名隔离（TROUBLESHOOTING #5），与 GPT-2 builder 依赖同一保证。
+    // WeightLoader 的转换缓存已按张量名隔离（TROUBLESHOOTING + TS-005），与 GPT-2 builder 依赖同一保证。
     const size_t element_size = DtypeSize(dtype);
     const int64_t expected_weight = static_cast<int64_t>(out_channels) * in_channels * kernel * kernel;
     size_t weight_bytes = 0;
@@ -319,7 +319,7 @@ bool ResNet18ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
     // bias 声明成 rank-2 `[1, num_classes]` 而不是 rank-1：TRT 的 element-wise 要求两侧
     // **rank 相同**，而 matmul 的输出是 `[B, 1000]`。写成 rank-1 时 Build() 会"成功"，
     // 但引擎构建阶段报 `Assertion x.nbDims == y.nbDims failed`
-    // （elementWiseNode.cpp）——又是一次"延迟报错"，见 TROUBLESHOOTING #24。
+    // （elementWiseNode.cpp）——又是一次"延迟报错"，见 TROUBLESHOOTING + TS-024。
     nvinfer1::ITensor* fc_bias = AddWeight(network, weights, "fc.bias", dtype,
                                            nvinfer1::Dims{2, {1, num_classes}});
     if (fc_weight == nullptr || fc_bias == nullptr) {

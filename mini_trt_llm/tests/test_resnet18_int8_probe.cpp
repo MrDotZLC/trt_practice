@@ -114,7 +114,7 @@ std::string FindCalibDir() {
 EngineBuilder::Config ProbeConfig() {
     EngineBuilder::Config config;
     config.precision = Precision::INT8;
-    // 逐层精度只有建图时打开才读得到（TROUBLESHOOTING #27）。这里一并把 PC/PT 的
+    // 逐层精度只有建图时打开才读得到（TROUBLESHOOTING + TS-027）。这里一并把 PC/PT 的
     // tactic 分布打出来——**当根因不在 TRT 侧时，这条信息就是"TRT 无辜"的直接证据**。
     config.detailed_profiling = true;
     return config;
@@ -645,13 +645,13 @@ TEST(Int8ProbeTest, LayerwiseErrorGrowthVsOnnxReference) {
               << "；判据 = " << kDivergenceFactor << " × 地板 = " << threshold << "\n";
     // **这条判据问的是"引擎有没有跑偏它自己的图"，不是"两臂谁更准"。**
     // 别把它读成"整网有没有分叉"——那件事由 B1-4（复现对照）与文件级的饱和统计回答
-    // （`TROUBLESHOOTING.md` #46 / #47.3）。
+    // （`TROUBLESHOOTING.md` + TS-046 / #47.3）。
     if (first_diverged < 0) {
         std::cout << "[Int8Probe] 两臂都**未越过**判据 → 两个引擎都忠实执行了各自的图。\n"
                      "[Int8Probe]   ⇒ PC 更差**不是引擎造成的**，而在于图（文件）本身："
                      "权重 scale 取自未折 BN 的权重，\n"
                      "[Int8Probe]     导致 16.19% 的 int8 权重被 clamp 饱和、而改源后只有 0.044%"
-                     "（见 `TROUBLESHOOTING.md` #46 / #47.3）。\n";
+                     "（见 `TROUBLESHOOTING.md` + TS-046 / #47.3）。\n";
     } else {
         std::cout << "[Int8Probe] PC 臂**首次越界**在第 " << (first_diverged + 1)
                   << " 个张量：" << pc_curve[static_cast<size_t>(first_diverged)].name
@@ -765,7 +765,7 @@ TEST(Int8ProbeTest, PerChannelDegradationReproducesUnderProbe) {
               << pt_confident_agree << "/" << confident << " = " << pt_rate * 100.0
               << "%   PC " << pc_confident_agree << "/" << confident << " = "
               << pc_rate * 100.0 << "%\n"
-              << "[Int8Probe]   正式产物口径（TROUBLESHOOTING #29.5）：PT 100% / PC 54.5%\n";
+              << "[Int8Probe]   正式产物口径（TROUBLESHOOTING + #29.5）：PT 100% / PC 54.5%\n";
 
     ASSERT_GT(confident, 0) << "没有任何有余量的样本，这批图不适合做复现对照";
     EXPECT_LT(pc_rate, pt_rate)

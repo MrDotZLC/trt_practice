@@ -2,7 +2,9 @@
 
 > **性质**：历史需求回填（2026-10-01）。内容从下列来源抽取，**未新增任何当时的决定**。
 > **来源**：`docs/future_iterations.md` §5.1；`docs/future_iterations_development_plan.md` §2.1。
-> **判据的另一半**：`docs/future_iterations_test_plan.md` §2.1（15 条，含"文本 → prompt token"桥接）。
+> **判据的另一半**：见本目录 `test_plan.md`（原出处：`docs/future_iterations_test_plan.md` §2.1（15 条，含"文本 → prompt token"桥接））
+> **设计**：见本目录 `design.md`。
+> **谁引用这里**：无仓外引用。
 > **数字与结论**：不在本文重复。
 > **状态**：已交付。
 

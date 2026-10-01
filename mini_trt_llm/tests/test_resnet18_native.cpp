@@ -56,7 +56,7 @@ std::string FindOnnxPath() {
 
 EngineBuilder::Config Fp32Config() {
     EngineBuilder::Config config;
-    config.precision = Precision::FP32;  // 与其它对拍一致：显式写出目标精度（#21）
+    config.precision = Precision::FP32;  // 与其它对拍一致：显式写出目标精度（`docs/TROUBLESHOOTING.md` + TS-021）
     return config;
 }
 
@@ -104,7 +104,7 @@ TEST(ResNet18NetworkBuildTest, BuildsWithExpectedIo) {
     }
     Logger logger;
     std::unique_ptr<nvinfer1::IBuilder> builder(nvinfer1::createInferBuilder(logger));
-    ASSERT_NE(builder, nullptr) << "CUDA 可用却建不出 builder（见 TROUBLESHOOTING #19 的教训）";
+    ASSERT_NE(builder, nullptr) << "CUDA 可用却建不出 builder（见 TROUBLESHOOTING + TS-019 的教训）";
     std::unique_ptr<nvinfer1::INetworkDefinition> network(builder->createNetworkV2(0U));
     ASSERT_NE(network, nullptr);
 

@@ -70,7 +70,7 @@ inline std::pair<double, double> MinMax(const std::vector<double>& values) {
     return {*mm.first, *mm.second};
 }
 
-// 斜率口径（`TROUBLESHOOTING.md` #38）：窗口耗时 T(k) = fixed + k · net，
+// 斜率口径（`TROUBLESHOOTING.md` + TS-038）：窗口耗时 T(k) = fixed + k · net，
 // 于是 net = (T(m) − T(1)) / (m − 1)，自动扣掉每窗口的固定开销
 // （事件记录 + 同步 + 首次发射，本环境可达几十 µs，与待测信号同量级）。
 //

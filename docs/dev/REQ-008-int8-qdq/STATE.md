@@ -15,6 +15,10 @@
 ## Completed Artifacts
 
 - `requirement.md`（2026-10-01，**历史需求回填**）
+- `design.md`（2026-10-01，**历史设计回填**）
+- `test_plan.md`（2026-10-01，**历史用例回填**）
+- 归档原文：`docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md`（自 `docs/` 根迁入，文件名不变）
+- `phase4-excerpts.md`（2026-10-01，从 Phase 4 主计划 / 测试计划**摘出的 INT8 条目**，逐字保留）
 
 ---
 

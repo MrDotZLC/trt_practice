@@ -1,8 +1,12 @@
 # Requirement
 
 > **性质**：历史需求回填（2026-10-01）。内容从下列来源抽取，**未新增任何当时的决定**。
-> **来源**：`docs/phase5_development_plan.md` §1 目标与范围 / §9 验收判据。
-> **判据的另一半**：同文件 §4.1 / §5.1 / §7 / §8 的执行状态。
+> **来源**：`docs/dev/REQ-009-retire-legacy/phase5_development_plan.md` §1 目标与范围 / §9 验收判据。
+> **判据的另一半**：见本目录 `test_plan.md`（原出处：同文件 §4.1 / §5.1 / §7 / §8 的执行状态）
+> **设计**：见本目录 `design.md`。
+> **谁引用这里**：根 `README.md`、`assets/legacy/README.md`（2 处）、`src/core/builder.cpp`、
+> `tools/check_skips.py`、`tools/convert/onnx_to_mini_trt_llm.py`、`tools/inspect_onnx.py`、
+> `tests/test_asset_guard.hpp`（2 处）。
 > **数字与结论**：不在本文重复。
 > **状态**：已完成（阶段 0~4）。
 
@@ -39,7 +43,7 @@
 
 ## Acceptance Criteria
 
-来源：`docs/phase5_development_plan.md` §9（4 条，每条都写明"凭什么"）。
+来源：`docs/dev/REQ-009-retire-legacy/phase5_development_plan.md` §9（4 条，每条都写明"凭什么"）。
 
 1. 资产迁移后，沙箱**跳过集合逐条不变**（用集合而非条数——本计划的坑正是"条数不变、用例换人"）。
 2. 目录删除后，真机跳过集合 = 阶段 0 钉住的基线；删除的唯一可接受后果是"零变化"。

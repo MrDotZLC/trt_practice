@@ -14,7 +14,7 @@
 > 前者恰恰只有「真实 engine 构建」才会触发——这正是本计划要常态化的覆盖。
 
 > **本文档只描述"测什么、为什么这么测"（用例设计与链路）**。
-> E1–E4 的任务归属、开发顺序、产出与验收以 `docs/phase1_5_development_plan.md` 为准，
+> E1–E4 的任务归属、开发顺序、产出与验收以 `docs/dev/REQ-003-test-infra/phase1_5_development_plan.md` 为准，
 > 本文档不再单独维护进度清单，避免两处各记一份。
 
 ---
@@ -163,7 +163,7 @@ key_cache / value_cache（网络输入） ────────────�
 > 实测**不成立**：E4.4（`weight_map` 指向不存在的 key）与 E4.5（构建期失败传播）都要走
 > `createInferBuilder`，无 GPU 时同样 `GTEST_SKIP`。实际口径是 **3 条沙箱（E4.1/E4.2/E4.3）
 > + 2 条真机（E4.4/E4.5）**，与 `PROGRESS.md` §3.10 的记录一致。
-> 用例 → 环境的完整映射见 `docs/phase1_5_test_plan.md` §2。
+> 用例 → 环境的完整映射见 `docs/dev/REQ-003-test-infra/phase1_5_test_plan.md` §2。
 
 ---
 
@@ -239,4 +239,4 @@ Step 1 与 Step 2 互不依赖可并行；Step 5 是 E3 的硬前置，若 Phase
 ---
 
 *文档版本：v1.0*  
-*关联文档：`docs/phase1_development_plan.md`（§7 测试策略）、`docs/phase0_model_loading_test_plan.md`（T3 DummyBuilder 端到端，即本计划 E1 的前身）、`docs/TROUBLESHOOTING.md`*
+*关联文档：`docs/dev/REQ-002-plugins/phase1_development_plan.md`（§7 测试策略）、`docs/dev/REQ-001-bootstrap/phase0_model_loading_test_plan.md`（T3 DummyBuilder 端到端，即本计划 E1 的前身）、`docs/TROUBLESHOOTING.md`*

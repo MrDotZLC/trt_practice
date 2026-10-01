@@ -190,8 +190,8 @@
 |---|---|
 | `mini_trt_llm/tools/validate/int8_eval.py` | 新增：读 logits + meta → 输出**分层报告**（每层：率 + 样本量 n） |
 | `mini_trt_llm/tools/validate/README.md` | 新增：验收集规格（来源 / 版本 / SHA256 / 与 `calib_data` 的重叠排除规则） |
-| `docs/phase4_int8_plan.md` + PH4-INT8-CRITERIA | 改：把新规格接进判据表（**先改文档**） |
-| `docs/phase4_test_plan.md` R2.6 | 改：判据出处指向新规格 |
+| `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` + PH4-INT8-CRITERIA | 改：把新规格接进判据表（**先改文档**） |
+| `docs/dev/REQ-007-resnet18/phase4_test_plan.md` R2.6 | 改：判据出处指向新规格 |
 | `mini_trt_llm/tests/CMakeLists.txt` | 加：脚本自检项（`--self-test`，缺 Python/资产返回 77） |
 
 **步骤**：
@@ -209,7 +209,7 @@
 
 **明确不做**：下载验收集、定绝对误差阈值（那需要真数据，见 §4 的 C 组）。
 
-**破坏性动作**：改动 `docs/phase4_int8_plan.md` + PH4-INT8-CRITERIA 与 `docs/phase4_test_plan.md` R2.6 的**判据表文字**
+**破坏性动作**：改动 `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` + PH4-INT8-CRITERIA 与 `docs/dev/REQ-007-resnet18/phase4_test_plan.md` R2.6 的**判据表文字**
 （不删条目、不改判据本身）——按 `AGENTS.md` §0.5，动手前把这两处改动一次性列给你确认。
 **已执行（2026-09-26 获你批准）**：两处均为**追加**指向新规格与脚本，未改动任何既有判据；
 另按同一批批准把 `int8_eval_selftest` 注册进 `tests/CMakeLists.txt`。
@@ -316,7 +316,7 @@
 5. **跳过或失败都要显式**：`MINI_TRT_SKIP_IF_NO_CUDA` / ctest 的 77；缺资产 → 跳过并打印探测结果。
 6. **不擅自删旧模块**：`0_resnet18_onnx/`、`1_gpt2_onnx/` 归作者——**未经点名批准不得删除或移动**。
    Phase 5 已于 **2026-09-28 执行完成**（`PROGRESS.md` §4.6）：两个目录连同 4 条软链接已删除、
-   资产在 `assets/legacy/`，执行记录见 `docs/phase5_development_plan.md`。**本条规则本身不变**——
+   资产在 `assets/legacy/`，执行记录见 `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md`。**本条规则本身不变**——
    今后凡"某个文件还有没有人用 / 能不能删"的判断仍归作者。
 7. **阈值纪律**：每个阈值旁写出处；不跨精度复用；放宽前先量"与正确性无关的差异"。
 
@@ -441,7 +441,7 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
 | 任务 | 状态 | 产出 | 判据实测值 / 出处 |
 |---|---|---|---|
 | A1 BPE Tokenizer | ✅ **完成**（2026-09-26） | `tokenizer/bpe_tokenizer.{hpp,cpp}`；`utils/json.hpp` 补 `\uXXXX`；`tools/make_tokenizer_golden.py` + `tests/data/gpt2_tokenizer_golden.json`；`tests/test_bpe_tokenizer.cpp`（8 条）+ 参考自证 1 条 + `test_json.cpp`（6 条）+ `test_gpt2_generate.cpp` 的桥接用例 1 条；ctest 项 `tokenizer_golden_check` | `Encode` 与 HF **逐 token 全等**（21 样本：basic 3 / whitespace 5 / utf8 10 / long 1 / edge 2；长文本 306 token）；`Decode` 一致；4 条 `Load` 负例全部拒绝；`ctest -R tokenizer_golden_check` Passed 3.21 s；沙箱全量 **204 条 / 0 失败**。排查过程 → `TROUBLESHOOTING.md` #33 |
-| A2 INT8 判据离线规格 | ✅ **完成**（2026-09-26） | `tools/validate/README.md`（规格）、`tools/validate/int8_eval.py`（评估 + 自检 + `--legacy-mode`）、ctest 项 `int8_eval_selftest`；`phase4_int8_plan.md` §4 与 `phase4_test_plan.md` R2.6 后续行已加指向 | `--self-test` 全绿（3 项分层数学 + 7 道护栏 + 1 项 legacy 标注）；真实 `calib_data`（500 文件）smoke 通过；沙箱全量 **204 条 / 0 失败** |
+| A2 INT8 判据离线规格 | ✅ **完成**（2026-09-26） | `tools/validate/README.md`（规格）、`tools/validate/int8_eval.py`（评估 + 自检 + `--legacy-mode`）、ctest 项 `int8_eval_selftest`；`docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §4 与 `docs/dev/REQ-007-resnet18/phase4_test_plan.md` R2.6 后续行已加指向 | `--self-test` 全绿（3 项分层数学 + 7 道护栏 + 1 项 legacy 标注）；真实 `calib_data`（500 文件）smoke 通过；沙箱全量 **204 条 / 0 失败** |
 | A2-5 INT8 口径交叉校验 | ✅ **真机通过**（2026-09-26，作者执行） | C++ 侧 `ResNet18Int8AccuracyTest.DumpsLogitsAndCppReportForCrossCheck`；`tools/validate/int8_eval.py --legacy-mode` + `crosscheck_reports.py`；ctest 项 `int8_crosscheck` / `int8_crosscheck_selftest` | 沙箱：`--self-test` 5 项全过；**真机：三步全过（作者回报"4. pass"）**，说明两侧实现对同一批 logits 给出**同一组 n 与分子** |
 | B 文本端到端 | ✅ **真机通过**（2026-09-26，作者执行） | `Gpt2GenerateTest.RealGpt2TextPromptEndToEnd` | **真机：PASSED（作者回报"3. pass"）**——分词 / 生成 / 解码文本三段判据全过，即"文本进 → 文本出"链路成立 |
 | A 真机全量 | ✅ **215 条 / 1 红**（2026-09-26 全量重跑确认） | —— | 唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`（按设计）。更早的 204 条 / 2 红 是修正判据前的快照：ONNX argmax 那条机制见 `TROUBLESHOOTING.md` #34.6、判据见 #34.9、复跑实测见 #34.9 末尾 |
@@ -781,7 +781,7 @@ S-17 取消（新方案不动 workspace，见测试计划 §9.2.2） |
 2. **对同一次 session 里现测的 legacy：3/4 达标**，`50257×1 = 9.99193×`，**差 0.08%**。
    为什么会差：legacy 在 50257×1 上从基线的 8.1469 ms 掉到今天的 6.2586 ms（**−23.2%**），
    而另外三个形状只漂了 +2.9% ~ +9.2%。**这正是 G6 要"同一 session 内比较"的原因**——
-   跨 session 的 ±25% 漂移（`phase3_test_plan.md` §5 记过同一现象）足以把 13× 变成 10×。
+   跨 session 的 ±25% 漂移（`docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` §5 记过同一现象）足以把 13× 变成 10×。
    **两个数字都成立、都留档**；阈值一个都没动。
 
 **缺口归因（已定量，不是猜的）**：新路径里 `top-p − top-k` = 采样 kernel 的净成本
@@ -2109,7 +2109,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 
 | 产物 | 身份 | 依据 |
 |---|---|---|
-| `models/resnet18/resnet18_qdq.onnx` | **正式产物**（per_tensor + 默认 `torchvision` 源） | `phase4_int8_plan.md` §4/§7；默认路径逐字节可复现（§13.10） |
+| `models/resnet18/resnet18_qdq.onnx` | **正式产物**（per_tensor + 默认 `torchvision` 源） | `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §4/§7；默认路径逐字节可复现（§13.10） |
 | `models/resnet18/resnet18_qdq_per_channel.onnx` + 其探针图 | **`TROUBLESHOOTING.md` #46 的复现样本，不是候选基线** | 它按"错源"生成：权重 scale 取自**未折 BN** 的权重，16.19% 的 int8 权重被 clamp 饱和（#47.3）。**B1-4 的红是设计**——它要的就是"PC 比 PT 差" |
 | `/tmp/resnet18_qdq_per_channel_fixed.onnx`（仅 /tmp，未入 `models/`） | 离线实验件（改源后的 per-channel 图，已验证余量子集 100%） | #46.2 第 5 步 |
 
@@ -2117,7 +2117,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 
 | # | 事项 | 收益 | 真实成本（为什么现在不做） |
 |---|---|---|---|
-| ① | 把 `--weight-range-source` **默认**切到 `onnx` | 语义更正确：scale 与"被量化的张量"一致。实测 per-tensor 的饱和权重 **3.919% → 0.000%（20 个，每张权重恰好 1 个 = 教科书形态）** | **换了默认就等于换了正式产物** → `phase4_int8_plan.md` §4 的判据行（整体 37.9% / 余量子集 12/12）、`PROGRESS.md` §3.0d、`phase4_test_plan` R2.6、C 批交叉校验的 n 与分子、以及 `.meta.json` 里的裁剪值/预设**全部要真机重测回填**（§5 计划对账纪律）。而**"更准"的证据不足**：64 张、余量子集仅 11 张的图上，改源前后判据与一致率**完全一样**（60.9% / 100%，`max_abs` 21.736 → 21.556）。也就是说换默认的理由只能是"**更对**"，不能是"更准"——而下这个判断**不需要**换默认，显式传参即可 |
+| ① | 把 `--weight-range-source` **默认**切到 `onnx` | 语义更正确：scale 与"被量化的张量"一致。实测 per-tensor 的饱和权重 **3.919% → 0.000%（20 个，每张权重恰好 1 个 = 教科书形态）** | **换了默认就等于换了正式产物** → `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §4 的判据行（整体 37.9% / 余量子集 12/12）、`PROGRESS.md` §3.0d、`phase4_test_plan` R2.6、C 批交叉校验的 n 与分子、以及 `.meta.json` 里的裁剪值/预设**全部要真机重测回填**（§5 计划对账纪律）。而**"更准"的证据不足**：64 张、余量子集仅 11 张的图上，改源前后判据与一致率**完全一样**（60.9% / 100%，`max_abs` 21.736 → 21.556）。也就是说换默认的理由只能是"**更对**"，不能是"更准"——而下这个判断**不需要**换默认，显式传参即可 |
 | ② | 重生成 per-channel 产物（改源） | 不在盘上留"已知错误"的文件 | **零功能收益**：默认路径上没有任何代码/测试/工具读它（`ResNet18Int8*` 读的是 per_tensor 那份）。**但它是 B1-4 的承重件**——重生成后现象消失，**B1-4 会立刻变红**。所以它不是"一条命令"，而要打包三件事：㈠ 重生成 per-channel 图与探针图；㈡ **退役或改写 B1-4**（从"断言 PC 更差"改成"两臂都对 FP32 全一致"之类；按 §7 这属于"证明期望值本身错"，允许，但**必须把依据写下来**）；㈢ 可选：把坏的那份**钉成回归夹具**（13 MB，唯一用途是复现历史 bug） |
 
 **触发条件（将来要做时从这里接）**：

@@ -1,9 +1,9 @@
-// "跨实现 argmax 比较"判据的 host 用例（方案 B，TROUBLESHOOTING.md #34）。
+// "跨实现 argmax 比较"判据的 host 用例（方案 B，TROUBLESHOOTING.md + TS-034）。
 //
 // 为什么单独一处：判据本身（哪些行算可判、翻转怎么归因）是纯 host 逻辑，
 // 必须能在 CI / 沙箱里被裁决——否则它只能在真机上"看起来对"。
 // 本文件锁三件事：① 语义（可判行 / 不可判行的划分）；② 边界（严格 `>`）；
-// ③ #34 那次事故的最小复现（真实数字：余量 1.53e-05 vs 两侧差 1.14e-04）。
+// ③ `docs/TROUBLESHOOTING.md` + TS-034 那次事故的最小复现（真实数字：余量 1.53e-05 vs 两侧差 1.14e-04）。
 
 #include "gpt2_test_support.hpp"
 
@@ -39,7 +39,7 @@ TEST(ArgmaxCriterionTest, DecidableRowAgreeingIsClean) {
 
 TEST(ArgmaxCriterionTest, NearTieFlipIsUndecidableNotViolation) {
     // margin = 1e-4，两侧差 = 0.2 → 2d = 0.4 > margin → 不可判；ONNX 翻到 class 1。
-    // **这正是 #34 的形态**：并列低于两侧差异时，翻转不该再被算成缺陷。
+    // **这正是 `docs/TROUBLESHOOTING.md` + TS-034 的形态**：并列低于两侧差异时，翻转不该再被算成缺陷。
     const std::vector<float> native = NativeRow(1e-4f);
     const std::vector<float> onnx = {-0.1f, 0.1f, -100.0f, -100.0f};
     const ArgmaxAgreement result =
@@ -95,8 +95,8 @@ TEST(ArgmaxCriterionTest, CountsAndIndicesAcrossMixedRows) {
     EXPECT_EQ(result.undecidable_row_indices[1], 2);
 }
 
-// #34 事故的最小复现：用真机实测的那组数字，确认它被判为"不可判"而不是"缺陷"。
-// 数字出处：TROUBLESHOOTING.md #34.6（native 余量 1.52588e-05；两侧最大差 1.14441e-04）。
+// TS-034 事故的最小复现：用真机实测的那组数字，确认它被判为"不可判"而不是"缺陷"。
+// 数字出处：TROUBLESHOOTING.md + #34.6（native 余量 1.52588e-05；两侧最大差 1.14441e-04）。
 TEST(ArgmaxCriterionTest, IncidentRow118IsClassifiedUndecidable) {
     constexpr float kMargin = 1.52588e-05f;         // native top1 − top2（实测）
     constexpr float kInterEngineDiff = 1.14441e-04f;  // 该行两侧最大逐元素差（实测）
@@ -107,7 +107,7 @@ TEST(ArgmaxCriterionTest, IncidentRow118IsClassifiedUndecidable) {
         CompareArgmaxByDecidability(onnx.data(), native.data(), 1, kVocab);
     EXPECT_EQ(result.undecidable_rows, 1);
     EXPECT_EQ(result.violations, 0)
-        << "若这条报红，说明判据把 #34 那种并列当成缺陷了（方案 B 的核心行为被破坏）";
+        << "若这条报红，说明判据把 `docs/TROUBLESHOOTING.md` + TS-034 那种并列当成缺陷了（方案 B 的核心行为被破坏）";
 }
 
 }  // namespace mini_trt_llm

@@ -5,7 +5,7 @@
 //
 // 为什么这些用例值得单独存在：分片边界（不整除、片数超过位置数、只有当前 token）
 // 与 workspace 布局都是**纯逻辑**，而它们出错的表现是"某些长度下结果错/NaN"或
-// "越界写"——前者在真机上极难归因，后者只在真机暴露（`TROUBLESHOOTING` #18 / #24）。
+// "越界写"——前者在真机上极难归因，后者只在真机暴露（`TROUBLESHOOTING` + TS-018 / TS-024）。
 // 能在沙箱裁掉的，就不该留给真机（`PROGRESS.md` §2.13）。
 
 #include "mini_trt_llm/plugins/paged_attention_split.hpp"

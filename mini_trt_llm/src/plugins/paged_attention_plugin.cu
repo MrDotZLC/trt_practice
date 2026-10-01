@@ -34,7 +34,7 @@ int32_t g_num_splits_override = 0;
 // 单趟不需要按 max_context_len 预分配缓存，也不需要把整行 logits 物化到显存。
 //
 // 代价是每处理一个历史位置就要做一次 block 归约。这是 Phase 1 为换取正确性接受的
-// 取舍；warp 级优化留到后续迭代（见 docs/phase1_development_plan.md + PH1-RISKS）。
+// 取舍；warp 级优化留到后续迭代（见 docs/dev/REQ-002-plugins/phase1_development_plan.md + PH1-RISKS）。
 template <typename T>
 __global__ void PagedAttentionDecodeKernel(
     const T* __restrict__ query, const T* __restrict__ key_cache,
@@ -210,7 +210,7 @@ __global__ void PagedAttentionSplitKernel(
 
     // **空片也要显式写哨兵**（m = -inf / l = 0）：stage-2 用 `l <= 0` 判定"这片没内容"。
     // 不写就会读到 workspace 上一轮的残留值 —— 输出与历史调用有关（PROGRESS.md §2.12 /
-    // TROUBLESHOOTING #4 是同一类坑）。
+    // TROUBLESHOOTING + TS-004 是同一类坑）。
     if (threadIdx.x == 0) {
         slot[0] = running_max;
         slot[1] = running_sum;
@@ -637,7 +637,7 @@ size_t PagedAttentionPlugin::getWorkspaceSize(
     // **必须用 `.max`，不能用 `desc.dims`**：动态轴在 `desc.dims` 里是 -1
     // （TRT 头文件原话："desc.dims has -1 in place of any runtime dimension"），
     // 拿它算出来的 workspace 会偏小，而 kernel 照样按运行期形状往里写 → 越界写。
-    // 这与 `TROUBLESHOOTING` #18（按假定精度分配缓冲）是同一类错误的两种形态：
+    // 这与 `TROUBLESHOOTING` + TS-018（按假定精度分配缓冲）是同一类错误的两种形态：
     // **边界尺寸必须向对方查询，不能自己假定**。
     const nvinfer1::Dims& query_max = inputs[0].max;
     if (query_max.nbDims != 4) {
@@ -670,7 +670,7 @@ int32_t PagedAttentionPlugin::enqueue(const nvinfer1::PluginTensorDesc* inputDes
     args.block_tables = static_cast<const int32_t*>(inputs[3]);
     args.context_lens = static_cast<const int32_t*>(inputs[4]);
     // has_current_token_ 由 configurePlugin / onShapeChange 依 nbInputs 刷新，
-    // 两者都先于 enqueue（反序列化路径同样会走 onShapeChange，见 TROUBLESHOOTING #8）。
+    // 两者都先于 enqueue（反序列化路径同样会走 onShapeChange，见 TROUBLESHOOTING + TS-008）。
     args.has_current_token = has_current_token_;
     if (has_current_token_) {
         args.key_new = inputs[5];

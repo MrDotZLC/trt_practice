@@ -435,7 +435,7 @@ TEST(Gpt2DecodeConsistencyTest, DecodeWithEmptyCacheMatchesSingleTokenPrefill) {
 
 // 两步 decode 对拍：定位"decode 输出的 K/V → 追加进 cache → 再读回"这条链。
 //
-// **为什么需要它**：`LLMRunner` 的生成在第 3 个新 token 分叉（TROUBLESHOOTING #16），
+// **为什么需要它**：`LLMRunner` 的生成在第 3 个新 token 分叉（TROUBLESHOOTING + TS-016），
 // 而那一步正是第一次读到"由 decode 引擎自己产出、再经 AppendDecodeKV 追加"的 K/V。
 // 单步对拍（本文件第一条用例）与 PagedKVCache 的机制测试都通过，说明每一半都对；
 // 这条用例把两半串起来，并把误差拆成三个量：

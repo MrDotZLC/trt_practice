@@ -60,7 +60,7 @@ __host__ __device__ inline int32_t ScanSegmentForCrossing(ExpAt exp_at, int32_t 
 // 三级定位：**块和 → 子块和 → 元素**，每级都是同一个规则（`FindCrossingSegment` / `ScanSegmentForCrossing`）。
 //
 // 为什么要有第三级：内核的粗分块让每个线程负责一大段（128000 词表下 500 个元素），两级实现里
-// 最后那次"块内逐元素重扫"只能由一个线程串行做——那是**延迟受限**的依赖读链（`TROUBLESHOOTING.md` #35）。
+// 最后那次"块内逐元素重扫"只能由一个线程串行做——那是**延迟受限**的依赖读链（`TROUBLESHOOTING.md` + TS-035）。
 // 把每段再切成 `sub_chunks` 个子块（子块和同样按块内串行口径求出），最后的重扫就从 ≤500 个元素
 // 降到 ≤ ceil(chunk_size / sub_chunks) 个，而且这两级定位全在共享内存里做。
 //

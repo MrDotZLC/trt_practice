@@ -19,7 +19,7 @@
 > - **阶段**：Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成；**Phase 5（清理旧模块）已完成（2026-09-28）**
 >   ——阶段 0~3 已执行，阶段 4 的真机全量验收与本轮回填也已完成：`0_resnet18_onnx/` 与
 >   `1_gpt2_onnx/` 已删除、资产在 `assets/legacy/`。**当前没有在跑的阶段**，下一步等作者点名
->   （§4.6；执行记录见 `docs/phase5_development_plan.md`）。
+>   （§4.6；执行记录见 `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md`）。
 > - **精度**：GPT-2 推荐 **FP32**（FP16 端到端 NaN，按政策不修，§5.11）；ResNet18 的 FP32/FP16
 >   健康；INT8 走 Q/DQ 显式量化，判据 = "FP32 余量子集一致率"（实测 12/12），默认 per_tensor。
 > - **最近一轮交付（2026-09-28）**：**Phase 5（清理旧模块）完成**——两个历史目录已删除、资产在
@@ -97,12 +97,12 @@
 > 当前阶段：**Phase 4 已完成**（ResNet18：ONNX 路径 / 原生路径 / `CVRunner` / 转换工具 / FP16 / INT8）；
 > **没有"自动往下走"的阶段**——**Phase 5（清理旧模块）已于 2026-09-28 执行完成**（阶段 0~4：
 > 资产闸门 → 资产迁移 → 解除借夹具耦合 → 删除两个目录 → 真机验收 + 回填），执行记录见
-> `docs/phase5_development_plan.md`；此后**没有在跑的阶段**，下一步等作者点名（见 §6.6）。
+> `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md`；此后**没有在跑的阶段**，下一步等作者点名（见 §6.6）。
 >
 > **接手必读五件事**：
 > 1. **GPT-2 的推荐精度是 FP32** —— FP16 端到端数值不稳定（NaN，层数随构建变化），
 >    按政策不修，见 §5.11 与 `docs/TROUBLESHOOTING.md` §18.1；
-> 2. Phase 2 的残余缺口（含已定位的已知限制）见 §5.12 与 `docs/phase2_test_plan.md` §5；
+> 2. Phase 2 的残余缺口（含已定位的已知限制）见 §5.12 与 `docs/dev/REQ-004-gpt2-native/phase2_test_plan.md` §5；
 > 3. Phase 3 的缺口只剩 **G5**（ONNX 子图识别只做计数）——**G6 的"可复现测量方法"已于
 >    2026-09-27 交付并随 §11 关闭**（见 §3.0h / 开发计划 §11.5.2）；`docs/future_iterations.md` §11。
 > 4. **测试基线**：**沙箱 268 条 / 0 失败**；真机整轮 267 条 / 1 红 / 0 跳过 / 301.72 s（2026-09-28，
@@ -131,7 +131,7 @@
 >    **产物身份（勿误用）**：`resnet18_qdq.onnx` = **正式产物**；
 >    `resnet18_qdq_per_channel.onnx`（及其探针图）= **#46 的复现样本，不是候选基线**
 >    （B1-4 的"PC 更差"要的就是它）。两件"暂不做"（切默认源 / 重生成 per-channel）见开发计划 **§13.11**。
->    细节见 §3.0d / §3.0j 与 `docs/phase4_int8_plan.md`。
+>    细节见 §3.0d / §3.0j 与 `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md`。
 >    **另一条开放项**：P4-INT8-b → `docs/future_iterations.md` **§1.6**（INT8 绝对误差判据 +
 >    带真值标签的验收集；**前置依赖 = 联网下载，须先获批**）。
 >    §6.6 与 `future_iterations.md` §11 只保留索引，目标 / 做法 / 验收判据在 §1.5 / §1.6。
@@ -214,7 +214,7 @@
 
 ### 2.12 [DEC-IFACE-PHASE1] Phase 1 算子层的接口约定（实现时确立，勿回改）
 
-以下五条是实现 Phase 1 Plugin 时定下的约定，其中前三条与 `phase1_development_plan.md` 的早期表述**不一致**，
+以下五条是实现 Phase 1 Plugin 时定下的约定，其中前三条与 `docs/dev/REQ-002-plugins/phase1_development_plan.md` 的早期表述**不一致**，
 是经用户确认后的有意偏离，后续会话不要按 plan 原文"修正"回去：
 
 <details><summary>展开：2.12 [DEC-IFACE-PHASE1] Phase 1 算子层的接口约定（实现时 全文</summary>
@@ -286,7 +286,7 @@
   转换脚本 / 校验器里的每条"拒绝逻辑"都要有一份**故意改坏**的输入把它打出来
   （例：`resnet18_convert_selftest` 把真模型改坏 5 次，逐个确认自检生效）。
   **为什么**：没有这条证据，"护栏"与"注释里的祈使句"没有区别——项目已经吃过
-  "声明了却没人核对"的亏（`phase3_test_plan.md` §5 的 G1c：子图名核对一栏当年没有用例）。
+  "声明了却没人核对"的亏（`docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` §5 的 G1c：子图名核对一栏当年没有用例）。
 - **新增源文件后必须重新 configure**（2026-09-26 补，**第二次踩**）。
   `mini_trt_llm/CMakeLists.txt` 用 `file(GLOB ...)` 收源文件，GLOB 只在 configure 时求值；
   不重新跑 cmake 的话新文件根本不参与构建，症状是链接期 `undefined reference to vtable for ...`。
@@ -520,7 +520,7 @@
 `7.6e-05 ~ 9.9e-05`（随构建的 tactic 变化，相对量级稳定在 1e-6）；FP16 与
 `seq ∈ {1,64,512}` 对照均通过（实测值未采集，阈值维持 D6/D2 冻结口径）。
 
-**口径与残余缺口**：见 `docs/phase3_test_plan.md`（G1c / G4b / G5 / G6）。
+**口径与残余缺口**：见 `docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md`（G1c / G4b / G5 / G6）。
 **性能结论未定**：两次测量的方向相反（±25%，小于构建间噪声），不能据此判断 ONNX 路径
 是否更优，更不能据此决定是否做子图替换——见 `docs/future_iterations.md` §10.2。
 
@@ -546,7 +546,7 @@
 
 | `tests/test_paged_kv_cache.cpp` | P2S-6：追加用例改为**每层一对**并补两层读回断言；新增负例 `AppendDecodeStepRejectsLayerCountMismatch`（见 `TROUBLESHOOTING.md` #20） |
 
-计划与验收见 `docs/phase2_supplement_plan.md`；缺陷与实测见 `docs/TROUBLESHOOTING.md` #19 / #20。
+计划与验收见 `docs/dev/REQ-005-diagnostics-fix/phase2_supplement_plan.md`；缺陷与实测见 `docs/TROUBLESHOOTING.md` #19 / #20。
 **真机全量结果**：146 条，0 跳过（`MINI_TRT_REQUIRE_GPU=1`），**1 条红 = FP16 NaN 复现器（按设计红）**。
 
 
@@ -554,8 +554,8 @@
 
 ### 3.0d [DEC-PHASE4-DELIVERY] Phase 4 交付（ResNet18 / CV 路径，2026-09-26）
 
-计划与测试计划：`docs/phase4_development_plan.md`、`docs/phase4_test_plan.md`；
-INT8 子计划：`docs/phase4_int8_plan.md`；缺陷与排查：#21 ~ #31。
+计划与测试计划：`docs/dev/REQ-007-resnet18/phase4_development_plan.md`、`docs/dev/REQ-007-resnet18/phase4_test_plan.md`；
+INT8 子计划：`docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md`；缺陷与排查：#21 ~ #31。
 
 <details><summary>展开：3.0d [DEC-PHASE4-DELIVERY] Phase 4 交付（ResNet18 全文</summary>
 
@@ -581,7 +581,7 @@ INT8 子计划：`docs/phase4_int8_plan.md`；缺陷与排查：#21 ~ #31。
 | **原生 vs ONNX**（同一份权重） | `max_abs = 1.07e-6`（阈值 `1e-5`） |
 | 原生 vs torchvision 基线 | `1.05e-5`（阈值 `1e-4`） |
 | **FP16** | ONNX-FP16 vs FP32 基线 `0.031`、原生-FP16 vs ONNX-FP16 `0.0076`、CVRunner+FP16 `0.062`、原生-FP16 vs 基线 `0.033`；**argmax 全一致、无 NaN**（阈值两档 `0.1` / `0.05`，出处 `TROUBLESHOOTING` #26） |
-| **INT8** | Q/DQ 引擎 **43 层 / 38 层含 Int8 张量 / 4 层 `i8i8` tactic**（对照 FP32 引擎 0 层 Int8）；**FP32 余量子集一致率 12/12 = 100%**、整体 38.3%（判据出处 `phase4_int8_plan.md` §4）。产物形态为 **`prequant_dq`**（预量化 int8 权重 + 只留 DQ，ONNX 44.7 MB → **13.3 MB**，实测与 `Q→DQ` 数值等价，见 `TROUBLESHOOTING.md` #31.3） |
+| **INT8** | Q/DQ 引擎 **43 层 / 38 层含 Int8 张量 / 4 层 `i8i8` tactic**（对照 FP32 引擎 0 层 Int8）；**FP32 余量子集一致率 12/12 = 100%**、整体 38.3%（判据出处 `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §4）。产物形态为 **`prequant_dq`**（预量化 int8 权重 + 只留 DQ，ONNX 44.7 MB → **13.3 MB**，实测与 `Q→DQ` 数值等价，见 `TROUBLESHOOTING.md` #31.3） |
 | `CVRunner` 端到端 | batch 1/8 对基线 `1.34e-5`；超范围 batch / 尺寸不符 / `ok()==false` 均显式失败；benchmark `mean≈8.4 ms`、`≈950 img/s`（**仅记录，非判据**） |
 | **真机全量** | **182 条 / 1 红 / 0 跳过**（Phase 4 当时的快照；唯一红 = GPT-2 的 FP16 已知限制。之后新增了批次 A 的 host 用例与脚本项、以及 B / C 的真机用例 → 真机总量应为 204，**待复验**，见 §3.0e / §3.5） |
 
@@ -1036,9 +1036,10 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
   迁移元工作（原 `docs/dev/REQ-000-docs-migration/`）完成后同日退休，其余结论已并入本条与上述规则。
 - **边界**：**未触发与冻结的条目不进编号**，仍由 `future_iterations.md` 保存
   （技能把 `status` 限定为三值，"未开始"无合法取值；建目录必然复制内容 → 漂移）；开工时才建目录。
-- **⚠️ 待办（最后一步）：删除 16 份历史冻结文档**。`phaseN_*.md` 形式的跨文档引用数百处，
-  仓外另有 55 个文件引用 `docs/`；删除方案须附**引用影响清单**并**单独提请批准**。
-  **在此之前不得删除任何历史文档。**
+- **✅ 已完成（2026-10-01）：16 份阶段文档按要求迁入 `docs/dev/REQ-NNN-*/`**——**文件名不变**
+  （锚点 ID 如 `PH4-INT8-CRITERIA` 继续有效），全仓 **240 处引用同步改写**；
+  **执行回填明细、逐条判据状态、原始测量表**随原文一起进入各自目录，条目因此**自包含**。
+  根目录只剩 `mini_trt_llm_design.md` 一份冻结文档（它不是阶段文档）。清单见 `docs/dev/INDEX.md` §5。
 
 ### 3.1 目录与构建
 
@@ -1129,8 +1130,8 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
   B（文本端到端）与 C（INT8 交叉校验）两批真机用例**都通过**；
   `int8_crosscheck` 若在"先全量、后跑 C"的顺序下会**跳过（77，设计如此）**；先跑 C-1/C-2 产出报告则执行并通过。跳过 ≠ 通过。
   实测命令：`cmake --build build -j$(nproc) && ctest --test-dir build`（build 目录已配 `BUILD_TESTS=ON`）。
-  分层与覆盖度详见 §3.9 / §3.10 与 `docs/phase1_test_plan.md`。
-- 待补（不阻塞 Phase 2）：`docs/phase0_model_loading_test_plan.md` 里 T2（ONNX→Engine）仍未实施；
+  分层与覆盖度详见 §3.9 / §3.10 与 `docs/dev/REQ-002-plugins/phase1_test_plan.md`。
+- 待补（不阻塞 Phase 2）：`docs/dev/REQ-001-bootstrap/phase0_model_loading_test_plan.md` 里 T2（ONNX→Engine）仍未实施；
   T1 / T3 的能力已由 Phase 1.5 的 E1/E2 以更强的形式覆盖。
 
 
@@ -1147,22 +1148,22 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 
 - `requirements.txt`：转换工具依赖（已移到项目根目录）。
 - `docs/mini_trt_llm_design.md`：v1.0 设计文档。
-- `docs/phase0_development_plan.md`：Phase 0 开发计划。
-- `docs/phase0_code_review_plan.md`：Phase 0 代码 review 方案（review 由用户本人执行，尚未完成）。
-- `docs/phase0_model_loading_test_plan.md`：Phase 0 模型加载测试方案。状态：T1 / T3 的能力已由
+- `docs/dev/REQ-001-bootstrap/phase0_development_plan.md`：Phase 0 开发计划。
+- `docs/dev/REQ-001-bootstrap/phase0_code_review_plan.md`：Phase 0 代码 review 方案（review 由用户本人执行，尚未完成）。
+- `docs/dev/REQ-001-bootstrap/phase0_model_loading_test_plan.md`：Phase 0 模型加载测试方案。状态：T1 / T3 的能力已由
   Phase 1.5 的 E1 / E2 以更强的形式覆盖；**T2（ONNX → Engine）仍未实施**。
-- `docs/phase1_development_plan.md`：Phase 1 开发方案 + 关键决策确认清单（含合并后的 15 项决策）。
-- `docs/phase1_test_plan.md`：Phase 1 全流程测试计划（模型加载 → builder 分发 → Plugin 挂载 → engine 构建/反序列化 → 推理 → 采样），含前置改造清单（G1/G2/G3）与实施顺序。
-  E1–E4 的**设计**与链路图在这里（唯一来源）；执行结果与验收见 `phase1_5_development_plan.md` §0/§5。
-- `docs/phase1_5_test_plan.md`：Phase 1.5 测试计划——分层（**S 支撑层** host 契约 / **E1** 单算子闭环 /
+- `docs/dev/REQ-002-plugins/phase1_development_plan.md`：Phase 1 开发方案 + 关键决策确认清单（含合并后的 15 项决策）。
+- `docs/dev/REQ-002-plugins/phase1_test_plan.md`：Phase 1 全流程测试计划（模型加载 → builder 分发 → Plugin 挂载 → engine 构建/反序列化 → 推理 → 采样），含前置改造清单（G1/G2/G3）与实施顺序。
+  E1–E4 的**设计**与链路图在这里（唯一来源）；执行结果与验收见 `docs/dev/REQ-003-test-infra/phase1_5_development_plan.md` §0/§5。
+- `docs/dev/REQ-003-test-infra/phase1_5_test_plan.md`：Phase 1.5 测试计划——分层（**S 支撑层** host 契约 / **E1** 单算子闭环 /
   **E2** 多算子链路 / **E3** 动态 shape / **E4** 错误路径）、
   **用例清单（用例 → 判据 → 出处 → 环境 → 状态）**、执行方式（含 `MINI_TRT_REQUIRE_GPU=1` 的真机口径）、
-  覆盖缺口、结果快照。层名刻意不用 `L1`/`L2`——那套编号在 `phase1_test_plan.md` 里指"算子单测/集成"。
+  覆盖缺口、结果快照。层名刻意不用 `L1`/`L2`——那套编号在 `docs/dev/REQ-002-plugins/phase1_test_plan.md` 里指"算子单测/集成"。
   **该阶段原先有意不写独立测试计划**（理由是"只重复 E1–E4 的设计"）；2026-09-25 补写时把定位限定为
-  "索引 + 执行口径"，**设计仍只认 `phase1_test_plan.md` §4**，避免重开两处来源的坑。
-- `docs/phase2_test_plan.md`：Phase 2 测试计划（补记）——分层（L0 host 契约 / L1 建网 / L2 数值 / L3 端到端）、用例清单、判据出处与缺口（G2-1 ~ G2-4）。
-- `docs/phase3_test_plan.md`：Phase 3 测试计划——分层（L0 图结构 / L1a 参数校验 / L1b 图契约 / L2 数值 / L3 性能）、用例清单、判据出处与缺口（G1c 已关闭，余 G5/G6）。
-- `docs/phase1_5_development_plan.md`：Phase 1.5 开发计划（P1.5-0 ~ P1.5-7 的任务、依赖、验收）。
+  "索引 + 执行口径"，**设计仍只认 `docs/dev/REQ-002-plugins/phase1_test_plan.md` §4**，避免重开两处来源的坑。
+- `docs/dev/REQ-004-gpt2-native/phase2_test_plan.md`：Phase 2 测试计划（补记）——分层（L0 host 契约 / L1 建网 / L2 数值 / L3 端到端）、用例清单、判据出处与缺口（G2-1 ~ G2-4）。
+- `docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md`：Phase 3 测试计划——分层（L0 图结构 / L1a 参数校验 / L1b 图契约 / L2 数值 / L3 性能）、用例清单、判据出处与缺口（G1c 已关闭，余 G5/G6）。
+- `docs/dev/REQ-003-test-infra/phase1_5_development_plan.md`：Phase 1.5 开发计划（P1.5-0 ~ P1.5-7 的任务、依赖、验收）。
 - `docs/TROUBLESHOOTING.md`：问题排查记录（现象 / 定位路径 / 根因 / 修复 / 回归防护）。
 - `mini_trt_llm/tools/validate/`：**INT8 判据的验收集规格与评估脚本**（`README.md` 定义 meta 必需字段 /
   重叠排除规则 / 率必带 n；`int8_eval.py` 出分层报告，含 `--self-test` 并已注册为 ctest 项
@@ -1186,7 +1187,7 @@ per-channel 错的是**逐通道倍率** → 系数 >1 的通道 `round(w/s)` �
 - `mini_trt_llm/third_party/sentencepiece/README.md`：记录禁用功能。
 - `docs/PROGRESS.md`：本交接文档（已按 `progress-summary` skill 更新）。
 
-> 历史文档：`docs/phase1_pending_confirmations.md` 的内容已全部合并进 `docs/phase1_development_plan.md` §10，原文件已删除。
+> 历史文档：`docs/phase1_pending_confirmations.md` 的内容已全部合并进 `docs/dev/REQ-002-plugins/phase1_development_plan.md` §10，原文件已删除。
 
 
 </details>
@@ -1302,7 +1303,7 @@ Phase 5 也已完成（阶段 0~4，见 §4.6）。**Phase 之后的四条工作
 
 ### 4.1 Phase 1：Plugin 基础（已完成）
 
-- 决策状态：15 项待确认问题已全部关闭，无遗留阻塞项（详见 `docs/phase1_development_plan.md` §10）。
+- 决策状态：15 项待确认问题已全部关闭，无遗留阻塞项（详见 `docs/dev/REQ-002-plugins/phase1_development_plan.md` §10）。
 - ✅ 完善 `IPluginV3` 基类，补齐 TRT 10.x 接口。
 
 <details><summary>展开：4.1 Phase 1：Plugin 基础（已完成） 全文</summary>
@@ -1337,9 +1338,9 @@ Phase 1 明确不在本次范围内、留待后续的项：
 - ✅ P1.5-3：E1 单算子闭环（4 条）。
 - ⚠️ P1.5-4：E2 **缩减完成**——交付了多权重 BF16 路径的数值验证，
   完整 `RMSNorm → QKV → RoPE → PagedAttention → LM Head` 链路与 `ref_mini_block.py` 有意留后
-  （理由见 `docs/phase1_5_development_plan.md` §0.1）。
+  （理由见 `docs/dev/REQ-003-test-infra/phase1_5_development_plan.md` §0.1）。
 - ✅ P1.5-5 / P1.5-6：Optimization profile 实现；E3 动态 shape 测试。
-- ✅ P1.5-7：文档归位 4/4，含把 `phase0_development_plan.md` 的验收判据改写为可执行形式，
+- ✅ P1.5-7：文档归位 4/4，含把 `docs/dev/REQ-001-bootstrap/phase0_development_plan.md` 的验收判据改写为可执行形式，
   并补上 Phase 0 遗漏的「Optimization profile 能力可用」一条。
 
 真机复验：E1 / E2 / E3 与 E4 的 2 条用例**已通过**。
@@ -1371,7 +1372,7 @@ Phase 1 明确不在本次范围内、留待后续的项：
 
 ### 4.5 [DEC-PHASE4-STATUS] Phase 4：ResNet18 替换（✅ 已完成，2026-09-26）
 
-**交付清单与实测数字见 §3.0d**。计划文档 `docs/phase4_development_plan.md`（§1 保留了
+**交付清单与实测数字见 §3.0d**。计划文档 `docs/dev/REQ-007-resnet18/phase4_development_plan.md`（§1 保留了
 "先读 `0_resnet18_onnx` 历史工程"的四条关键发现，供后续参考）：
 
 <details><summary>展开：4.5 [DEC-PHASE4-STATUS] Phase 4：ResNet18 替换（✅  全文</summary>
@@ -1389,7 +1390,7 @@ Phase 1 明确不在本次范围内、留待后续的项：
    （2026-09-26 重定，理由见该文件 §0.1）；
 4. `EngineBuilder::Config` 的 CV `opt_batch` 默认是 **1**，历史工程用的是 **8** → 会影响性能结论。
 
-任务分解 P4-0 ~ P4-8、测试要点、判据出处都在该计划里；INT8 子计划见 `docs/phase4_int8_plan.md`。
+任务分解 P4-0 ~ P4-8、测试要点、判据出处都在该计划里；INT8 子计划见 `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md`。
 **结论**：ResNet18 的 **FP32 / FP16 都健康**；**INT8 走 Q/DQ 显式量化、判据用"FP32 余量子集一致率"**
 （实测 12/12 = 100%），权重默认 per_tensor。**per-channel 的整网退化原因未知** → 开放项 §6.6。
 
@@ -1402,7 +1403,7 @@ Phase 1 明确不在本次范围内、留待后续的项：
 
 > 原 ID 为 `DEC-PHASE5-CANCELLED`；因决定被改回，ID 随标题一并更新（该 ID 无跨文档引用）。
 
-- **状态**：**✅ 已完成（2026-09-28）**。迁移方案 = `docs/phase5_development_plan.md`
+- **状态**：**✅ 已完成（2026-09-28）**。迁移方案 = `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md`
   （资产盘点 / 阶段 0~4 / 删除清单 / 验收判据 / 风险与回退）——那份文档的执行记录才是细节的
   唯一出处，本节只留结论。
 - **为什么改回来**：作者要求把两个历史示例工程从仓库路径里彻底下线。当初取消的理由
@@ -1421,12 +1422,12 @@ Phase 1 明确不在本次范围内、留待后续的项：
     全局 20 处路径改到新位置，3 个重建脚本迁到 `assets/legacy/scripts/`。
   - **阶段 4**：真机全量验收（**267 条 / 1 红 / 0 跳过 / 301.72 s**，唯一红 = 按设计的 GPT-2 FP16
     NaN 复现器）+ 本轮回填。沙箱 **268 条 / 0 失败**；两边的跳过集合都与迁移前逐条相同。
-  - 细节见 `docs/phase5_development_plan.md` §4.1 / §5.1 / §6 / §7 / §8。
+  - 细节见 `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md` §4.1 / §5.1 / §6 / §7 / §8。
 - **`AGENTS.md` §0.6 仍然成立**：判断"这东西没人用"归作者——本次删除是作者逐条点名批准的，
   不是 Agent 自行判定的。
 - **立项依据**：2026-09-27 的改名实验——两个目录改名后沙箱 ctest **仍报 265 / 0 failed / 100%**，
   只有跳过集合变化（3 项），说明"覆盖损失"对 CI 不可见。证据与表格见
-  `docs/phase5_development_plan.md` §3。
+  `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md` §3。
 
 ---
 
@@ -1535,7 +1536,7 @@ Phase 1 明确不在本次范围内、留待后续的项：
   只有 `Fp16PrefillOutputsDiagnostic` 打开（并用独立引擎路径）。真机复验：9 条目标用例全绿，
   诊断仪器读回的中途张量数值与当初记录逐位一致。
   完整证据与教训见 **`docs/TROUBLESHOOTING.md` #19**，任务与验收见
-  **`docs/phase2_supplement_plan.md`**。
+  **`docs/dev/REQ-005-diagnostics-fix/phase2_supplement_plan.md`**。
 
 
 </details>
@@ -1632,7 +1633,7 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 ## 6. [DEC-NEXT-STEPS] 下一步计划
 
 **没有"自动往下走"的阶段。** Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成；
-**Phase 5（清理旧模块）已于 2026-09-28 完成**（§4.6，执行记录见 `docs/phase5_development_plan.md`），
+**Phase 5（清理旧模块）已于 2026-09-28 完成**（§4.6，执行记录见 `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md`），
 **当前没有在跑的阶段**——下一步等作者点名。
 
 **执行层计划（2026-09-26 产出）**：`docs/future_iterations_development_plan.md`（分批：A 可立即开工 /
@@ -1716,7 +1717,7 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 > 注意：不要再用「E2 的 mini decoder 是 GPT-2 子图的缩微版」这个类比——E2 那条链
 > （`RMSNorm → RoPE → PagedAttention`）是 **LLaMA 风格**的，与 GPT-2 结构不同。
-> 该类比曾写进文档，已更正，见 `docs/phase1_5_development_plan.md` §0.1。
+> 该类比曾写进文档，已更正，见 `docs/dev/REQ-003-test-infra/phase1_5_development_plan.md` §0.1。
 
 
 </details>
@@ -1747,7 +1748,7 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 > Phase 1 / 1.5 沉淀的完整测试与验证约定见 **§2.13**（参考实现唯一性与 meta-test、
 > `batch > 1` 覆盖、验证分层、失败判别方法等）。
 
-> 本节只保留下一步入口。Phase 1 的 15 项已确认决策见 `docs/phase1_development_plan.md` §10，
+> 本节只保留下一步入口。Phase 1 的 15 项已确认决策见 `docs/dev/REQ-002-plugins/phase1_development_plan.md` §10，
 > 接口约定见本文档 §2.12，测试与验证约定见 §2.13，证据与操作纪律见 §2.14，均已归档。
 
 ---
@@ -1770,7 +1771,7 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 2. `5a4017f`（"update PROGRESS.md"）——`PROGRESS.md` §6.5 提交状态段的第一次更正。
 3. `4fe0b98`（"update docs"，2026-09-26）——只动文档，共 3 份：
    本节、`future_iterations.md`（新增 §1.5 / §1.6 两条立项条目 `P4-INT8-a` / `P4-INT8-b`）、
-   `phase4_int8_plan.md` §7 的立项说明。**无代码改动**。
+   `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §7 的立项说明。**无代码改动**。
 4. `61718b6`（"complate Phase 4"，2026-09-26）——Phase 4 的全部产物落盘。
 5. `625939c`（"test for supplementary Phase 2"，2026-09-25）一笔记下了三件事：
 
@@ -1831,7 +1832,7 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 >
 > **重建 ≠ 逐字节相同**：`builder.cpp` 未设 `kDETERMINISTIC`、无 timing cache → TRT 的 tactic 选择是
 > timing-based。本次实测同网络重建后 `resnet18_onnx_fp32.engine` 由 **54,196,084 → 52,357,812 字节（−3.4%）**。
-> **做性能对照必须用同一次构建的引擎**（与 `phase3_test_plan.md` §3.1 的"构建间噪声"同源）。
+> **做性能对照必须用同一次构建的引擎**（与 `docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` §3.1 的"构建间噪声"同源）。
 
 **已知会失败/跳过的测试**（避免新会话误判为回归）：
 
@@ -1869,7 +1870,7 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 - 沙箱：全部 GPU 用例 `GTEST_SKIP`（无 GPU，见 §5.10）；`onnx_graph_probe` 在缺 `onnx` **包**时返回
   77 → `Skipped`（**设计如此**，缺环境 ≠ 图有问题）；但缺**资产**
   （`assets/legacy/gpt2_onnx/gpt2.onnx`）在 `MINI_TRT_REQUIRE_ASSETS=1` 下**判失败**——缺资产会掩盖
-  覆盖损失，缺环境不会（见 §4.6 与 `docs/phase5_development_plan.md` 阶段 0）。
+  覆盖损失，缺环境不会（见 §4.6 与 `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md` 阶段 0）。
 
 </details>
 
@@ -1903,10 +1904,10 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 1. **Phase 5（清理旧模块）已完成**（2026-09-28，见 §4.6）：`0_resnet18_onnx/`、`1_gpt2_onnx/`
    与根 `CMakeLists.txt` 的旧模块注释项已删除（作者逐条批准）；资产在 `assets/legacy/`，
    由 `MINI_TRT_REQUIRE_ASSETS` 闸门守着"缺资产不许静默跳过"。执行记录见
-   `docs/phase5_development_plan.md`。**`AGENTS.md` §0.6 不变**：今后凡"某个文件还有没有人用"
+   `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md`。**`AGENTS.md` §0.6 不变**：今后凡"某个文件还有没有人用"
    的判断仍归作者，Agent 不得自行删除或移动（本次删除是作者点名的，不是 Agent 判的）。
 2. **R0.1（`ResNet18ConfigTest.LoadsCnnConfig`）不单独落地**：config 解析断言已由
-   `ResNet18WeightContractTest` 承担（见 `phase4_test_plan.md` §7），刻意不建重复用例。
+   `ResNet18WeightContractTest` 承担（见 `docs/dev/REQ-007-resnet18/phase4_test_plan.md` §7），刻意不建重复用例。
 
 </details>
 

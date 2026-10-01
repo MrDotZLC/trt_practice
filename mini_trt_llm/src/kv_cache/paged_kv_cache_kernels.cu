@@ -79,7 +79,7 @@ cudaError_t LaunchWriteKV(const PagedKVWriteArgs& args, cudaStream_t stream) {
     }
 
     // CUDA 的 last-error 是粘性的：先清掉入口处可能残留的旧错误，
-    // 后面 cudaGetLastError() 的结果才只反映本次 launch（见 TROUBLESHOOTING #13）。
+    // 后面 cudaGetLastError() 的结果才只反映本次 launch（见 TROUBLESHOOTING + TS-013）。
     (void)cudaGetLastError();
 
     // 四种组合（FP32/FP16 × FP32/FP16）：源由引擎决定、目标由 cache 决定，

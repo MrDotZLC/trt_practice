@@ -307,7 +307,7 @@ def insert_qdq(model: onnx.ModelProto, act_scales, weight_scales,
         if weight_form == "prequant_dq":
             # **权重只留 DequantizeLinear**：在 Python 侧把权重预先量化成 int8 常量，
             # 图里不再出现 `Q(const)`。理由：NVIDIA 工具链导出的 QDQ 图就是这么做的，
-            # 而 `Q(const)→DQ` 在某些后端可能被优化器特殊处理（见 TROUBLESHOOTING #31 的验证）。
+            # 而 `Q(const)→DQ` 在某些后端可能被优化器特殊处理（见 TROUBLESHOOTING + TS-031 的验证）。
             # 用 ONNX 的 int8 常量 + DQ(scale, zp, axis) 表达同一语义。
             w_fp32 = numpy_helper_map[w_name]   # ONNX 的 initializer 名是 onnx::Conv_xxx，不是逻辑名
             per_channel = len(weight_scales[name]) > 1
@@ -414,7 +414,7 @@ def build_graph_equivalent_model(params: Dict[str, object]):
     **为什么必须换掉 `models.resnet18(weights=DEFAULT)`**：它的 Conv **还没折 BN**，而图里的权重
     **已经折过**——两者不是同一个张量（逐通道系数跨度 0.05 ~ 19.9）。旧版预检直接拿前者做 fake-quant，
     量的是"另一张权重上的量化"，于是报出的 `max_abs ≈ 3.9` 与真机/参考实现的 `≈ 22` 差了 5 倍多
-    （`TROUBLESHOOTING.md` #28 里"预检与实测差 5 倍"那一问，根因就在这里；#30.3 曾把它当成
+    （`TROUBLESHOOTING.md` + TS-028 里"预检与实测差 5 倍"那一问，根因就在这里；#30.3 曾把它当成
     "已否证"，那次否证用的是**同样不忠实**的模拟，所以现在要推翻）。
 
     BN 置成恒等的写法：`γ=1, β=0, μ=0, σ²=1-ε` → `(x-0)/√((1-ε)+ε)·1+0 = x`，**精确**不是近似。
@@ -454,7 +454,7 @@ def fake_quant_check(act_scales, weight_scales, calib_files, params: Dict[str, o
 
     这里模拟的是**图里真实发生的事**：每个卷积的输入按 `in_scale` 量化、输出按 `out_scale` 量化、
     权重按 `weight_scales` 量化。输出量化那一步不能省——图里 `Conv → Q → DQ → Relu/Add`
-    是**两处量化**，只做输入量化就不是同一张图（`TROUBLESHOOTING.md` #30.4 的教训）。
+    是**两处量化**，只做输入量化就不是同一张图（`TROUBLESHOOTING.md` + #30.4 的教训）。
     """
     def fake_quant(x: torch.Tensor, scale: float) -> torch.Tensor:
         return torch.clamp(torch.round(x / scale), -127, 127) * scale
@@ -513,7 +513,7 @@ def main() -> None:
     parser.add_argument("--weight-form", choices=["qdq", "prequant_dq"], default="prequant_dq",
                         help="权重的图形态。**默认 prequant_dq**（正式产物的形态）：在 Python 侧把权重"
                              "预量化成 int8 常量、图里只留 DequantizeLinear——ONNX 从 44.7 MB 降到 13.3 MB，"
-                             "且实测与 `qdq` 形态**数值等价**（引擎 max_abs 逐位相同，见 TROUBLESHOOTING #31.3）。"
+                             "且实测与 `qdq` 形态**数值等价**（引擎 max_abs 逐位相同，见 TROUBLESHOOTING + #31.3）。"
                              "`qdq` = `Q(const)→DQ`，保留用于对照/复现旧产物")
     parser.add_argument("--weight-scope", choices=["per_channel", "per_tensor"],
                         default="per_tensor",
@@ -618,7 +618,7 @@ def main() -> None:
               f"最大相对差 {worst_mismatch:.4g}")
         print(f"         → 这正是 P4-INT8-a 的根因（docs/TROUBLESHOOTING.md + TS-046）；"
               f"加 --weight-range-source onnx 可修")
-        print(f"  [WARN] 因此本产物**带有 #46 那个缺陷**：它的身份是「**#46 的复现样本**」，"
+        print(f"  [WARN] 因此本产物**带有 TS-046 那个缺陷**：它的身份是「**TS-046 的复现样本**」，"
               f"**不是候选基线**。")
         print(f"         别拿它做 per-channel vs per-tensor 的对比、也别把它当成 per-channel 的"
               f"正确性参照——")

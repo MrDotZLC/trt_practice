@@ -1,8 +1,11 @@
 # Requirement
 
 > **性质**：历史需求回填（2026-10-01）。内容从下列来源抽取，**未新增任何当时的决定**。
-> **来源**：`docs/phase3_development_plan.md` §1 阶段目标与非目标 / §4 验收标准。
-> **判据的另一半**：`docs/phase3_test_plan.md`（含未关闭的缺口索引）。
+> **来源**：`docs/dev/REQ-006-gpt2-onnx/phase3_development_plan.md` §1 阶段目标与非目标 / §4 验收标准。
+> **判据的另一半**：见本目录 `test_plan.md`（原出处：`docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md`（含未关闭的缺口索引））
+> **设计**：见本目录 `design.md`。
+> **谁引用这里**：`tools/inspect_onnx.py`（PH3-ASSETS）、`tests/CMakeLists.txt`（2 处，PH3-GAPS 的 G1c）、
+> `tests/test_sampler.cpp`（G6 协议）、`tools/convert/onnx_to_mini_trt_llm.py`（G1c）。
 > **数字与结论**：不在本文重复。
 > **状态**：已交付。
 
@@ -34,7 +37,7 @@
 
 ## Acceptance Criteria
 
-来源：`docs/phase3_development_plan.md` §4（5 条，均写明验证方式）。
+来源：`docs/dev/REQ-006-gpt2-onnx/phase3_development_plan.md` §4（5 条，均写明验证方式）。
 
 1. 沙箱 `ctest` 全绿（GPU 用例自动跳过）。
 2. 图结构探针接入 `ctest`，且"缺环境"按设计跳过、"缺资产"判失败——两者语义分开。

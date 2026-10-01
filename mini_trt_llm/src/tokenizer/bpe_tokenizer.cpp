@@ -294,14 +294,14 @@ std::vector<std::string> BpeTokenizer::PreTokenize(const std::string& text) cons
 
         // ` ?\p{L}+` / ` ?\p{N}+` / ` ?[^\s\p{L}\p{N}]+`：可选**一个**前导空格 + 同类连续段。
         // 注意起点：如果当前字符就是空格，是否吃它取决于**下一个字符**是不是字母/数字/其它——
-        // 这一条实现时踩过坑（把 " quick" 拆成「空格」+「quick」，见 TROUBLESHOOTING #33）。
+        // 这一条实现时踩过坑（把 " quick" 拆成「空格」+「quick」，见 TROUBLESHOOTING + TS-033）。
         size_t scan = i;
         if (current_class == 0 && i + 1 < n) {
             const CodePoint next = DecodeUtf8(text, i + 1);
             const int next_class = class_of(next.value);
             // 正则里的 ` ?` 只吃**字面空格 U+0020**，不含 tab / 换行 / 不换行空格。
             // 这条踩过两次：写成"任何空白都能当前导空格"会把 "a\tb" 切成 ["a", "\tb"]
-            // （HF 是 ["a", "\t", "b"]），见 TROUBLESHOOTING #33。
+            // （HF 是 ["a", "\t", "b"]），见 TROUBLESHOOTING + TS-033。
             if (next_class != 0 && current.value == 0x20) {
                 current_class = next_class;  // 这个空格是"前导空格"，跟着后面的同类段一起走
                 scan = i + 1;

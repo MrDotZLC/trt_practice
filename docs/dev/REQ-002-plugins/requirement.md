@@ -1,8 +1,10 @@
 # Requirement
 
 > **性质**：历史需求回填（2026-10-01）。内容从下列来源抽取，**未新增任何当时的决定**。
-> **来源**：`docs/phase1_development_plan.md` §1 阶段目标 / §2 架构决策 / §4 各 Plugin 详细设计。
-> **判据的另一半**：`docs/phase1_test_plan.md`（含开工前的逐条决策确认）。
+> **来源**：`docs/dev/REQ-002-plugins/phase1_development_plan.md` §1 阶段目标 / §2 架构决策 / §4 各 Plugin 详细设计。
+> **判据的另一半**：见本目录 `test_plan.md`（原出处：`docs/dev/REQ-002-plugins/phase1_test_plan.md`（含开工前的逐条决策确认））
+> **设计**：见本目录 `design.md`。
+> **谁引用这里**：`AGENTS.md` §7（D4 的半精度阈值口径）、`mini_trt_llm/src/plugins/paged_attention_plugin.cu`（PH1-RISKS）。
 > **数字与结论**：不在本文重复。
 > **状态**：已交付（真机验证通过）。
 
@@ -36,7 +38,7 @@
 
 ## Acceptance Criteria
 
-来源：`docs/phase1_development_plan.md` §1 产出物 + `docs/phase1_test_plan.md`。
+来源：`docs/dev/REQ-002-plugins/phase1_development_plan.md` §1 产出物 + `docs/dev/REQ-002-plugins/phase1_test_plan.md`。
 
 1. 插件基类封装完成，能按当前接口版本正确实例化、序列化与反序列化。
 2. 三个插件各自通过单元测试；分页注意力覆盖 MQA/GQA/MHA 与多块情形。

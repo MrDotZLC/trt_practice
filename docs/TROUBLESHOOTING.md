@@ -355,7 +355,7 @@
 
 **影响**：
 
-- （**当时**的状态，现已解决：`kDecode` 已实现并真机验证，见 `docs/phase2_development_plan.md` §0.6.5、本文档 #15 / #16）
+- （**当时**的状态，现已解决：`kDecode` 已实现并真机验证，见 `docs/dev/REQ-004-gpt2-native/phase2_development_plan.md` §0.6.5、本文档 #15 / #16）
   `GPT2ModelBuilder` 的 `kDecode` 分支当时**显式失败并报错**（`src/core/gpt2_model_builder.cpp`），
   不建一个静默算错的网络；
 - Phase 2 的 P2-4 / P2-5 / P2-7（KV Cache 写入、decode 引擎、`LLMRunner` 循环）都阻塞在这个决策上；
@@ -849,7 +849,7 @@ TRT 反序列化都只读、不推理）得到：
 ## 19. [TS-019] 诊断用的中途输出没被消费方绑定 → `kPrefill` / `kDecode` 引擎的输出契约被打破
 
 > **状态**：根因**已定位、真机实测确认、并按 F2 方案修复并复验**（2026-09-25）。
-> 修复任务与验收见 `docs/phase2_supplement_plan.md`；复验数据见本节末尾「修复与复验」。
+> 修复任务与验收见 `docs/dev/REQ-005-diagnostics-fix/phase2_supplement_plan.md`；复验数据见本节末尾「修复与复验」。
 
 **现象（本轮由文档对账发现，尚未在真机复现）**：commit `625939c` 之后，
 `GPT2ModelBuilder::Build` 在**非 `kSingle`** 的切面上会额外导出 4 个中途张量
@@ -924,7 +924,7 @@ IExecutionContext::enqueueV3: Error Code 3: API Usage Error
 1. **沙箱里两条最"硬"的断言被静默跳过**：`Gpt2NetworkBuildTest` 的 `SetUp` 调
    `createInferBuilder`，在无 GPU 的沙箱返回 null → `GTEST_SKIP`。而该测试文件自己的注释
    写着"建网络不需要 CUDA 设备，可以在沙箱 / CI 里跑"——**这条假设与
-   `docs/phase2_test_plan.md` §3 的"真机（`createInferBuilder` 需要 CUDA，**实测确认**）"
+   `docs/dev/REQ-004-gpt2-native/phase2_test_plan.md` §3 的"真机（`createInferBuilder` 需要 CUDA，**实测确认**）"
    直接矛盾**。若沙箱真能跑，这两条断言在提交的那一刻就会红。
    本轮把这条也实测了：沙箱内 `createInferBuilder` 报
    `Error Code 6: API Usage Error (CUDA initialization failure with error: 35 ...)`
@@ -1017,7 +1017,7 @@ MINI_TRT_REQUIRE_GPU=1 下同一条用例 → FAILED（不再静默跳过）
 ## 20. [TS-020] `PagedKVCacheTest` 的追加用例与 `AppendDecodeStep` 契约不同步（已修复并真机复验）
 
 > **状态**：真机全量跑出来的**既有缺陷**（不是 #19 引入的）；根因已定位，并已按
-> `docs/phase2_supplement_plan.md` 的 **P2S-6** 修复并真机复验（2026-09-25）。
+> `docs/dev/REQ-005-diagnostics-fix/phase2_supplement_plan.md` 的 **P2S-6** 修复并真机复验（2026-09-25）。
 > 它属于"测试与 API 契约脱节"，产品代码本身没问题。
 
 **现象**：真机全量（2026-09-25，`MINI_TRT_REQUIRE_GPU=1`）里
@@ -1040,13 +1040,13 @@ Value of: cache.AppendDecodeStep({d_key.data()}, {d_value.data()}, nullptr)
 2. `AppendDecodeStep` 与这个用例**是同一笔提交（d6af2eb）产出的**（`git log -S AppendDecodeStep`
    与 `git log -- test_paged_kv_cache.cpp` 都只有 d6af2eb），也就是说**它自诞生起就不可能通过**——
    当时 #16 刚把接口从"每层各自推进"改成"一次写全部层、只推进一次"，用例没跟着改；
-3. `docs/phase2_test_plan.md` 里写着 `PagedKVCacheTest.*` ✅ 真机，但**该提交之后没有真机全量跑过**
+3. `docs/dev/REQ-004-gpt2-native/phase2_test_plan.md` 里写着 `PagedKVCacheTest.*` ✅ 真机，但**该提交之后没有真机全量跑过**
    （#16 之后验的是 GPT-2 侧的 `TwoStepDecodeMatchesPrefillAfterAppend`）。又一次"文档结论
    没有实测依据"——与 #19 的教训同源。
 
 **影响**：产品代码无问题（`AppendDecodeStep` 自己会拒绝非法参数，行为正确）；受影响的是
 **测试覆盖**——跨块追加这条路径在 cache 层实际上从来没有被验证过（只有 GPT-2 侧的间接覆盖）。
-另外它使 `phase2_test_plan.md` 的"✅ 真机"结论失真。
+另外它使 `docs/dev/REQ-004-gpt2-native/phase2_test_plan.md` 的"✅ 真机"结论失真。
 
 **修复内容（2026-09-25，只改测试、不动产品代码）**：
 
@@ -1057,7 +1057,7 @@ Value of: cache.AppendDecodeStep({d_key.data()}, {d_value.data()}, nullptr)
 3. 新增负例 `AppendDecodeStepRejectsLayerCountMismatch`：传 1 对而配置 2 层必须返回
    `cudaErrorInvalidValue`，**且 host 侧 `SequenceLength(0)` 与设备端 `context_lens` 都保持 0**
    （拒绝路径不许留半推进的长度，否则一次非法调用会污染后续推理）；
-4. `docs/phase2_test_plan.md` 的 `PagedKVCacheTest.*` 状态行已更正（原先那句"✅ 真机"没有依据）。
+4. `docs/dev/REQ-004-gpt2-native/phase2_test_plan.md` 的 `PagedKVCacheTest.*` 状态行已更正（原先那句"✅ 真机"没有依据）。
 
 **复验（真机，`MINI_TRT_REQUIRE_GPU=1`）**：
 
@@ -1119,7 +1119,7 @@ FP16 的量级（与 D4 的 FP16 档 `rel < 1e-3` 同数量级）。
    **显式写出目标精度**，并在日志里打印它——否则默认值会静默决定结论。
 2. **§7 的"先量无关差异"真的能省一轮误判**：这次没有它，最省事的动作就是把阈值改成 1e-2
    让它变绿，而那恰好会把"引擎精度选错"这类真问题盖死。
-3. 顺带产出一条待办（记在 `docs/phase4_test_plan.md` §3）：**D4 的 FP16 档（`rel < 1e-3`）
+3. 顺带产出一条待办（记在 `docs/dev/REQ-007-resnet18/phase4_test_plan.md` §3）：**D4 的 FP16 档（`rel < 1e-3`）
    不能直接用来判"FP16 引擎 vs FP32 基线"**——这次实测 rel = 3.6e-3 就已经超了。
    两精度互比要另定阈值并写出来源，R2.5 落地时必须处理。
 
@@ -1527,7 +1527,7 @@ margin < 2.0 的样本：35/64（55%）
 （`max_abs` 与一致率一模一样）→ **该假设被否证**，死通道不是根因。
 
 **当前状态**：R2.6 在 per-tensor 方案下通过（判据见上）；"per-channel 为何在整网上更差"
-仍是**原因未知**的开放项，登记在 `phase4_int8_plan.md` §5。
+仍是**原因未知**的开放项，登记在 `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §5。
 
 ---
 
@@ -1625,7 +1625,7 @@ TRT 输出 vs 广播模拟             = 25.6894       ✗ 差得远
 所以"权重上插不插 `QuantizeLinear`"**不是**这个问题的原因。per-channel 的整网退化**依然存在**。
 
 **顺带得到的真实收益**：ONNX 体积 44.7 MB → 13.3 MB（去掉 FP32 权重）。
-是否把 `prequant_dq` 作为**正式产物的默认形态**，见 `phase4_int8_plan.md` §5 的待决项
+是否把 `prequant_dq` 作为**正式产物的默认形态**，见 `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §5 的待决项
 （收益明确、数值等价，但要重生成产物并重跑验证）。
 
 ### 31.4 汇总
@@ -1784,7 +1784,7 @@ TRT 输出 vs 广播模拟             = 25.6894       ✗ 差得远
   这些文件不在 `Gpt2OnnxTest` 的调用链上（该用例只用 `EngineBuilder::BuildFromOnnx` 与原生 builder）。
 - **两条引擎是本次新建的**（日志：`Engine saved: .../gpt2_onnx_wide.engine (623 MB)`、
   `.../gpt2_accuracy_wide.engine (709 MB)`），不是复用了旧缓存 → 排除"拿旧引擎比新代码"。
-- 历史记录：`docs/phase3_test_plan.md` §2 记着这条用例（G4 / G4b）**2026-09-25 真机通过**，
+- 历史记录：`docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` §2 记着这条用例（G4 / G4b）**2026-09-25 真机通过**，
   但同一行也注明"**实测值未采集**，阈值未收紧"——即**当时没有留下可比的数值轨迹**。
 
 ### 34.3 两个待区分的假设（**均未证实**）
@@ -2066,7 +2066,7 @@ Phase 3 的绿与今天的红，可以同时成立且都不指向缺陷；变的
 - **排查路径**：
   1. **先看两把尺子差在哪**：把本次 legacy 与冻结基线逐形状比 —— 50257×1 **−23.2%**，
      另外三个形状 +2.9% ~ +9.2%。**同一个实现在两个 session 之间就能差 23%**，
-     而 `phase3_test_plan.md` §5 早已记过 ±25% 的构建间噪声 → 跨 session 直接比是不合法的
+     而 `docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` §5 早已记过 ±25% 的构建间噪声 → 跨 session 直接比是不合法的
      （这正是 G6 要求"同一 session 内比较"的原因）。**结论：两个数字都留档，阈值一个都不动。**
   2. **再定位剩下那点开销**：新路径的 `top-p − top-k`（同形状、同 session，两条路共用同一段
      CUB 排序）= 采样 kernel 的净成本 = **70 / 67 / 83 / 129 µs**，即**排序占新 top-p 的 89%~93%**
@@ -2999,7 +2999,7 @@ MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests --gtest_fil
 
 **附带观察（不是本条的缺陷）**：同网络重建后 `resnet18_onnx_fp32.engine` 由 **54,196,084 → 52,357,812 字节（−3.4%）**。
 `builder.cpp` 未设 `kDETERMINISTIC`、也没有 timing cache → TRT 的 tactic 选择是 timing-based，
-**重建可能选到不同 tactic**，引擎字节与性能因此都会变。这与 `phase3_test_plan.md` §3.1 记的
+**重建可能选到不同 tactic**，引擎字节与性能因此都会变。这与 `docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` §3.1 记的
 "构建间 ±25% 噪声"同源，**做性能对照时要用同一次构建的引擎**。
 
 **原计划的两条确认命令（保留备查）**
@@ -3077,6 +3077,6 @@ grep '^file=' /tmp/mini_trt_llm_resnet18_onnx_fp32.engine.fingerprint   # 应变
   5 s 发现超时（`Result: Process terminated due to timeout`，发生在链接刚结束、机器满载时；
   `--gtest_list_tests` 空闲时实测仅 0.08 s）。**重跑即过**。若再频繁出现，可考虑调大
   `TEST_DISCOVERY_TIMEOUT`（构建脚本改动，需单独批准；已登记在
-  `docs/phase5_development_plan.md` §10）。
+  `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md` §10）。
 
 **状态**：已修复（沙箱验证 268 条 / 0 失败）。

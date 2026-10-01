@@ -103,7 +103,7 @@ endif()
 #
 # 为什么进 ctest：转换脚本里有 5 道自检（拒绝未消费的 initializer / 拒绝不支持的带权算子 /
 # 拒绝逻辑名冲突 / 拒绝形状不自洽 / 拒绝缺 fc）。**护栏没有用例证明"它会拦人"就等于没有护栏**——
-# 这个项目已经吃过"声明了却没人核对"的亏（见 docs/phase3_test_plan.md + PH3-GAPS 的 G1c）。
+# 这个项目已经吃过"声明了却没人核对"的亏（见 docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md + PH3-GAPS 的 G1c）。
 # 自检把真模型按 5 种方式改坏，逐个确认每道护栏都会拦。
 #
 # 环境语义：缺 Python / 缺 onnx 包 / 缺 resnet18.onnx 时**跳过**（返回 77），不是失败
@@ -125,7 +125,7 @@ endif()
 # 为什么进 ctest：`int8_eval.py` 里有 7 道护栏（缺 provenance / 标定集重叠 /
 # 类型错 / 清单 sha256 不符 / logits 大小不符 / 只报率不报 n / 率与分子分母不自洽），
 # 外加分层数学的自证。**护栏没有用例证明"它会拦人"就等于没有护栏**——同
-# resnet18_convert_selftest 的理由（docs/phase3_test_plan.md + PH3-GAPS 的 G1c）。
+# resnet18_convert_selftest 的理由（docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md + PH3-GAPS 的 G1c）。
 #
 # 环境语义：不需要 GPU，也不需要任何外部数据（自造合成 fixture）→ 沙箱即可跑，
 # 因此**不用** SKIP_RETURN_CODE：它没跑起来就是真问题，不是"缺环境"。
@@ -142,7 +142,7 @@ endif()
 #
 # 为什么进 ctest：这一条排查的结论全建立在两件仪器上——
 #   ① `qdq_reference.py` 是**数值标尺**（ONNX 官方参考实现），它必须先被校准
-#      （`TROUBLESHOOTING.md` #29.1/#30.4 的教训：标尺错了会给出错误裁决）；
+#      （`TROUBLESHOOTING.md` + #29.1/#30.4 的教训：标尺错了会给出错误裁决）；
 #   ② `add_probe_outputs.py` 是**采样器**，它必须保证"探针图 = 产物图 + 探针"
 #      （节点 / initializer 逐字节不变），否则测的不是原来那张图。
 # 两件都自造 fixture、不依赖 GPU 与外部数据 → 沙箱即可跑，因此**不用** SKIP_RETURN_CODE。

@@ -45,7 +45,7 @@ const std::vector<int64_t> kPrompt = {464, 2068, 7586, 21831};
 // 任何**新增**的不可判行都会让这条用例报红——那意味着要么图变了、要么某处真坏了，
 // 两种都需要人看一眼。只数个数会让"换一行并列"悄悄通过。
 //
-// **要改这张表，必须给出实测依据**（真机跑一遍，把新数字与原因写进 `TROUBLESHOOTING.md` #34.9）
+// **要改这张表，必须给出实测依据**（真机跑一遍，把新数字与原因写进 `TROUBLESHOOTING.md` + #34.9）
 // ——不许为了让用例变绿而加行（`AGENTS.md` §7）。
 struct ShapeUndecidableRows {
     int32_t batch;
@@ -194,7 +194,7 @@ std::vector<float> RunEngine(Engine* engine, const std::vector<int64_t>& prompt,
 
     const size_t count = elements * static_cast<size_t>(kVocab);
     // 输出精度也要**按引擎声明的**读：FP16 引擎的 `logits` 可能是 half，
-    // 按 float 读会得到 32 位错位的垃圾（同 #17 的 INT64 教训）。
+    // 按 float 读会得到 32 位错位的垃圾（同 `docs/TROUBLESHOOTING.md` + TS-017 的 INT64 教训）。
     const nvinfer1::DataType logits_type = cuda->getTensorDataType("logits");
     const size_t logits_elem = logits_type == nvinfer1::DataType::kHALF ? 2u : 4u;
     DeviceBuffer d_logits(count * logits_elem);
@@ -366,7 +366,7 @@ TEST(Gpt2OnnxTest, MatchesNativeBuildOnSamePrompt) {
 // 阈值口径用 D6 的 FP16 档（`cosine ≥ 0.999`、相对界 `< 5e-3`）——这是首次运行前的
 // 冻结口径；用例把实测值打印出来，供后续按"实测收敛"收紧（收紧无需额外证据，放宽要按 §7）。
 //
-// 注意 ONNX 与原生在 FP16 下**各自的 Cast/精度处理不同**（见 TROUBLESHOOTING #17），
+// 注意 ONNX 与原生在 FP16 下**各自的 Cast/精度处理不同**（见 TROUBLESHOOTING + TS-017），
 // 因此这里比的是"两条路在 FP16 下是否一致"，而不是"与 HF 是否一致"（HF 参考是 FP32）。
 TEST(Gpt2OnnxTest, Fp16PathsAgree) {
     MINI_TRT_SKIP_IF_NO_CUDA();
@@ -426,7 +426,7 @@ TEST(Gpt2OnnxTest, Fp16PathsAgree) {
 // 只测 4 个 token 等于没覆盖"TRT 真正优化的那个形状"，也没测边界。
 // 本用例建一组宽 profile 引擎（min 1 / opt 64 / max 512），对三个形状两两对照。
 // 此形状下没有 HF 参考（`ref_output.bin` 只有 seq=4），因此比的是两条路彼此——
-// 它们用的是同一份数值（TROUBLESHOOTING #17 已核对），任何差异都是实现差异。
+// 它们用的是同一份数值（TROUBLESHOOTING + TS-017 已核对），任何差异都是实现差异。
 TEST(Gpt2OnnxTest, MatchesAcrossProfileShapes) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     const std::string dir = FindModelDir();
@@ -480,7 +480,7 @@ TEST(Gpt2OnnxTest, MatchesAcrossProfileShapes) {
         EXPECT_LT(diff.max_abs / max_ref, 1e-5f) << "batch=" << batch << " seq=" << seq;
 
         // 逐行 argmax：按"可判性"判（方案 B，判据与推导见 gpt2_test_support.hpp 的
-        // CompareArgmaxByDecidability 注释与 TROUBLESHOOTING.md #34.9）。
+        // CompareArgmaxByDecidability 注释与 TROUBLESHOOTING.md + #34.9）。
         // 采样只看最后一行，但非最后一行错也说明中间层有问题——所以**可判行仍然逐行严格比对**。
         const ArgmaxAgreement agreement = CompareArgmaxByDecidability(
             onnx_logits.data(), native_logits.data(), batch * seq, kVocab);
@@ -500,7 +500,7 @@ TEST(Gpt2OnnxTest, MatchesAcrossProfileShapes) {
 
         // 不可判行里的**具体数值**要打出来：下个会话要能判"这一行是不是同一个并列"。
         // 精度必须够——|logit|≈87 处的并列间距只有 1e-5 量级，默认 6 位有效数字会把
-        // 两个不同的数打印成同一个值（见 TROUBLESHOOTING.md #34.7）。
+        // 两个不同的数打印成同一个值（见 TROUBLESHOOTING.md + #34.7）。
         for (const int32_t row : agreement.undecidable_row_indices) {
             const float* a = onnx_logits.data() + static_cast<size_t>(row) * kVocab;
             const float* b = native_logits.data() + static_cast<size_t>(row) * kVocab;
@@ -539,7 +539,7 @@ TEST(Gpt2OnnxTest, MatchesAcrossProfileShapes) {
         EXPECT_EQ(agreement.undecidable_row_indices, expected_rows->rows)
             << "batch=" << batch << " seq=" << seq
             << "：不可判行与实测登记不符（新增/缺失都算）→ 先查原因；"
-               "若要改登记表，必须给出真机实测依据并写入 TROUBLESHOOTING.md #34.9，"
+               "若要改登记表，必须给出真机实测依据并写入 TROUBLESHOOTING.md + #34.9，"
                "不许为了让用例变绿而加行";
     }
 }

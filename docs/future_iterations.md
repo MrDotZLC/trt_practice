@@ -58,7 +58,7 @@
 | **P2** | §4.2 激活函数 Plugin | P1 → P2 | 触发 = 接 LLaMA / GLM 系列；未触发 | `SiLU` / `SwiGLU` 是那些 FFN 的必需件；`GELU` 只在原生实现性能不足时才考虑 |
 | **P2** | §6.1 转换工具增强 | P1 → P2 | 触发 = 出现新的权重来源 / 需要 ONNX 导出；未触发 | 按需扩，避免为不存在的来源先写代码 |
 | **P2** | §6.2 ONNX 导出与 custom op | P2 | 触发 = 真做子图替换（§10.2）；未触发 | 是 §10.2 的前置件 |
-| ~~P2~~ **已交付** | §6.3 Nsight 一键 Profile Target | P2 → **已交付（2026-09-27）** | 四个 target（`profile_{gpt2,resnet18}[_ncu]`）+ 一键脚本 + 分桶脚本都跑通；**§11 已关闭**（开发计划 §11.5.2） | 属测量基建：没有它，性能类结论只能靠单次点值（`phase3_test_plan.md` §3.1 已吃过一次）。落地口径见开发计划 §11.3。**能力边界**：本机（WSL2）拿不到 GPU kernel 时间线 → 逐 kernel 分解改为"同 session 比值法 + 上下文扫描"（#41） |
+| ~~P2~~ **已交付** | §6.3 Nsight 一键 Profile Target | P2 → **已交付（2026-09-27）** | 四个 target（`profile_{gpt2,resnet18}[_ncu]`）+ 一键脚本 + 分桶脚本都跑通；**§11 已关闭**（开发计划 §11.5.2） | 属测量基建：没有它，性能类结论只能靠单次点值（`docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` §3.1 已吃过一次）。落地口径见开发计划 §11.3。**能力边界**：本机（WSL2）拿不到 GPU kernel 时间线 → 逐 kernel 分解改为"同 session 比值法 + 上下文扫描"（#41） |
 | **P2** | §6.4 CI / 自动化测试 | P2 | 触发 = 需要自动化回归；未触发 | **GitHub Actions 属联网操作，须先获批**；本地脚本部分不受限 |
 | ~~P2~~ **已关闭** | §9.2 Sampler 高性能 kernel | P1 → P2 → **已交付（2026-09-27）** | ✅ P9_2-0~8 全部落地：Top-P 改成"保留 CUB 排序 + 行内并行 kernel"，配对（净）`legacy/parallel` = **12.63 / 22.43 / 15.73 / 17.57×**（4/4 达标）；Top-K 快速路径正确性通过但**性能不达标已撤出生产**；P9_2-5b 经同二进制 A/B 判定**效果无显著差异（保留代码）**、P9_2-5c **不做**。细节见 `PROGRESS.md` §3.0g、开发计划 §10、`TROUBLESHOOTING.md` #35/#37/#38 | **它留下的那一问已补上**（2026-09-27）：sampler 在整步 decode 里的占比由 **PF-8** 在同 session 内量出并与 `SamplerPerf` 互校一致——greedy **1.25%** / top-k **17.7%** / top-p **20.1%**（开发计划 §11.5.1、测试计划 §10.5、`PROGRESS.md` §3.0h）。**读法**：这是**短上下文**下的比例；长上下文分母变大（每步 14.7 ms），同样的 sampler 只占 ≈3% |
 | **P2** | §9.3 采样器参考数据固化 | P2 | 触发 = 需要采样统计正确性回归；未触发 | 顺带覆盖 `p` 接近 1 的边界 |
@@ -300,7 +300,7 @@
 - **成本校准（前次实测）**：全流程是**每轮 1 次真机往返**级别；前次 #30.5 用掉 3 轮，其中 2 轮
   耗在**探针自身的 BN 折叠错**上——这次先修仪器再取数。
 - **出处**：`docs/TROUBLESHOOTING.md` #29.2 / #30（#30.1 否证表、#30.3 未排除方向、#30.5 仪器坑、
-  #30.6 收口决定）；`docs/phase4_int8_plan.md` + PH4-INT8-RESULTS 的 P4-7-3 行。
+  #30.6 收口决定）；`docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` + PH4-INT8-RESULTS 的 P4-7-3 行。
 
 </details>
 
@@ -317,7 +317,7 @@
      所以现在只能判"与 FP32 是否一致"，判不了"对不对"；
   2. 有判别力的样本只有 **11~12 张**，率的分辨力弱（Fisher 精确检验 ≈0.03，勉强算显著）；
   3. **绝对误差界未定**：实测 `max_abs ≈ 21.6` 被少数样本放大，所以**故意不拿它当判据**
-     （`docs/phase4_int8_plan.md` + PH4-INT8-CRITERIA 的"数值上界"行）。
+     （`docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` + PH4-INT8-CRITERIA 的"数值上界"行）。
 - **目标**：把 INT8 的验收从"一致率"升级为能回答"凭什么这么定"的两条判据：
   (a) 有样本量依据的 top-1 一致率；(b) 在有判别力样本上量出的绝对 / 相对误差上界。
 - **做法**：
@@ -328,7 +328,7 @@
      （只报率不报 n 的结论不可复核）。
   3. 绝对误差只在余量子集上量 **per-sample `max_abs` / 相对误差的分布**（报 p95 / p99，不报全样本
      max），阈值取该分布的合理倍数，**阈值必须挨着写它的出处**（哪次实测、哪个分位）。
-  4. 阈值定稿后回写 `docs/phase4_int8_plan.md` + PH4-INT8-CRITERIA 与 `docs/phase4_test_plan.md` 的 R2.6，
+  4. 阈值定稿后回写 `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` + PH4-INT8-CRITERIA 与 `docs/dev/REQ-007-resnet18/phase4_test_plan.md` 的 R2.6，
      并用**同一把尺子**重测一次 per-channel vs per-tensor（这对 §1.5 也是判据输入）。
 - **验收判据**：
   - 每个阈值旁边能回答"凭什么这么定"（本条目实测的分布 + 样本量 + 分层口径）；
@@ -339,7 +339,7 @@
   未获批时可先做本条的"口径定义"部分（验收集规格 + meta 字段 + 分层统计脚本），不下载数据。
 - **不许做的事**：不许为了"绿"而调阈值或删断言（`AGENTS.md` §7）；不许把本条的阈值套到
   FP16 / FP32 上（那是跨精度复用，见 `docs/PROGRESS.md` + DEC-EVIDENCE-DISCIPLINE A）。
-- **出处**：`docs/phase4_int8_plan.md` + PH4-INT8-CRITERIA（判据表）/ §5（风险与回退）/ §7 的 P4-7-3 行；
+- **出处**：`docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` + PH4-INT8-CRITERIA（判据表）/ §5（风险与回退）/ §7 的 P4-7-3 行；
   `docs/TROUBLESHOOTING.md` #29.4 / #30.5。
 
 > **为什么拆成两条**：§1.5 是**仪器 / 机制**问题（第 1~3 步不依赖新数据），§1.6 是**判据 / 数据**
@@ -721,7 +721,7 @@
 ---
 
 *文档版本：v1.0*  
-*关联文档：`docs/mini_trt_llm_design.md`、`docs/phase0_development_plan.md`*
+*关联文档：`docs/mini_trt_llm_design.md`、`docs/dev/REQ-001-bootstrap/phase0_development_plan.md`*
 
 ## 10. Phase 3 明确延后的能力
 
@@ -747,7 +747,7 @@
 后者改动更大，只有在"两条路必须共用同一个 runner"时才值得。
 
 **判定依据**：先做前者（Cast）即可让 dtype 一致；是否需要后者，取决于将来是否要把
-ONNX 路径接进 `LLMRunner`（`docs/phase3_development_plan.md` D3 已明确本阶段不做）。
+ONNX 路径接进 `LLMRunner`（`docs/dev/REQ-006-gpt2-onnx/phase3_development_plan.md` D3 已明确本阶段不做）。
 
 </details>
 
@@ -766,7 +766,7 @@ ONNX 路径接进 `LLMRunner`（`docs/phase3_development_plan.md` D3 已明确�
 **为什么现在还不能判断**（**已修正**：本条原先写的是"ONNX 慢约 22%、故替换无收益"，
 那是从**单次测量**里读出的结论，已被后续运行推翻）：
 
-Phase 3 的两次测量方向相反（`docs/phase3_test_plan.md` + PH3-L3-MEASUREMENTS）：
+Phase 3 的两次测量方向相反（`docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` + PH3-L3-MEASUREMENTS）：
 
 | 运行 | prefill(4 token) ONNX / 原生 |
 |---|---|
@@ -804,16 +804,16 @@ PF-7 是它的正例，见测试计划 §10.2）。
 | ~~G4b~~ | 测试计划 §5 | ~~ONNX 路径 batch 维未覆盖~~ **已关闭**（2026-09-25）：`RunEngine` 改为 batch 感知，覆盖 `(batch,seq) ∈ {(1,1),(1,64),(1,512),(2,4),(2,64)}` | —— |
 | **G5** | 同上 | 子图识别只做"计数"，未做拓扑/邻接级 | 仅当真要做子图替换时（见 §10.2）——计数相同但连接不同是识别不出来的 |
 | ~~**G6**~~ **方法已交付** | 同上 | ~~L3 性能**无可复现测量方法**~~ **已解决（2026-09-27）** | **测量方法已建立并被实际使用**：同 session、同轮交替（ABBA）、斜率 `(T4−T1)/3`、判别下限 ±400~600 µs、报告 n/温度/构建态——协议在开发计划 §11.3，工具链在 §11.5.2，PF-8/PF-9 两次用它出结论（还自己抓到一次测量错误 #42）。**§11 已关闭**。**唯一没跑的是 PF-7**（G6 的"正例"：ONNX vs 原生的跨构建极差）→ 它服务 §10.2，**已移交到 §10.2 的前置**。另有一条能力边界：本机（WSL2）拿不到 GPU kernel 时间线，逐 kernel 分解改用"同 session 比值 + 上下文扫描"（#41） |
-| ~~G2-1~~ | `docs/phase2_test_plan.md` §5 | ~~真实 GPT-2 的 FP16 端到端未测~~ **已执行**：FP16 端到端出 NaN（缓冲问题已修；数值问题按政策不修，登记为已知限制） | 解决路径见本文件 §1.4；复现器与诊断仪器保留在 `tests/test_gpt2_generate.cpp` |
+| ~~G2-1~~ | `docs/dev/REQ-004-gpt2-native/phase2_test_plan.md` §5 | ~~真实 GPT-2 的 FP16 端到端未测~~ **已执行**：FP16 端到端出 NaN（缓冲问题已修；数值问题按政策不修，登记为已知限制） | 解决路径见本文件 §1.4；复现器与诊断仪器保留在 `tests/test_gpt2_generate.cpp` |
 | **G2-3** | 同上 | `LLMRunner` 只支持 `batch = 1`（有意限定） | 需要批处理时再扩（同时引入多序列 block 分配、各自 `context_lens` 与采样参数） |
 | **G2-4** | 同上 | EOS 无法在循环内早停（已知 workaround，语义正确） | 见 `docs/PROGRESS.md` §5.0；若要真早停，需设备侧 stop flag + 条件图 |
 | ~~G7~~ | 开发计划 §4 | ~~探针未接入 ctest~~ **已关闭**（2026-09-25）：注册为 `onnx_graph_probe`，缺环境返回 77 → ctest 报 Skipped | —— |
-| ~~P1.5-a~~ | `docs/phase1_5_test_plan.md` §5 | ~~Top-K / Top-P 的 FP16 分支未覆盖~~ **已关闭（2026-09-27，真机）**：Greedy 早已覆盖；Top-P = S-13（`Fp16PathTest.TopPSamplingDistributionMatchesAnalyticProbabilitiesInFp16`）、Top-K = S-12（同 suite），两条**真机均通过**。判据：k=3/6（真的发生截断）的词频各按 3σ 对解析参考，且 FP32/FP16 互相在 3√2σ 内 | —— |
+| ~~P1.5-a~~ | `docs/dev/REQ-003-test-infra/phase1_5_test_plan.md` §5 | ~~Top-K / Top-P 的 FP16 分支未覆盖~~ **已关闭（2026-09-27，真机）**：Greedy 早已覆盖；Top-P = S-13（`Fp16PathTest.TopPSamplingDistributionMatchesAnalyticProbabilitiesInFp16`）、Top-K = S-12（同 suite），两条**真机均通过**。判据：k=3/6（真的发生截断）的词频各按 3σ 对解析参考，且 FP32/FP16 互相在 3√2σ 内 | —— |
 | **P1.5-b** | 同上 | E2 的**完整链路**（`RMSNorm → QKV → RoPE → PagedAttention → LM Head`）与 `ref_mini_block.py` 有意留后（P1.5-4 缩减完成） | 要往 LLaMA 风格链路继续做时（Phase 4 之后），或怀疑"多算子相邻契约"出问题时 |
 | **P1.5-c** | 同上 | E3 只验"接受/拒绝"，未验**同 engine 内多次切换 profile 后的数值一致性** | 真的依赖多 profile 混用时（当前 runner 每步只用 profile 0） |
 | **P4-INT8-a** | `docs/TROUBLESHOOTING.md` #29 / #30 | **权重 per-channel 量化在整网上比 per-tensor 差得多**（余量子集 54.5% vs 100%），而单卷积与"真实权重+残差"的最小 block 上它都**不差**（甚至更好）→ **原因仍未找到**。已排除 11 条假设（写法错 / 死通道 scale 跨度 / 模拟不忠实 / 残差融合 / `axis` 类型 / 2-D 广播 / 权重只留 DQ / 布局 / 舍入 / step 与 scale 不符 / 探针自身） | 需要更高 INT8 精度时。**已在 §1.5 立项**（目标 / 做法 / 验收判据 / 前置依赖在那里；第 1~3 步不依赖联网）。关键方法：探"**量化前**"的 float 张量，而不是量化后的——后者被 bin 边界 ±1 格噪声主导，分辨率不够（#30.5 / #30.6） |
-| **P4-INT8-b** | `docs/phase4_int8_plan.md` §4 / §5 | INT8 的**数值上界判据未定**（当前只在"有判别力子集"上用一致率判，且该子集无可核对的真值标签） | 需要给出 INT8 的绝对误差保证时。**已在 §1.6 立项**（目标 / 做法 / 验收判据在那里；**前置依赖 = 联网下载验收集，须先获批**） |
-| **P4-FP16-a** | `docs/phase4_int8_plan.md` §1.1 | **FP16 路径仍使用已废弃的 `BuilderFlag::kFP16`**（TRT 10.12 起废弃，指向 strong typing）；实测可用 | 真要迁到强类型网络时（两条 builder 的每个算子都要显式设类型，代价大） |
+| **P4-INT8-b** | `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §4 / §5 | INT8 的**数值上界判据未定**（当前只在"有判别力子集"上用一致率判，且该子集无可核对的真值标签） | 需要给出 INT8 的绝对误差保证时。**已在 §1.6 立项**（目标 / 做法 / 验收判据在那里；**前置依赖 = 联网下载验收集，须先获批**） |
+| **P4-FP16-a** | `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §1.1 | **FP16 路径仍使用已废弃的 `BuilderFlag::kFP16`**（TRT 10.12 起废弃，指向 strong typing）；实测可用 | 真要迁到强类型网络时（两条 builder 的每个算子都要显式设类型，代价大） |
 | **P1.5-d** | 同上 | 采样器**分布级数据未固化**（`scripts/ref_sampler.py` 只打印，输出没落成测试数据） | 要做采样的统计正确性回归时（属增强，见本文件 §9.3） |
 | ~~**P9_2-5b**~~ | `docs/TROUBLESHOOTING.md` #35 / #38 / 开发计划 **§10.12** | 收尾段串行重扫候选优化：**已实施、真机正确性通过，A/B 判定 = 效果无显著差异**（同轮交替测两版：中位数 +4.8 / +27.3 / −330.5 / −81.3 µs，p25/p75 全部跨 0；预期效应 27~68 µs 低于本平台 ±400~600 µs 的判别下限）。**已关闭**：代码保留（无任何一行显示显著更慢；最坏串行尾 500→32），`LaunchTopPSamplerTwoLevel` 留作永久对照入口 | —— |
 | ~~**P9_2-5c**~~ | `docs/TROUBLESHOOTING.md` #38 / 开发计划 **§10.12.8** | ~~第一趟的访存/MLP~~ **不做**：同一轮里量到 **greedy（本来就完全合并访存、只读一遍行）净成本 35~155 µs**，而 `top-p 净 − top-k 净` @50257×1 仅 **60.1 µs**（p25=56.4 / p75=64.0）→ 采样内核净开销仅"裸读一遍行"的 ~1.7 倍，**优化空间见底**；其余 ~89% 是保留的 CUB 排序 | —— |

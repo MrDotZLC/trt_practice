@@ -26,7 +26,7 @@ cudaError_t LaunchFillPositionIds(const int32_t* context_lens, int32_t* position
         return cudaErrorInvalidValue;
     }
     // CUDA 的 last-error 是粘性的：先清掉入口处可能残留的旧错误，
-    // 后面 cudaGetLastError() 的结果才只反映本次 launch（见 TROUBLESHOOTING #13）。
+    // 后面 cudaGetLastError() 的结果才只反映本次 launch（见 TROUBLESHOOTING + TS-013）。
     (void)cudaGetLastError();
     const int32_t blocks = (batch_size + kThreadsPerBlock - 1) / kThreadsPerBlock;
     FillPositionIdsKernel<<<blocks, kThreadsPerBlock, 0, stream>>>(context_lens,

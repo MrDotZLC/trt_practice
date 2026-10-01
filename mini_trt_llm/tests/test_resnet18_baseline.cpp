@@ -88,7 +88,7 @@ TEST(ResNet18BaselineTest, PixelsNormalizationMatchesFormula) {
     std::cout << "[基线] 归一化公式 C++ vs Python: max_abs = " << max_abs << "\n";
     // 实测（2026-09-26）两侧**逐位相同**（max_abs = 0）。阈值仍留 1e-6 作为回归护栏：
     // 未来若有人改公式顺序（例如先除 std 再减 mean），误差会从这个量级开始出现，
-    // 而它足以让对拍结论失真。出处：本条用例的实测记录 + TROUBLESHOOTING #21 的同类差异量级。
+    // 而它足以让对拍结论失真。出处：本条用例的实测记录 + TROUBLESHOOTING + TS-021 的同类差异量级。
     EXPECT_LT(max_abs, 1e-6f);
     for (float v : pixels) {
         ASSERT_GE(v, 0.0f);

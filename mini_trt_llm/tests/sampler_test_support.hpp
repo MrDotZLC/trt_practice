@@ -106,7 +106,7 @@ inline std::vector<double> TruncatedSoftmaxProbabilities(const std::vector<float
 // 解析口径的"top-K 集合"，**并列安全**：返回所有满足 `value >= 第 k 大值` 的 token。
 //
 // 为什么不能用"排序后的前 k 个"：**数值并列时"前 k 个"不是良定义的**——它取决于排序算法
-// 在并列组里挑谁。实测（`TROUBLESHOOTING.md` #36）：128000 词表的 sin 造数据上，第 64 名有
+// 在并列组里挑谁。实测（`TROUBLESHOOTING.md` + TS-036）：128000 词表的 sin 造数据上，第 64 名有
 // **4 个 token 精确并列**（全行 1622 对相邻并列），于是 `std::partial_sort` 取前 k 个时
 // 可能把合法的那一个排掉，判据就会在**实现完全正确**时报红。
 // 取值口径的判据与 tie-break 无关：只要 kernel 在"值 ≥ 第 k 大值"的元素里选，它就没选错。

@@ -1,8 +1,10 @@
 # Requirement
 
 > **性质**：历史需求回填（2026-10-01）。内容从下列来源抽取，**未新增任何当时的决定**。
-> **来源**：`docs/phase2_supplement_plan.md` §4 验收判据 / §6 范围外。
-> **判据的另一半**：同文件 §4 的"出处"列。
+> **来源**：`docs/dev/REQ-005-diagnostics-fix/phase2_supplement_plan.md` §4 验收判据 / §6 范围外。
+> **判据的另一半**：见本目录 `test_plan.md`（原出处：同文件 §4 的"出处"列）
+> **设计**：见本目录 `design.md`。
+> **谁引用这里**：无仓外引用。
 > **数字与结论**：不在本文重复。
 > **状态**：已交付。
 
@@ -36,7 +38,7 @@
 
 ## Acceptance Criteria
 
-来源：`docs/phase2_supplement_plan.md` §4（A1–A6，每条都带出处）。
+来源：`docs/dev/REQ-005-diagnostics-fix/phase2_supplement_plan.md` §4（A1–A6，每条都带出处）。
 
 1. 默认构建的网络输出数不变；单引擎切面仍为原值。
 2. 打开开关的仪器路径能列出 4 个诊断输出。

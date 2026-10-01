@@ -222,8 +222,8 @@ TEST(PagedKVCacheTest, AppendCrossesBlockBoundaryAndAdvancesContextLens) {
     // 两次追加：第 4 个 token 填满第 0 块，第 5 个落到第 1 块。
     //
     // **必须每层传一对**：AppendDecodeStep 的契约是"一次写全部层、只推进一次长度"
-    // （TROUBLESHOOTING #16），少传会被直接拒绝。两层的值刻意取不同基址（layer 0 = 100 段、
-    // layer 1 = 200 段），这样"某层写进了别人那一段"这类错误（#15 的形态）才会被读回断言抓住。
+    // （TROUBLESHOOTING + TS-016），少传会被直接拒绝。两层的值刻意取不同基址（layer 0 = 100 段、
+    // layer 1 = 200 段），这样"某层写进了别人那一段"这类错误（TS-015 的形态）才会被读回断言抓住。
     constexpr int32_t kLayers = 2;
     constexpr float kLayerBase[kLayers] = {100.0f, 200.0f};
     for (int32_t step = 0; step < 2; ++step) {
@@ -258,7 +258,7 @@ TEST(PagedKVCacheTest, AppendCrossesBlockBoundaryAndAdvancesContextLens) {
     EXPECT_EQ(device_len, kPrefillTokens + 2);
 
     // 追加的数据必须落在逻辑位置 3 与 4（跨块），**两层都要验**：
-    // 只读 layer 0 会漏掉"每层写自己那一段"这个语义——#15 正是这样漏过去的。
+    // 只读 layer 0 会漏掉"每层写自己那一段"这个语义——`docs/TROUBLESHOOTING.md` + TS-015 正是这样漏过去的。
     std::vector<int32_t> table;
     ASSERT_TRUE(cache.GetBlockTable(0, &table));
     std::vector<int32_t> flat_table(kMaxBlocksPerSeq, 0);

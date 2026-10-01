@@ -43,7 +43,7 @@ const size_t kLogitsElements = static_cast<size_t>(kBatch) * kCvClasses;
 
 // Q/DQ 图与 INT8 引擎的路径可用环境变量覆盖——用于**隔离实验**（例如只把权重量化粒度从
 // per-channel 换成 per-tensor，其它一律不动，看是哪一个变量导致精度崩）。默认走正式产物。
-// 覆盖时必须**同时**换引擎路径，否则会复用到上一次的引擎缓存（缓存只按路径区分，见 #19）。
+// 覆盖时必须**同时**换引擎路径，否则会复用到上一次的引擎缓存（缓存只按路径区分，见 `docs/TROUBLESHOOTING.md` + TS-019）。
 std::string QdqOnnxPath() {
     const char* override = std::getenv("MINI_TRT_QDQ_ONNX");
     return override != nullptr ? std::string(override) : std::string("models/resnet18/resnet18_qdq.onnx");
@@ -58,7 +58,7 @@ std::string Int8EnginePath() {
 const char* const kFp32Engine = "/tmp/mini_trt_llm_resnet18_onnx_fp32.engine";
 const char* const kNativeFp32Engine = "/tmp/mini_trt_llm_resnet18_native_fp32.engine";
 
-// R2.6 的判据（见 docs/phase4_int8_plan.md + PH4-INT8-CRITERIA）：**分输入集**，因为 INT8 的固有误差比 FP16 大得多。
+// R2.6 的判据（见 docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md + PH4-INT8-CRITERIA）：**分输入集**，因为 INT8 的固有误差比 FP16 大得多。
 //
 // 出处（2026-09-26 实测，先测后定）：
 //   · ramp 输入（合成、确定性、与 legacy 同年口径）：argmax 必须**全一致**；
@@ -109,7 +109,7 @@ EngineBuilder::Config Int8Config() {
     EngineBuilder::Config config;
     config.precision = Precision::INT8;
     // 必须在**建引擎时**就打开——引擎建完后再设没有用，而且默认 verbosity 下逐层精度读不出来，
-    // 会让人误判成"没跑 INT8"（TROUBLESHOOTING #27 与 phase4_int8_plan §1.3 的 S3）。
+    // 会让人误判成"没跑 INT8"（TROUBLESHOOTING + TS-027 与 phase4_int8_plan §1.3 的 S3）。
     config.detailed_profiling = true;
     return config;
 }
@@ -601,7 +601,7 @@ TEST(ResNet18Int8AccuracyTest, DumpsLogitsAndCppReportForCrossCheck) {
         thresholds["confident_margin"] = JsonValue(static_cast<double>(kConfidentMargin));
         thresholds["bucket_edges"] = JsonValue(JsonValue::Array{
             JsonValue(1.0), JsonValue(2.0), JsonValue(5.0), JsonValue(10.0)});
-        thresholds["provenance"] = JsonValue("tests/test_resnet18_int8.cpp + docs/phase4_int8_plan.md + PH4-INT8-CRITERIA");
+        thresholds["provenance"] = JsonValue("tests/test_resnet18_int8.cpp + docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md + PH4-INT8-CRITERIA");
         report["thresholds"] = JsonValue(thresholds);
 
         JsonValue::Object overall;

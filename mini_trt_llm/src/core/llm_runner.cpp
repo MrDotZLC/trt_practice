@@ -42,7 +42,7 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
         return;
     }
 
-    // **校验引擎声明的边界精度，而不是假定它**（TROUBLESHOOTING #18）：
+    // **校验引擎声明的边界精度，而不是假定它**（TROUBLESHOOTING + TS-018）：
     // 弱类型网络里导出的 K/V 与 logits 的类型**由 TRT 决定，不由 `weight_dtype` 决定**
     // （实测 FP16 引擎下它们是 FP32；试过用 `addCast` 在图上钉死，实测无效）。
     // 而这种不一致的后果是"缓冲越界写 / cache 宽度全错"，**不报错**——
@@ -72,7 +72,7 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
     if (!check(decode_engine_.get(), "key_cache_0", "decode KV cache 输入")) {
         return;
     }
-    // K/V 与 logits 的**实际**精度：TRT 决定，因此只记录、不假定（#18）。
+    // K/V 与 logits 的**实际**精度：TRT 决定，因此只记录、不假定（`docs/TROUBLESHOOTING.md` + TS-018）。
     // 缓冲按它们分配，KV 写入内核按"源→目标"转换，采样器按 logits 精度读。
     const auto dtype_of = [](Engine* engine, const char* name) {
         return engine->GetCudaEngine()->getTensorDataType(name) == nvinfer1::DataType::kHALF;
@@ -93,7 +93,7 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
     }
 
     // KV Cache 的创建放在精度查询**之后**：cache 的元素精度（is_half）取自家配置，
-    // **源**精度（引擎导出的 K/V）取查询结果——两者不同时由写入内核做转换（#18）。
+    // **源**精度（引擎导出的 K/V）取查询结果——两者不同时由写入内核做转换（`docs/TROUBLESHOOTING.md` + TS-018）。
     PagedKVCache::Config cache_config;
     cache_config.num_blocks = config_.num_blocks;
     cache_config.block_size = config_.block_size;
@@ -117,7 +117,7 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
 LLMRunner::~LLMRunner() = default;
 
 bool LLMRunner::ReserveBuffers(int32_t prompt_len, int32_t max_new_tokens) {
-    // 各张量分别按其**实际声明精度**分配（#18）：不再用一个全局 elem ——
+    // 各张量分别按其**实际声明精度**分配（`docs/TROUBLESHOOTING.md` + TS-018）：不再用一个全局 elem ——
     // FP16 引擎里 logits/K/V 实测是 FP32，用一个假定值会直接越界写。
     const size_t prefill_kv_elem = ElementSize(prefill_kv_half_);
     const size_t decode_kv_elem = ElementSize(decode_kv_half_);
@@ -189,7 +189,7 @@ bool LLMRunner::ReserveBuffers(int32_t prompt_len, int32_t max_new_tokens) {
 }
 
 const void* LLMRunner::LogitsRow(int32_t row) const {
-    // 行步长按**该缓冲的实际精度**算（两张缓冲精度可能不同，见 #18）
+    // 行步长按**该缓冲的实际精度**算（两张缓冲精度可能不同，见 `docs/TROUBLESHOOTING.md` + TS-018）
     const bool is_prefill = row >= 0;
     const size_t elem =
         ElementSize(is_prefill ? prefill_logits_half_ : decode_logits_half_);
@@ -417,7 +417,7 @@ std::vector<int64_t> LLMRunner::Generate(const std::vector<int64_t>& input_ids,
     // 诊断（INFO 级，常驻）：把 prefill 最后一行 logits 的少量统计量打出来。
     // 为什么值得常驻：FP16 下"logits 是 NaN"与"logits 全是 0"都会表现为
     // "贪心永远返回 0"，而这两者的成因完全不同（前者是数值溢出，后者是没写进去）。
-    // 一行统计量就能分辨，省掉一次真机往返（见 TROUBLESHOOTING #18）。
+    // 一行统计量就能分辨，省掉一次真机往返（见 TROUBLESHOOTING + TS-018）。
     {
         const void* row_ptr = LogitsRow(prompt_len - 1);
         const size_t elem = ElementSize(prefill_logits_half_);
@@ -443,7 +443,7 @@ std::vector<int64_t> LLMRunner::Generate(const std::vector<int64_t>& input_ids,
             }
             // 逐层扫 K/V 找 NaN：K/V 是各层 LN+c_attn 的直接产物，能定出"NaN 从第几层开始"，
             // 从而把范围从"整张图"缩到"某一层的前半段"。二分比逐层打印便宜得多，
-            // 也比"猜 LayerNorm"可靠（见 TROUBLESHOOTING #18）。
+            // 也比"猜 LayerNorm"可靠（见 TROUBLESHOOTING + TS-018）。
             int32_t first_nan_layer = -1;
             for (int32_t layer = 0; layer < config_.num_layers && first_nan_layer < 0; ++layer) {
                 const void* kv_ptr = d_prefill_kv_[static_cast<size_t>(layer) * 2]->data();

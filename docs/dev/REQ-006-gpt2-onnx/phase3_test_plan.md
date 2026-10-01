@@ -4,7 +4,7 @@
 > 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
 > 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
 
-> **定位**：Phase 3 的**任务与决策**见 `docs/phase3_development_plan.md`；本文档定义
+> **定位**：Phase 3 的**任务与决策**见 `docs/dev/REQ-006-gpt2-onnx/phase3_development_plan.md`；本文档定义
 > **测试分层、用例、判据出处与缺口**。
 >
 > **状态说明**：Phase 3 的用例在本文档成文之前就已实现并真机通过（开发计划 §P3 执行结果）。

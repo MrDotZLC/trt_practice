@@ -69,7 +69,7 @@ cudaError_t LaunchPagedAttentionSplit(const PagedAttentionKernelArgs& args, void
 //   ② `0`：按上下文自适应（生产默认）；
 //   ③ `< 0`：**强制走旧单趟 kernel**——插件的 `enqueue` 会绕过 split 路径、直接调
 //      `LaunchPagedAttention`。这是"同二进制、同 session 对比两版实现"的开关
-//      （`TROUBLESHOOTING` #37/#38：跨 session 的差值不可直接比）。
+//      （`TROUBLESHOOTING` + TS-037/TS-038：跨 session 的差值不可直接比）。
 // 进程级、非线程安全，仅测试使用；用完必须复位为 0（`tests/paged_attention_test_support.hpp`
 // 的 RAII 守卫就是干这个的）。
 void SetPagedAttentionNumSplitsOverride(int32_t splits) noexcept;

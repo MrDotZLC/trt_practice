@@ -1,9 +1,11 @@
 # Requirement
 
 > **性质**：历史需求回填（2026-10-01）。内容从下列来源抽取，**未新增任何当时的决定**。
-> **来源**：`docs/phase0_development_plan.md` §1 / §3 / §4；`docs/phase0_code_review_plan.md` §1；
-> `docs/phase0_model_loading_test_plan.md` §2 / §5。
-> **判据的另一半**：`docs/phase0_model_loading_test_plan.md`（T1–T3）。
+> **来源**：`docs/dev/REQ-001-bootstrap/phase0_development_plan.md` §1 / §3 / §4；`docs/dev/REQ-001-bootstrap/phase0_code_review_plan.md` §1；
+> `docs/dev/REQ-001-bootstrap/phase0_model_loading_test_plan.md` §2 / §5。
+> **判据的另一半**：见本目录 `test_plan.md`（原出处：`docs/dev/REQ-001-bootstrap/phase0_model_loading_test_plan.md`（T1–T3））
+> **设计**：见本目录 `design.md`。
+> **谁引用这里**：无仓外引用（代码 / 工具 / 脚本 / 构建均未指向本条的来源文档）。
 > **数字与结论**：不在本文重复——唯一出处见 `PROGRESS.md` 与对应测试计划。
 > **状态**：已交付。
 
@@ -37,7 +39,7 @@
 
 ## Acceptance Criteria
 
-来源：`docs/phase0_development_plan.md` §4（每条都写了"验证方式 + 判定标准"）。
+来源：`docs/dev/REQ-001-bootstrap/phase0_development_plan.md` §4（每条都写了"验证方式 + 判定标准"）。
 
 1. 根目录 CMake 配置成功（给定配置命令）。
 2. 库目标编译成功（构建命令返回 0）。

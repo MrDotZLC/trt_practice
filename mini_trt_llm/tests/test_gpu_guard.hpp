@@ -34,7 +34,7 @@ inline CudaProbe ProbeCudaDevice() {
     (void)cudaDriverGetVersion(&probe.driver_version);
     (void)cudaRuntimeGetVersion(&probe.runtime_version);
     // 探测失败也会留下粘性错误码，这里读走它：否则第一个调用 cudaGetLastError() 的
-    // 用例会把别人的残留当成本次失败（TROUBLESHOOTING #13 的教训）。
+    // 用例会把别人的残留当成本次失败（TROUBLESHOOTING + TS-013 的教训）。
     (void)cudaGetLastError();
     return probe;
 }
@@ -75,7 +75,7 @@ inline std::string NoCudaMessage(const CudaProbe& probe,
 //
 // 为什么需要这道闸门：无 GPU 的沙箱里跳过是设计要求（否则 CI 永远不绿，真回归信号被淹没，
 // 见 PROGRESS §5.7）；但"静默"跳过会制造假绿——本项目 625939c 的真缺陷正是靠两条被
-// 静默跳过的断言一路滑到提交（TROUBLESHOOTING #19）。所以这里默认跳过但**必须把探测结果
+// 静默跳过的断言一路滑到提交（TROUBLESHOOTING + TS-019）。所以这里默认跳过但**必须把探测结果
 // 打出来**，而在真机 / 带 GPU 的 CI 上设 MINI_TRT_REQUIRE_GPU=1，任何一次跳过都变成失败。
 //
 // **必须是宏，不能封装成函数**：`GTEST_SKIP()` 与 `GTEST_FAIL()` 展开后都是 `return` 语句，

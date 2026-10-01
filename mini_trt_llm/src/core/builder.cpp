@@ -156,7 +156,7 @@ bool EngineBuilder::SetupBuilder(
     }
     // INT8 不需要任何 builder flag：`kINT8` 自 TRT 10.12 起废弃（由 Q/DQ 显式量化取代），
     // 引擎的精度由网络里的 Q/DQ 节点决定。实测（手搓对称 Q/DQ 最小图）：弱类型网络下
-    // Q/DQ 被正常接受，且 Q/DQ 与 Conv 会融合。见 docs/phase4_int8_plan.md + PH4-INT8-TOOLCHAIN 的 S1-b。
+    // Q/DQ 被正常接受，且 Q/DQ 与 Conv 会融合。见 docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md + PH4-INT8-TOOLCHAIN 的 S1-b。
 
     if (config_.detailed_profiling) {
         // 逐层精度只在 DETAILED 下写进引擎；默认（kLAYER_NAMES_ONLY）读不出精度，
@@ -510,7 +510,7 @@ bool EngineBuilder::BuildFromOnnx(const std::string& model_dir,
     // 依据（D4 的历史工程核对）：`1_gpt2_onnx/src/builder.cpp` 当年也是**单个** profile，
     // 取值 min[1,1] / opt[1,64] / max[4,512]，与 EngineBuilder::Config 的 prefill 默认值一致。
     // 该历史工程已于 Phase 5 下线；要复核原始实现见删除前的提交
-    // `git show ba3ea7a:1_gpt2_onnx/src/builder.cpp`（`docs/phase5_development_plan.md`）。
+    // `git show ba3ea7a:1_gpt2_onnx/src/builder.cpp`（`docs/dev/REQ-009-retire-legacy/phase5_development_plan.md`）。
     // 多挂一组 decode profile 不会错，但会让 TRT 白编译一份用不到的形状。
     if (model_config.architecture == "cnn") {
         if (!AddCvOptimizationProfile(builder.get(), trt_config.get(), network.get())) {

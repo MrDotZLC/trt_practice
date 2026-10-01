@@ -2,11 +2,11 @@
 """生成 ResNet18 的外部参考基线（Phase 4 的 P4-1）。
 
 为什么需要它：历史工程 `0_resnet18_onnx/`（已随 Phase 5 下线）的"精度验证"是**自相对**的——FP16/INT8 跟它自己跑的
-FP32 比，没有任何外部真值（见 docs/phase4_development_plan.md + PH4-LEGACY-FINDINGS / PH4-LEGACY-INHERIT）。没有独立基线，
+FP32 比，没有任何外部真值（见 docs/dev/REQ-007-resnet18/phase4_development_plan.md + PH4-LEGACY-FINDINGS / PH4-LEGACY-INHERIT）。没有独立基线，
 "两条路径对齐"就只能证明它们互相一致，证明不了它们对。本脚本用 torchvision 的
 ImageNet 预训练权重（与 load_model.py 同源）产出 FP32 logits 作为那条标尺。
 
-两套输入（docs/phase4_test_plan.md + PH4-TEST-INPUTS）：
+两套输入（docs/dev/REQ-007-resnet18/phase4_test_plan.md + PH4-TEST-INPUTS）：
   ramp   —— 与历史工程 src/main.cpp 同式的合成斜坡，用于与旧实现/旧输入定义对齐；
             它**不做归一化**（历史工程直接喂原始值）。
   pixels —— 从 calib_data 的真实图**反归一化**回 [0,255] 的像素质（float32 NCHW），
@@ -33,7 +33,7 @@ import torch
 import torchvision.models as models
 
 # ImageNet 归一化参数。与 assets/legacy/scripts/resnet18_prepare_calib_data.py 完全一致——
-# 两处若不一致，数值差会被误判成"引擎错"（docs/phase4_test_plan.md + PH4-CRITERIA）。
+# 两处若不一致，数值差会被误判成"引擎错"（docs/dev/REQ-007-resnet18/phase4_test_plan.md + PH4-CRITERIA）。
 MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
@@ -121,7 +121,7 @@ def main() -> None:
 
     weights = models.ResNet18_Weights.DEFAULT
     # 记录权重文件的绝对路径与 SHA256：没有它，"这份基线是哪份权重算的"就无从回答，
-    # 而换权重会让所有对拍结论失效（docs/phase4_test_plan.md + PH4-CRITERIA）。
+    # 而换权重会让所有对拍结论失效（docs/dev/REQ-007-resnet18/phase4_test_plan.md + PH4-CRITERIA）。
     weights_file = os.path.join(torch.hub.get_dir(), "checkpoints",
                                 os.path.basename(weights.url))
     if not os.path.isfile(weights_file):

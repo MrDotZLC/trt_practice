@@ -20,7 +20,7 @@
 ## 1. 分层与环境
 
 **层名刻意新起**（不与 phase 计划的 `L0~L3`、`S/E1~E4`、`R0.x~R3.x` 混用）——本项目已经因为
-层名冲突吃过一次"同一编号指两件事"的亏（`docs/phase1_5_test_plan.md` 开头的说明）。
+层名冲突吃过一次"同一编号指两件事"的亏（`docs/dev/REQ-003-test-infra/phase1_5_test_plan.md` 开头的说明）。
 
 | 层 | 含义 | 能在沙箱跑吗 | 归属 |
 |---|---|---|---|
@@ -134,7 +134,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 | A2-2 | `Int8EvalSpecTest.RejectsCalibOverlap` | H | 验收集与 `calib_data` 有重叠（按文件名或 SHA256 命中）→ **拒绝** | `future_iterations.md` §1.6 做法第 1 条（标定集污染验证集会让一致率系统性高估） | 合成重叠清单 | ✅ 已实现（`--self-test`）；另用真实 `calib_data`（500 文件）跑过 smoke |
 | A2-3 | `Int8EvalSpecTest.ReportRequiresSampleCount` | H | 只报率、不报 n 的报告 → **拒绝**（"只报率不报 n 的结论不可复核"） | `future_iterations.md` §1.6 做法第 2 条 | 合成报告 | ✅ 已实现（`--self-test` 的"只报率不报 n"/"率与分子分母不自洽"两项） |
 | A2-4 | `Int8EvalSpecTest.StratificationMatchesExpected` | H | 合成 logits（已知 margin 分布）→ 分层统计的分子 / 分母**逐桶可预测** | 与 C++ 现役实现同口径（`tests/test_resnet18_int8.cpp`） | 合成张量 | ✅ 已实现（`--self-test` 的 3 项分层数学断言） |
-| A2-5 | `Int8EvalCrossCheckTest.MatchesCppStratifiedStats`（**计划名**） | G | 同一批真实 logits：脚本报出的"余量子集率与样本量"与 C++ 用例**完全一致**（当前应为 12/12 = 100%） | `phase4_int8_plan.md` §4 + `PROGRESS.md` §3.0d | `models/resnet18/` 全产物 | ✅ **已由 A2-7 + A2-8 落地，并真机通过**（2026-09-26，C-1/C-2/C-3 三步全过）——**更正**：实现时没有建这条同名 gtest，而是拆成"落 artefact"（A2-7）与"两份报告比对"（A2-8）两步；留原名只为追溯 |
+| A2-5 | `Int8EvalCrossCheckTest.MatchesCppStratifiedStats`（**计划名**） | G | 同一批真实 logits：脚本报出的"余量子集率与样本量"与 C++ 用例**完全一致**（当前应为 12/12 = 100%） | `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §4 + `PROGRESS.md` §3.0d | `models/resnet18/` 全产物 | ✅ **已由 A2-7 + A2-8 落地，并真机通过**（2026-09-26，C-1/C-2/C-3 三步全过）——**更正**：实现时没有建这条同名 gtest，而是拆成"落 artefact"（A2-7）与"两份报告比对"（A2-8）两步；留原名只为追溯 |
 | A2-6 | `int8_eval_selftest`（ctest 脚本项） | H | 脚本对 **7 类**"故意改坏"的输入逐个拒绝：① 缺 `manifest_sha256`；② 验收集与标定集重叠（文件名 / `sha256` 命中）；③ `num_samples` 是字符串；④ 清单被改过（`sha256` 不符）；⑤ logits 大小与 `shape` 不符；⑥ 只报率不报 n；⑦ 率与分子分母不自洽 | `PROGRESS.md` §2.13「护栏必须有用例证明它会拦人」 | 无 | ✅ **已注册进 ctest 并通过**（2026-09-26，`ctest -R int8_eval_selftest` → Passed 0.06 s；无 `SKIP_RETURN_CODE`——它不依赖任何外部资产，没跑起来就是真问题。**序号会漂移，不记序号**） |
 | A2-7 | `ResNet18Int8AccuracyTest.DumpsLogitsAndCppReportForCrossCheck` | G | 用两个引擎跑同一批 256 张图 → 落 `fp32.f32.bin` / `int8.f32.bin` / `val_manifest.json` / `meta.json` / `cpp_report.json`，并**断言五个文件都写出来且非空**（静默失败不许伪装成"跑过了"）。正确性判据不在这里（由上一条精度用例负责） | 本计划 A2-5 的设计；口径常量与精度用例共用 `kConfidentMargin` / `kBucketEdges` | `models/resnet18` + `calib_data` + GPU | 🟡 已实现，**沙箱显式跳过**；执行见开发计划 §8.3 |
 | A2-8 | `int8_crosscheck`（ctest 脚本项） | H | 比对 `cpp_report.json` 与 `py_report.json`：整体 / 余量子集的 `n` 与分子、逐桶 `n` 与分子、以及两侧阈值（`confident_margin` / `bucket_edges`）必须一致 | A2-5："两条独立实现对同一批数据必须给出同一组数字；不一致说明口径漂移，**不许改阈值**" | 两份报告（真机产出） | 🟡 已注册；缺报告 → **77 跳过**（跳过不是通过）。执行见开发计划 §8.3 |
@@ -212,7 +212,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 | 判据 | 当前值 | 出处 | 备注 |
 |---|---|---|---|
 | Tokenizer 与 HF 一致 | **逐 token 全等**（不是率） | 2026-09-26 实测快照 + `transformers 4.44.0` | 全等是可能的，因为它俩是同一套确定性算法；给不出全等就说明实现有偏差 |
-| INT8 余量子集一致率 | `>= 90%`（实测 12/12 = 100%） | `phase4_int8_plan.md` §4 | **不许套到 FP16 / FP32 上**（跨精度复用） |
+| INT8 余量子集一致率 | `>= 90%`（实测 12/12 = 100%） | `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §4 | **不许套到 FP16 / FP32 上**（跨精度复用） |
 | INT8 整体一致率 | `>= 30%`（实测 37.9% / 38.3%） | 同上，"没崩坏"下界 | 主要在测测试集噪声，不是质量指标 |
 | INT8 绝对误差界 | **未定**（实测 `max_abs ≈ 21.6`，故意不作判据） | 同上 + `future_iterations.md` §1.6 | 有真值标签的验收集到位后按 p95 / p99 分布定 |
 | 探针仪器自证（`future_iterations.md` §1.5） | **`d_pre ≤ d_post` + 首层落在噪声地带内**（真机：`conv1` 8.34e-07 vs 0.0398；噪声地板 0.2714） | `future_iterations_development_plan.md` §13.3 D3/D4；`TROUBLESHOOTING.md` #46.4 | 落地时由"数格点"改成"比 d_pre / d_post"——不用先估 scale，少一个可能出错的环节 |
@@ -350,7 +350,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 | 分布一致性 | 与解析 softmax 概率比较，容差 `3σ + 1e-3` | `tests/test_sampler.cpp` 的 `TopKDistributionMatchesSoftmaxProbabilities` 注释（本次沿用，不改） |
 | FP16 分布一致性 | 同 3σ 口径（**不另立更松的尺子**） | 同上；`AGENTS.md` §7「阈值不跨精度复用」在这里的意思相反——**同一算子同一 dtype 语义，就该用同一把尺子** |
 | 集合成员关系 | 布尔判定（token ∈ top-K / ∈ nucleus） | 无阈值 → 无出处问题；构造上保证集合可解析 |
-| 性能加速比 | **目标：top-k ≥5×、top-p ≥10×**（出处 = 开发计划 §10.5 第 4 条）。实测：**top-p 对冻结基线 4/4 达标**（13.0 / 18.9 / 13.4 / 15.0 ×）；**同 session 口径 3/4**（50257×1 = 9.99×，差 0.08%）；**top-k fast 不达标**（0.106~0.163×，见 §10.10） | `future_iterations.md` §9.2 的触发时机 + `phase3_test_plan.md` §5 的 G6；两个口径的读法见开发计划 §10.9.1 |
+| 性能加速比 | **目标：top-k ≥5×、top-p ≥10×**（出处 = 开发计划 §10.5 第 4 条）。实测：**top-p 对冻结基线 4/4 达标**（13.0 / 18.9 / 13.4 / 15.0 ×）；**同 session 口径 3/4**（50257×1 = 9.99×，差 0.08%）；**top-k fast 不达标**（0.106~0.163×，见 §10.10） | `future_iterations.md` §9.2 的触发时机 + `docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` §5 的 G6；两个口径的读法见开发计划 §10.9.1 |
 | 回退行数 / 覆盖率 | **已取消**（Top-P 方案改定后没有候选容量，见开发计划 §10.11） | 原文是"观测指标，不作判据"；保留这句是因为 Top-K 的候选覆盖率仍待做（§10.10 的重做方向） |
 | 新实现 vs legacy 的一致率 | **观测指标，不作判据** | 两者累加顺序不同，边界处允许差一格——设成判据就会把登记的允许差异变成回归 |
 | 全量基线（沙箱，**当时**） | 242 条 / 0 失败（GPU 用例显式跳过；§10 新增 8 项之前是 234）。**现状见 §10.1 / §11.1 的"当前基线"** | `PROGRESS.md` §3.5 |
@@ -479,7 +479,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 | **PF-4** | `Gpt2DecodeBreakdown.OurVsTrtVsCub`（由 `summarize_nsys.py` 承担） | G / P | 开发计划 11.4 的三层分解 + TRT 前 N 条 kernel | 三层时间之和 vs 总时间的偏差**写出** | `PROGRESS.md` §2.14 C"诊断必须自证" | ✅ 脚本 + `--self-test` 已就位；**受阻**：nsys 报告不含 GPU kernel 数据、ncu 报 `Unknown Error on device 0` → **本机两条 CLI 路径都拿不到 kernel 时间线**；绕法见 #41（推荐同 session 比值法）；**出数待跑** |
 | **PF-5** | 分配开销（改由 `summarize_nsys.py --api` 承担） | P | `cudaMalloc` / `cudaFree` 的次数与总耗时 | 只打印；为 §2.1 供数 | §2.1 触发条件"先量分配开销" | ✅ **真机已有初步数据**（`cuda_api_sum` 在 WSL2 可用）：resnet18 一次运行 `cudaFree` 6 次 / 317 ms、`cudaMalloc` 3 次 / 4 ms；GPT-2 首跑 `cudaMalloc` 63 次。**注意 `cudaFree` 含隐式同步，不等于纯分配器成本**；且未区分"建引擎期"与"`Generate` 期" |
 | **PF-6** | `PerfStatsTest.*`（**H 层，沙箱**） | H | 中位数 / 最近秩分位 / 斜率 / 极差的计算自证 | 已知输入 → 已知输出（含空输入哨兵、最近秩不插值、斜率扣固定开销） | `PROGRESS.md` §2.13"参考实现要自证"；`test_sampler.cpp` 的 harness 是现成参考 | ✅ **沙箱通过**（2026-09-27，5/5） |
-| **PF-7** | `OnnxVsNative.PerfPerBuildMedian`（**P 层，纯打印**） | P | ONNX vs 原生 prefill：同 session ≥3 次构建 × ≥20 次推理 | 极差 < 中位数差 → 可判；否则"**未定**" | `future_iterations.md` §10.2 的**前置**；`phase3_test_plan.md` §3.1 | ⏳ **待真机**（协议已定，无新代码）。**注意：这项服务 §10.2（ONNX 子图替换），已从 §11 的收口范围移交出去**——§11 已于 2026-09-27 关闭（开发计划 §11.5.2） |
+| **PF-7** | `OnnxVsNative.PerfPerBuildMedian`（**P 层，纯打印**） | P | ONNX vs 原生 prefill：同 session ≥3 次构建 × ≥20 次推理 | 极差 < 中位数差 → 可判；否则"**未定**" | `future_iterations.md` §10.2 的**前置**；`docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` §3.1 | ⏳ **待真机**（协议已定，无新代码）。**注意：这项服务 §10.2（ONNX 子图替换），已从 §11 的收口范围移交出去**——§11 已于 2026-09-27 关闭（开发计划 §11.5.2） |
 | **PF-8** | `Gpt2DecodePerf.StepLatencyByPhase` 的**同 session sampler 占比段**（**P 层，纯打印**） | P | greedy / top-k(k=64) / top-p(p=0.9) 三种采样在 vocab=50257、batch=1 下的**净成本**，及其占本次 decode 每步的比例 | **只打印比值**（无阈值）；斜率口径 `(T4−T1)/3`、正反交替、n=9 | `TROUBLESHOOTING.md` #41 绕法 1（两条 CLI profiling 路径都不可用时，用**同 session 两数相除**回答"sampler 占多少"） | ✅ **真机通过并与 `SamplerPerf` 互校一致**（2026-09-27，同 session）：greedy **0.0308**(0.0336) / top-k **0.4360**(0.4281) / top-p **0.4938**(0.4916) ms（括号= `SamplerPerf`，差 ≤2%）→ 占 2.458 ms 步的 **1.25% / 17.7% / 20.1%**。首版用**全零**输入曾差 2.5×，根因即退化输入（#42） |
 | **PF-9** | `Gpt2DecodePerf.ContextLengthSweep`（**P 层，纯打印**） | P | prompt ∈ {4, 256, 960} 三档下各自的**每步 decode 耗时**（斜率 `(T32−T1)/31`），以及"每 1000 个上下文位置涨多少 ms" | **只打印，不设阈值**；斜率法（与 PF-8/§9.2 同口径）+ 正反交替 | 开发计划 **§11.4.1**（profiler 拿不到 kernel 时间线时的替代法：#41）；用来给 `future_iterations` **§2.2** 供判据 | ✅ **真机通过并出数**（2026-09-27）：ctx 20.5 → **3.055 ms/步**、ctx 272.5 → **6.062**、ctx 976.5 → **14.705**；两段斜率 **11.93 / 12.28 ms per 1000**（差 3% → **线性**，外推 1024 = +12.2 ms）→ **长上下文下 attention ≈ 每步 80%**。**据此 §2.2 的触发条件成立，已从 P3 升 P2**（`future_iterations.md` §0.1/§0.2/§0.3-14） |
 

@@ -39,7 +39,7 @@ const char* const kFp32EnginePath = "/tmp/mini_trt_llm_resnet18_onnx_fp32.engine
 
 // 返回**模型目录**（不是 config.json 的路径）。
 //
-// 踩过的坑（#25）：第一版返回的是 config.json 的文件路径，于是调用方拼出的
+// 踩过的坑（`docs/TROUBLESHOOTING.md` + TS-025）：第一版返回的是 config.json 的文件路径，于是调用方拼出的
 // `<...>/config.json/model.safetensors` 永远不存在 → 用例**静默 skip**。
 // 与"路径类 helper 返回什么"这种细节相比，静默跳过才是最贵的错误：
 // 它让一条本该验证的用例看起来"跑过了"。
@@ -87,7 +87,7 @@ TEST(CvRunnerPreprocessTest, MatchesBaselineNormalization) {
     ASSERT_EQ(pixels.size(), kInputElements);
     ASSERT_EQ(expected.size(), kInputElements);
 
-    // 刻意用 batch=8 来测：通道下标公式在 batch=1 时会**凑巧对**（#23），
+    // 刻意用 batch=8 来测：通道下标公式在 batch=1 时会**凑巧对**（`docs/TROUBLESHOOTING.md` + TS-023），
     // 只有多 batch 才能发现分母用错。
     const std::vector<float> actual = NormalizePixelsToNchw(
         pixels, kCvChannels, kCvSize * kCvSize, kMean, kStd);
@@ -168,7 +168,7 @@ TEST(CvRunnerTest, InferMatchesBaseline) {
     }
     Logger logger;
     EngineBuilder::Config builder_config;
-    builder_config.precision = Precision::FP32;  // 与基线对拍必须显式指定（#21）
+    builder_config.precision = Precision::FP32;  // 与基线对拍必须显式指定（`docs/TROUBLESHOOTING.md` + TS-021）
     EngineBuilder builder(logger, builder_config);
     ASSERT_TRUE(builder.BuildFromOnnx(model_dir,
                                       onnx, kFp32EnginePath, {}));

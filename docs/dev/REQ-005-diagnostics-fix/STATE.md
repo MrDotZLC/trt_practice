@@ -15,6 +15,9 @@
 ## Completed Artifacts
 
 - `requirement.md`（2026-10-01，**历史需求回填**）
+- `design.md`（2026-10-01，**历史设计回填**）
+- `test_plan.md`（2026-10-01，**历史用例回填**）
+- 归档原文：`docs/dev/REQ-005-diagnostics-fix/phase2_supplement_plan.md`（自 `docs/` 根迁入，文件名不变）
 
 ---
 

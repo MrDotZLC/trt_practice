@@ -18,7 +18,7 @@ namespace test_support {
 // （那道闸只管"没有 CUDA 设备"，资产缺失走的是另一条路）。
 //
 // 所以资产迁移 / 删除这类改动，必须在带本闸门的环境里跑：缺资产即红，覆盖损失无处可藏。
-// 计划与验收见 `docs/phase5_development_plan.md` 阶段 0；资产清单见
+// 计划与验收见 `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md` 阶段 0；资产清单见
 // `docs/PROGRESS.md + DEC-ENVIRONMENT`。
 inline bool RequireAssets() {
     const char* flag = std::getenv("MINI_TRT_REQUIRE_ASSETS");
@@ -45,7 +45,7 @@ inline bool RequireAssets() {
             GTEST_FAIL() << mini_trt_asset_msg_                                        \
                          << "；已设置 MINI_TRT_REQUIRE_ASSETS=1，缺资产在本环境算失败"     \
                             "（资产准备见 docs/PROGRESS.md + DEC-ENVIRONMENT；"          \
-                            "闸门由来见 docs/phase5_development_plan.md 阶段 0）";      \
+                            "闸门由来见 docs/dev/REQ-009-retire-legacy/phase5_development_plan.md 阶段 0）";      \
         }                                                                              \
         GTEST_SKIP() << mini_trt_asset_msg_;                                           \
     } while (false)

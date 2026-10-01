@@ -185,7 +185,7 @@ ncu --set full -o ncu_report_kernel \
 1. **有没有计划文档**：这次要做的事是否已被 `docs/dev/<feature>/` 覆盖（`requirement.md` +
    `analysis.md` + `design.md`；Bugfix 走 `requirement.md` + `analysis.md` + 候选修复方案）。
    没有 → 先产出计划文档并等确认，不要直接开工。
-   （历史阶段文档 `docs/phaseN_development_plan.md` 只作判据出处，**不再作为新工作的计划落点**。）
+   （历史阶段文档已按功能迁入 `docs/dev/REQ-NNN-*/`，只作判据出处，**不再作为新工作的计划落点**。）
 2. **是否一致**：把这次要做的任务、接口、验收判据，逐条与文档描述对照，说出
    "哪几条对上了、哪几条有偏差"。
 3. **偏差怎么处理**：不一致时**先改文档再改代码**（或在动手前说明差异并取得确认）。
@@ -241,7 +241,7 @@ ncu --set full -o ncu_report_kernel \
 **阈值规则**：
 
 - 每个数值阈值旁边必须写清出处（哪次实测 / 哪个标准 / 哪份文档）。可以松，但不能来路不明。
-- 阈值不跨精度复用：`phase1_development_plan.md` D4 的 `相对误差 < 1e-3` 是 **FP16** 标准，
+- 阈值不跨精度复用：`docs/dev/REQ-002-plugins/phase1_development_plan.md` D4 的 `相对误差 < 1e-3` 是 **FP16** 标准，
   套到 FP32 上等于把尺子放宽约 1000 倍。
 - 放宽阈值前必须先量"与正确性无关的差异"（算法不同 / 累加顺序不同 / kernel 不同），
   阈值取其合理倍数。观测值若比它高出几个数量级，说明另有原因，**此时唯一的动作是查**。

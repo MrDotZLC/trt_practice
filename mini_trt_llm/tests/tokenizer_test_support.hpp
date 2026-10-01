@@ -25,7 +25,7 @@ inline bool HasTokenizerFiles(const std::string& dir) {
            std::filesystem::exists(dir + "/merges.txt");
 }
 
-// 返回**仓库根目录**（名字说实话：返回目录就是目录——TROUBLESHOOTING #25 的教训）。
+// 返回**仓库根目录**（名字说实话：返回目录就是目录——TROUBLESHOOTING + TS-025 的教训）。
 // 首选 __FILE__ 反推：测试源码路径在编译期固定，比"猜相对层数"稳。
 inline std::string FindRepoRootDir() {
     const std::filesystem::path source(__FILE__);

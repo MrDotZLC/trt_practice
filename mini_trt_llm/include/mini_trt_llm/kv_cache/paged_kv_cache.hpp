@@ -35,7 +35,7 @@ class PagedKVCache {
         // cache 元素精度（由 PagedAttention 的 cache 输入精度决定）。
         bool is_half = false;
         // 引擎导出的 K/V **源**精度。弱类型网络下 TRT 决定它（FP16 引擎里实测是 FP32），
-        // 与 cache 精度不一定相同——写入内核按"源→目标"转换（TROUBLESHOOTING #18）。
+        // 与 cache 精度不一定相同——写入内核按"源→目标"转换（TROUBLESHOOTING + TS-018）。
         bool source_is_half = false;
         // block table 的宽度（每个序列最多多少块）。
         // **必须等于引擎侧 block_tables 输入的第二维**，也就是

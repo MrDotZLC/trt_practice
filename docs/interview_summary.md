@@ -426,10 +426,10 @@ split-K 斜率降 88.85%（kernel）/ 88.20%（端到端）。出处见 `PROGRES
    ② **解码侧没有可用的并行控制面**（split-K、片数、确定性归约这些不给开关）。
    所以 decode 自研插件的理由是"**分页布局 + 可控制的并行策略**"，不是"TRT 没有 attention"。
 
-   prefill 走显式子图则是 **`phase2_development_plan.md` D1 的明确取舍**：备选就是
+   prefill 走显式子图则是 **`docs/dev/REQ-004-gpt2-native/phase2_development_plan.md` D1 的明确取舍**：备选就是
    `IAttention(causal=true)`，当时选手搭的三条理由是——可按算子对拍定位差异、把同一份 K/V 张量
    复用给 KV Cache、以及 Turing 上融合 kernel 的可用性需真机确认。代价是两条路各自建引擎。
-   要不要改成 `IAttention` 属**待测量决定**（`phase3_development_plan.md` D1，前置是 PF-7）。
+   要不要改成 `IAttention` 属**待测量决定**（`docs/dev/REQ-006-gpt2-onnx/phase3_development_plan.md` D1，前置是 PF-7）。
 3. **为什么每层一对 cache 张量？**
    插件是"单层注意力"实现，只接收一个 4-D cache；共用一张会让每层都读第 0 段——
    这是我踩过的真 bug（2 层差 1.2e-3、12 层完全失真）。
@@ -633,7 +633,7 @@ split-K 斜率降 88.85%（kernel）/ 88.20%（端到端）。出处见 `PROGRES
    → **分页/块表布局没有**。解码侧 multi-block（split-KV）那种显式控制是 **TensorRT-LLM**
    （另一套库）的东西。**我们自研的真实理由是"分页布局 + 并行控制面"**，不是"TRT 没有 attention"。
 3. **TRT 有 `IAttention`，prefill 为什么还手搭？**
-   这是 `phase2_development_plan.md` **D1 的明确取舍**：可逐算子对拍定位差异、把同一份 K/V 复用给
+   这是 `docs/dev/REQ-004-gpt2-native/phase2_development_plan.md` **D1 的明确取舍**：可逐算子对拍定位差异、把同一份 K/V 复用给
    KV cache、Turing 上融合 kernel 可用性待确认。要不要换成 `IAttention` 是**待测量决定**
    （Phase 3 D1，前置 PF-7）。⚠️ 别说"TRT 没有现成算子"（它有），见 §4 A2 与 §6 红线。
 
@@ -682,7 +682,7 @@ split-K 斜率降 88.85%（kernel）/ 88.20%（端到端）。出处见 `PROGRES
 - 别说"TRT 没有 attention / RoPE / KV cache 设施"——TRT 10.15 **有** `IAttention`
   （`addAttention(q,k,v,normOp,causal)`）、`IRotaryEmbeddingLayer`、`IKVCacheUpdateLayer`
   （KV cache **仅 `kLINEAR`**）。我们自研的真实理由是**分页布局**与**并行控制面**，
-  以及 prefill 手搭那条明确取舍（`phase2_development_plan.md` D1）。把 TRT 说小会被当场问穿。
+  以及 prefill 手搭那条明确取舍（`docs/dev/REQ-004-gpt2-native/phase2_development_plan.md` D1）。把 TRT 说小会被当场问穿。
 - 别说"支持 INT4 / FP8"、"KV cache 支持量化"——都没有；PagedAttention 只接受 FP32 / FP16。
 - 别说"FP16 端到端可用"；提"1 红"时要顺带说明那是**按设计**的 FP16 复现器，
   否则听起来像留了个未修的 bug。
@@ -724,10 +724,10 @@ split-K 斜率降 88.85%（kernel）/ 88.20%（端到端）。出处见 `PROGRES
 | 问题 | 落点 |
 |---|---|
 | 接手项目先读什么？ | `docs/README.md` §1 |
-| `0_resnet18_onnx` / `1_gpt2_onnx` 能删了吗？删之前要做什么？ | `docs/phase5_development_plan.md`（阶段 0~4 + 删除清单）；**删除已执行** |
+| `0_resnet18_onnx` / `1_gpt2_onnx` 能删了吗？删之前要做什么？ | `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md`（阶段 0~4 + 删除清单）；**删除已执行** |
 | 资产迁到哪？provenance 怎么办？ | 同上 §5.1；`assets/legacy/README.md` |
 | "不影响 `mini_trt_llm`"的边界是什么？ | `PROGRESS.md` §4.6（**功能不变；测试与缓存可改可删**） |
-| 资产闸门要不要扩到全部资产跳过点？ | `docs/phase5_development_plan.md` §4.1（**已扩，62 处 / 15 个文件**） |
+| 资产闸门要不要扩到全部资产跳过点？ | `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md` §4.1（**已扩，62 处 / 15 个文件**） |
 | 真机跑出 1 红 / 2 红算不算问题？ | 1 红 = 按设计（`PROGRESS.md` §5.11）；2 红那次 = `TS-049`；基线见 `PROGRESS.md`「当前基线」 |
 | 跳过集合怎么保证不再"静默少跑"？ | `tools/check_skips.py` + `tests/data/expected_skips.txt`（基线为空） |
 | 提交信息怎么写、要不要提交？ | 由作者决定（`AGENTS.md` §0.2：提交与 push 归作者） |

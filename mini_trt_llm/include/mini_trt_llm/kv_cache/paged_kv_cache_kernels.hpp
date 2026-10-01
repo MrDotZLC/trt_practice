@@ -28,7 +28,7 @@ struct PagedKVWriteArgs {
     bool is_half = false;
     // 源 K/V（引擎输出）的元素类型。**与 cache 可能不同**：弱类型网络下导出的 K/V
     // 由 TRT 决定类型（FP16 引擎里实测是 FP32），而 cache 是 `weight_dtype` 精度。
-    // 内核因此按"源→目标"做一次转换，而不是假定两者一致（见 TROUBLESHOOTING #18）。
+    // 内核因此按"源→目标"做一次转换，而不是假定两者一致（见 TROUBLESHOOTING + TS-018）。
     bool source_is_half = false;
     // false：从每个序列的第 0 个位置开始覆盖写（prefill）。调用方负责在写完后
     //        把 host 侧的 context_lens 设为 tokens 并 UploadMetadata。
