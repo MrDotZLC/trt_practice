@@ -70,14 +70,14 @@
 
 ### 1.1 30 秒版
 
-> 我用 C++ / CUDA 从零写了一个面向 Turing `sm_75` 的极简 TensorRT 推理框架，把 TensorRT-LLM 的
-> 核心机制实现了一遍：原生建图、Paged KV Cache、自研 PagedAttention 插件、设备侧采样器、
-> prefill/decode 双引擎。在长上下文下我做了 FlashDecoding 式的上下文维切分，每步 decode 的
-> 延迟增长斜率降了 88%，生成结果与单趟实现完全一致。
+> 我用 C++ / CUDA 从零实现了一个**极简、高性能、支持多模态的 TensorRT-LLM 推理引擎**，把
+> TensorRT-LLM 的核心机制实现了一遍：原生建图、Paged KV Cache、自研 PagedAttention 插件、
+> 设备侧采样器、prefill/decode 双引擎。在长上下文下我做了 FlashDecoding 式的上下文维切分，
+> 每步 decode 的延迟增长斜率降了 88%，生成结果与单趟实现完全一致。
 
-一句话定位：一个面向 NVIDIA Turing / `sm_75` 的极简 TensorRT 推理框架，把 TensorRT-LLM 的核心机制
-（原生建图、Paged KV Cache、自研 PagedAttention 插件、算子融合、设备侧采样、prefill/decode 双引擎）
-从零实现了一遍，并用一套带出处的数值与性能判据在真机验证过。
+一句话定位：一个**极简、高性能、支持多模态的 C++ TensorRT-LLM 推理引擎**（`mini_trt_llm`），把
+TensorRT-LLM 的核心机制（原生建图、Paged KV Cache、自研 PagedAttention 插件、算子融合、设备侧采样、
+prefill/decode 双引擎）从零实现了一遍，并用一套带出处的数值与性能判据在真机验证过。
 
 ### 1.2 2 分钟版
 
@@ -101,6 +101,11 @@
   靠调库吃低精度吞吐走不通，力气只能放在访存与并行上；③ 生产替代本来就不成立。
 - **和 vLLM / TRT-LLM 比的优势**：体量小、全链路可读可改、kernel 全自有、数值与性能判据都带出处；
   **劣势**：生态、模型覆盖、绝对性能。
+- **"多模态"当前的含义**：框架统一承载 CV（ResNet18）与 LLM（GPT-2）两条链路，tokenizer 侧预留了
+  多模态抽象接口；真正的多模态融合（CLIP / LLaVA）属未触发的开放项（`future_iterations.md` §3.3）。
+  被追问时要说清边界，别夸成"能跑多模态模型"。
+- **硬件限制怎么影响设计**：这台机器没有 Tensor Core，靠调库吃低精度吞吐走不通，
+  所以优化重心放在访存与并行上（split-K、分页布局、设备侧采样都是这个取向的产物）。
 - **追问链**（问到动机时按这个顺序答）：动机（合并 + 不调库）→ 为什么不用 TRT-LLM（机制 + 硬件吃不到收益）
   → 收获（工程纪律）→ 不足（清楚边界）。
 
