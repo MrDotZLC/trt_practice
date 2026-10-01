@@ -307,8 +307,8 @@
    `file(GLOB ...)`，GLOB 只在 configure 时求值；漏跑的症状是链接期 `undefined reference to vtable`。
 3. **产物或建图变了先删引擎缓存**：`/tmp/mini_trt_llm_*.engine` 只按路径名区分，不随代码失效。
 4. **真机口径固定**：`MINI_TRT_REQUIRE_GPU=1`（否则 GPU 用例静默跳过，等于白跑）。
-   当前基线（唯一出处：`PROGRESS.md` 当前基线）：**沙箱 267 条 / 0 失败（2026-09-28）**；
-   真机整轮全量 264 条 / 1 红 / 0 跳过 / 310 s（2026-09-27 复跑，总数随之为 267 待确认）
+   当前基线**不在此复制**——唯一出处是 `PROGRESS.md` 的「当前基线」块。（本节曾抄一份，
+   结果抄错了一次：写成"沙箱 267 / 真机 264"，而现状是**沙箱 268 / 真机 267**。）
    （沙箱含 §11 的 6 项 host 用例与脚本自检、§12 的 8 项、§13 的 2 条 host 自检，
    GPU / P 层用例在沙箱显式跳过）。红按设计（GPT-2 FP16 NaN，`PROGRESS.md` §5.11）；
    `int8_crosscheck` 报告齐备 → Passed，只在缺报告时按设计跳过。**两边总数相同**，差别只在 GPU 用例跑还是跳过。
@@ -589,6 +589,7 @@ Top-P 在保留前缀内**重新归一化**——逐条与现状对齐（这些�
 </details>
 
 ### 10.5 [OI-SAMPLER-KERNEL-ACCEPTANCE] 验收标准（每条都要能回答"凭什么"）
+> **判据的唯一出处 = 测试计划**（`docs/future_iterations_test_plan.md` §9.3）：本节保留的是**设计侧视角**，与测试计划重复的行**以测试计划为准**。
 
 1. **语义回归（主判据）**：`tests/test_sampler.cpp` 既有 11 条用例**不改判据、全部通过**；
    另有 `test_e2e_mini_decoder.cpp` 的 Top-K（k=1）与 `test_fp16_paths.cpp` 的 Greedy 用例通过。
@@ -1408,6 +1409,7 @@ TRT 内部 kernel 名（`genericNode_*` / tactic 名）**不携带语义**，硬
 </details>
 
 ### 11.6 验收判据（每条都要能回答"凭什么"）
+> **判据的唯一出处 = 测试计划**（`docs/future_iterations_test_plan.md` §10.3）：本节保留的是**设计侧视角**，与测试计划重复的行**以测试计划为准**。
 
 | 判据 | 值 / 形式 | 凭什么 |
 |---|---|---|
@@ -1706,6 +1708,7 @@ PG-1~PG-7（沙箱无法执行）。
   ——同 session 漂移已见 10~18%，跨 session 见过 ±27%。
 
 ### 12.6 验收判据（每条都要能回答"凭什么"）
+> **判据的唯一出处 = 测试计划**（`docs/future_iterations_test_plan.md` §11.3）：本节保留的是**设计侧视角**，与测试计划重复的行**以测试计划为准**。
 
 | # | 判据 | 值 / 形式 | 凭什么 |
 |---|---|---|---|
@@ -1975,6 +1978,7 @@ diverged(L)  ⟺  PC 臂的 max_abs(L) > kDivergenceFactor × noise_floor
 | 复现对照 | 与正式产物**同一套**分层口径：`margin ≥ 5` 的余量子集一致率、整体一致率 |
 
 ### 13.6 验收判据
+> **判据的唯一出处 = 测试计划**（`docs/future_iterations_test_plan.md` 的 per-channel 用例节）：本节保留的是**设计侧视角**，与测试计划重复的行**以测试计划为准**。
 
 判据的唯一来源是 `docs/future_iterations.md` + OI-INT8-PERCHANNEL 的"二选一"，可执行形式见测试计划 §3。
 本节的硬约束只有两条：
