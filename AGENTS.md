@@ -1,6 +1,6 @@
 # AGENTS.md - Codex 与 AI Agent 项目开发指南
 
-本项目（`trt_practice`）正在演进并实现一个**极简、高性能的 C++ TensorRT-LLM 推理引擎**（`mini_trt_llm`）。
+本项目（`trt_practice`）正在演进并实现一个**极简、高性能、支持多模态的 C++ TensorRT-LLM 推理引擎**（`mini_trt_llm`）。
 
 所有 AI 编程助手（Codex、Claude、Cursor 等）在进行代码生成、重构、CUDA Kernel 编写或 C++ 实现时，**必须严格遵守**本指南中的硬件限制、工程规范与设计模式。
 
@@ -153,24 +153,32 @@ ncu --set full -o ncu_report_kernel \
 
 ## 5. Incremental 开发推进流程
 
-**流程权威**：功能开发与 Bug 修复的推进流程以技能 `trt-inference-engineering` 为准
-（`.agents/skills/trt-inference-engineering/SKILL.md`）。本节只规定**权限、计划对账与文档落点**，
-**不复述**技能细则——阶段定义、Gate 判据、artifact 模板都在技能里。
+**流程权威**：阶段链、Gate 判据、artifact 落点与模板、各阶段自检清单——**全部以技能
+`trt-inference-engineering` 为准**（`.agents/skills/trt-inference-engineering/SKILL.md`）。
+本节**只**规定与权限、项目事实有关的部分，**不复述**技能内容。
 
-| workflow | 适用 | 阶段链 |
-|---|---|---|
-| **Feature** | 新增能力 / 性能优化 / 架构增强 | P0 Requirement → P1 Analysis → P2 Design → **Gate-A** → P3 Review → **Gate-B** → P4 Baseline → P5 Implementation → P6 Test → P7 Benchmark → **Gate-C** → P8 Documentation → P9 Interview |
-| **Bugfix** | 结果错误 / 崩溃 / 性能回退 | B0 Reproduce → B1 Diagnose → B2 Minimal Fix → B3 Regression → B4 Summary |
+- **开工资格**：技能里的"自动进入下一阶段"（例如 P0 目标明确即自动进 P1）**不构成开工许可**。
+  写计划文档 / 改代码 / 跑实验 / 真机任务，仍须按 §0.7 由作者点名；未点名时停在当前阶段。
+- **Gate 与 §0.7 并行**：Gate 决定"设计是否被接受"，§0.7 决定"是否允许开始"。两者都要过。
+- **单测外测试的授权范围**：技能规定的**基准与测量阶段**（P4 Baseline / P7 Benchmark）视为
+  **已授权、可自动执行**；**其余单测外测试**（真机任务、精度验证、端到端等）仍按 §0.3
+  **先请求确认**。
+- **性能判定的例外**：技能 P7 的"提升 ≥5% 自动接受"在本机**不适用**——本平台这类测量的判别下限
+  约 ±400~600 µs（见 `docs/PROGRESS.md` §5.13b）；低于下限的观测只能写"**无显著差异**"，
+  不得按百分比自动接受。
+- **改代码的前置**：技能 P5 要求先写 Implementation Plan（当前模块 / 预计文件 / 测试方式）并记进
+  对应条目的 `STATE.md`；该步完成后再按下面四步推进。
+- **提交规则**：按技能的 Commit Rules（`.agents/skills/trt-inference-engineering/workflows/feature.md`）
+  执行——**每个 commit 只完成一个 Phase 子任务**，推荐格式 `[feature][Phase-X] description`，
+  **禁止**一个 commit 跨越多个无关功能。无 Phase 归属的改动（如纯文档整理）单独成笔，不与功能改动混提。
+- **产物完备性**：按技能的 Required Artifacts（10 件：`STATE` / `requirement` / `analysis` / `design` /
+  `review` / `benchmark_before` / `benchmark` / `test_plan` / `summary` / `interview_notes`）执行。
+  `docs/dev/` 里的历史条目目前只有四件套（`STATE` / `requirement` / `design` / `test_plan`），
+  **不构成对新条目的豁免**。
+- **面试笔记的层级**：技能 P9 产出的是**每个条目**的 `interview_notes.md`（放在该条目目录）；
+  项目级面试总结仍是 `docs/interview_summary.md`（材料类、**不参与 SSOT**），两者不互相替代。
 
-- **artifact 落点**：`docs/dev/<feature>/`（`STATE.md` + 各阶段产出的文档）。
-  每个 Phase 结束必须更新该目录的 `STATE.md`：`phase` / `status` / 已完成 artifact / blocker /
-  next action。
-- **Gate 与 §0.7 的关系**：Gate 只决定"能否进入下一阶段"；**开工本身仍须按 §0.7 由作者点名**。
-  两者并行成立，互不替代。
-
-**C++ 侧仍按下面四步分步推进：**
-
-生成新功能代码时，请按以下顺序分步推进：
+**C++ 侧按以下顺序分步推进：**
 
 0. **计划对账（在写任何代码之前）**：见本节末尾的「计划对账」。
 1. **头文件定义 (`.h` / `.hpp`)**：声明轻量化接口并附带清晰的 C++ 注释。
