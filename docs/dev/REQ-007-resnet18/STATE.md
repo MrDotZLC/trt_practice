@@ -17,6 +17,7 @@
 - `requirement.md`（2026-10-01，**历史需求回填**）
 - `design.md`（2026-10-01，**历史设计回填**）
 - `test_plan.md`（2026-10-01，**历史用例回填**）
+- 其余过程产物（2026-10-01 历史回填，**10 件齐**）：`analysis.md` / `review.md` / `benchmark_before.md` / `benchmark.md` / `summary.md` / `interview_notes.md`
 - 归档原文：`docs/dev/REQ-007-resnet18/phase4_development_plan.md`、`docs/dev/REQ-007-resnet18/phase4_test_plan.md`（自 `docs/` 根迁入，文件名不变）
 - **已按需求拆出**（2026-10-01）：两份原文里的 INT8 条目（D2 决策 / P4-7 任务 / INT8 判据与验收 /
   R2.6 用例与回填，共 10 处）已移至 `docs/dev/REQ-008-int8-qdq/phase4-excerpts.md`，原位留指针。

@@ -87,7 +87,7 @@
 
 | 条目 | 活文档 | 迁入的归档原文（文件名不变） |
 |---|---|---|
-| `REQ-001` | STATE / requirement / design / test_plan | `phase0_development_plan`、`phase0_code_review_plan`、`phase0_model_loading_test_plan` |
+| `REQ-001` | **10 件齐**（技能 Required Artifacts 全套） | `phase0_development_plan`、`phase0_code_review_plan`、`phase0_model_loading_test_plan` |
 | `REQ-002` | 同上 | `phase1_development_plan`、`phase1_test_plan` |
 | `REQ-003` | 同上 | `phase1_5_development_plan`、`phase1_5_test_plan` |
 | `REQ-004` | 同上 | `phase2_development_plan`、`phase2_test_plan` |

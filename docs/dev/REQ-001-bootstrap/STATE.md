@@ -17,6 +17,7 @@
 - `requirement.md`（2026-10-01，**历史需求回填**；来源见该文件首部）
 - `design.md`（2026-10-01，**历史设计回填**）
 - `test_plan.md`（2026-10-01，**历史用例回填**）
+- 其余过程产物（2026-10-01 历史回填，**10 件齐**）：`analysis.md` / `review.md` / `benchmark_before.md` / `benchmark.md` / `summary.md` / `interview_notes.md`
 - 归档原文：`docs/dev/REQ-001-bootstrap/phase0_development_plan.md`、`docs/dev/REQ-001-bootstrap/phase0_code_review_plan.md`、`docs/dev/REQ-001-bootstrap/phase0_model_loading_test_plan.md`（自 `docs/` 根迁入，文件名不变）
 
 ---

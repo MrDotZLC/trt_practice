@@ -171,6 +171,8 @@ ncu --set full -o ncu_report_kernel \
 - **提交规则**：按技能的 Commit Rules（`.agents/skills/trt-inference-engineering/workflows/feature.md`）
   执行——**每个 commit 只完成一个 Phase 子任务**，推荐格式 `[feature][Phase-X] description`，
   **禁止**一个 commit 跨越多个无关功能。无 Phase 归属的改动（如纯文档整理）单独成笔，不与功能改动混提。
+  **无 Phase 归属的改动**（纯文档整理 / 规则维护）：feature 标签用 **`[文档修改]`**（英文 `[docs]`
+  亦可），不带 Phase 段。
 - **产物完备性**：按技能的 Required Artifacts（10 件：`STATE` / `requirement` / `analysis` / `design` /
   `review` / `benchmark_before` / `benchmark` / `test_plan` / `summary` / `interview_notes`）执行。
   `docs/dev/` 里的历史条目目前只有四件套（`STATE` / `requirement` / `design` / `test_plan`），
