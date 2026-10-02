@@ -10,6 +10,8 @@
 
 design.md
 
+requirement.md
+
 加载：
 
 [checklists/cpp.md](../checklists/cpp.md)
@@ -19,6 +21,11 @@ design.md
 [checklists/tensorrt.md](../checklists/tensorrt.md)
 
 [checklists/llm_runtime.md](../checklists/llm_runtime.md)
+
+规则：
+
+- 必须对四份 checklists 的**每一个 [P0] / [P1] 项逐条回答**，结论逐条记入 review.md。
+- 只做"设计事实是否正确"的核对不算完成本阶段。
 
 ## Actions
 
@@ -37,6 +44,7 @@ review.md
 - TensorRT Context生命周期错误
 - CUDA memory ownership不明确
 - 数据竞争
+- 需求条目在设计中没有落点，或落点是空壳（只有名字，没有流程 / 状态机 / 判据）
 
 结果：
 
@@ -69,13 +77,18 @@ review.md必须包含：
 | Issue | Level | Action |
 ||||
 
+以及：
+
+| 需求条目 | 设计落点 | 结论 |
+|---|---|---|
+
 ### Human Gate
 
-Gate-B规则：
+Gate-A（位置：P3 Review 之后）规则：
 
 #### P0存在
 
-暂停。
+暂停，返回 P2。
 
 #### P0不存在，P1存在
 
@@ -101,4 +114,7 @@ docs/dev/<feature>/review.md
 
 更新：
 
-STATE。
+STATE.md 字段：
+
+- phase: P4-Baseline（Gate-A 通过后）
+- status: waiting-human-gate（Gate-A 未通过前）

@@ -48,14 +48,32 @@ requirement.md
 ```markdown
 ## Current Architecture
 
+## Module Structure
+
 ## Data Flow
 
-## Relevant Modules
+## Runtime Flow
 
-## Existing Limitations
+## Relevant Code Path
 
-## Extension Points
+## Existing Limitation
+
+## Extension Point
+
+## Terminology
 ```
+
+### 4. 术语表
+
+必须包含：
+
+`## Terminology`
+
+规则：
+
+- `requirement.md` 里的每一个模糊名词（如"动态 batch""最小连续批"）必须给出本项目的**可验证定义**。
+- 定义必须能回答"怎样算做到了、怎样算没做到"。
+- 未定义的模糊名词不得进入 design.md，也不得原样抄进 Requirement Coverage 表的"需求条目"列。
 
 ## Rules
 

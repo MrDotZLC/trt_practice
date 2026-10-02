@@ -94,6 +94,21 @@ Output
 
 两个方案比较。
 
+### Requirement Coverage
+
+必须包含覆盖表：
+
+| 需求条目 | 设计落点（章节） | 交付里程碑 | 验证 Phase |
+|---|---|---|---|
+
+规则：
+
+- `requirement.md` 的每条 Included 与每条 Acceptance Criteria 都必须有一行。
+- 落点必须是本设计的章节名，不接受只写里程碑名或需求原话。
+- 未纳入本轮的条目必须写进 requirement 的 Excluded 并给出理由，禁止只写"后续再说"。
+- 只有名字、没有流程 / 状态机 / 判据的落点，视为未覆盖。
+- 引入里程碑分期时，每个里程碑必须至少承担一条需求条目的完整交付；分期不得把需求条目悬空。
+
 ## Rules
 
 设计阶段：
@@ -106,20 +121,14 @@ Self Check：
 
 检查：
 
-- 方案是否覆盖需求
+- Requirement Coverage 表存在，且无空落点
 - 是否明确接口
 - 是否说明资源生命周期
 - 是否说明性能影响
 
-## Human Gate
+Human Gate：
 
-Gate-A：
-
-必须等待用户确认。
-
-输出：
-
-Human Gate格式。
+无。设计确认与评审结论一起在 P3 Review 之后的 Gate-A 处理。
 
 ## Output
 
@@ -130,4 +139,4 @@ docs/dev/<feature>/design.md
 更新 STATE.md 字段：
 
 - phase: P3-Review
-- status: waiting-human-gate
+- status: in-progress

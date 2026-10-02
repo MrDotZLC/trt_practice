@@ -22,11 +22,9 @@ P1 Analysis
 ↓  
 P2 Design  
 ↓  
-Gate-A  
-↓  
 P3 Review  
 ↓  
-Gate-B  
+Gate-A  
 ↓  
 P4 Baseline  
 ↓  
@@ -36,7 +34,7 @@ P6 Test
 ↓  
 P7 Benchmark  
 ↓  
-Gate-C  
+Gate-B  
 ↓  
 P8 Documentation  
 ↓  
@@ -66,35 +64,17 @@ P9 Interview
 
 位置：
 
-After P2 Design
-
-输入：
-
-design.md
-
-行为：
-
-等待用户确认。
-
-失败：
-
-返回P2。
-
-### Gate-B
-
-位置：
-
 After P3 Review
 
 输入：
 
-review.md
+design.md + review.md
 
 判断：
 
 #### P0 Blocker
 
-立即阻塞。
+立即阻塞，返回 P2。
 
 #### P1 Risk
 
@@ -104,7 +84,7 @@ review.md
 
 记录并继续。
 
-### Gate-C
+### Gate-B
 
 位置：
 

@@ -166,7 +166,7 @@ STATE.md 的 `phase` 字段使用连字符标识（`P0-Requirement` … `P9-Inte
 
 适用于：新增能力、新增模块、性能优化、架构增强。
 
-阶段顺序：P0 Requirement → P1 Analysis → P2 Design → Gate-A → P3 Review → Gate-B → P4 Baseline → P5 Implementation → P6 Test → P7 Benchmark → Gate-C → P8 Documentation → P9 Interview。
+阶段顺序：P0 Requirement → P1 Analysis → P2 Design → P3 Review → Gate-A → P4 Baseline → P5 Implementation → P6 Test → P7 Benchmark → Gate-B → P8 Documentation → P9 Interview。
 
 详细流程、各 Gate 判据与所需 artifact 以 [workflows/feature.md](workflows/feature.md) 为准，本节不复述。
 
@@ -182,29 +182,23 @@ Phase 执行规则：进入 Phase 时只读取对应的 `phases/pX_xxx.md`（见
 
 ## Human Gate Protocol Summary
 
-该Skill包含三个Human Gate。
+该Skill包含两个Human Gate。
 
 ### Gate-A
 
 位置：
 
-P2 Design之后
-
-目的：
-
-确认设计方案。
-
-### Gate-B
-
-位置：
-
 P3 Review之后
+
+输入：
+
+design.md + review.md
 
 规则：
 
 P0 Blocker：
 
-必须暂停。
+必须暂停，返回 P2。
 
 P1 Risk：
 
@@ -214,7 +208,7 @@ P2 Quality：
 
 记录即可继续。
 
-### Gate-C
+### Gate-B
 
 位置：
 
