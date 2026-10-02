@@ -52,6 +52,18 @@ Benchmark结果。
 
 未来方向。
 
+### Requirement Coverage Result
+
+| 需求条目 | 交付情况 | 去向 / 证据 |
+|---|---|---|
+
+规则：
+
+- requirement.md 的每条 Included 与每条 Acceptance Criteria 都必须有一行。
+- 交付情况取值：已交付 / 部分交付 / 未交付。
+- 部分交付与未交付必须写去向（转入哪条 feature / 哪份文档）与原因。
+- 存在未交付且没有去处的条目，本阶段自检不通过。
+
 ## Boundary
 
 summary.md：
@@ -73,6 +85,7 @@ Self Check:
 - 架构完整
 - 性能完整
 - 限制明确
+- 需求逐条有结论（Requirement Coverage Result 无空缺）
 
 ## Output
 

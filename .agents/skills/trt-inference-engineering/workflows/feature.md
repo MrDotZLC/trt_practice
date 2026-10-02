@@ -60,6 +60,8 @@ P9 Interview
 
 ## Gate Rules
 
+两个 Gate 的判据不在此复述。
+
 ### Gate-A
 
 位置：
@@ -72,17 +74,7 @@ design.md + review.md
 
 判断：
 
-#### P0 Blocker
-
-立即阻塞，返回 P2。
-
-#### P1 Risk
-
-等待用户确认。
-
-#### P2 Quality
-
-记录并继续。
+以 [phases/p3_review.md](../phases/p3_review.md) 的 Human Gate 细则为唯一权威；摘要见 [SKILL.md](../SKILL.md) 的 Human Gate Protocol Summary。
 
 ### Gate-B
 
@@ -96,17 +88,9 @@ benchmark.md
 
 判断：
 
-#### >=5%
+以 [phases/p7_benchmark.md](../phases/p7_benchmark.md) 的 Performance Decision 为唯一权威（含判别下限前置）。
 
-Accept。
-
-#### 0~5%
-
-Human Review。
-
-#### <0%
-
-Human Review。
+缺依赖导致 P7 不可执行时，以 [phases/p4_baseline.md](../phases/p4_baseline.md) 的 Dependency Missing 为唯一权威，Gate-B 记 N/A。
 
 ## Required Artifacts
 

@@ -12,6 +12,10 @@ benchmark_before.md
 
 test_passed
 
+必须在开始前声明本次口径的判别下限及其出处。
+
+无 before 数据时本阶段不可执行；适用条件、N/A 写法与留痕要求以 [p4_baseline.md](p4_baseline.md) 的 Dependency Missing 为唯一权威。
+
 ## Actions
 
 运行After Benchmark。
@@ -61,6 +65,12 @@ Iteration:
 - median
 - P95
 
+### 判别下限
+
+- 本次口径的判别下限（数值）
+- 出处（项目文档 / 本次实测敏感性数据）
+- 判据：观测差小于判别下限时只能写"无显著差异"
+
 ## Output
 
 生成：
@@ -70,15 +80,23 @@ benchmark.md
 格式：
 
 | Metric | Before | After | Change |
-|||||
+|---|---|---|---|
 
 ## Performance Decision
+
+### 前置：无显著差异
+
+观测差小于判别下限时：
+
+只能写"无显著差异"，不得写提升 / 下降，也不得进入 Positive 分支。
 
 ### Positive
 
 提升：
 
 > =5%
+
+且 >= 判别下限。
 
 自动接受。
 

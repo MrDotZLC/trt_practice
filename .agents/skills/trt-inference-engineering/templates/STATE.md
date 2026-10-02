@@ -4,7 +4,7 @@
 | --- | --- |
 | workflow | feature / bugfix |
 | feature | |
-| phase | P0-Requirement … P9-Interview |
+| phase | feature: P0-Requirement … P9-Interview；bugfix: B0-Reproduce … B4-Summary |
 | phase_index | |
 | status | in-progress / waiting-human-gate / completed |
 | updated | |
@@ -25,6 +25,14 @@
 ---
 
 ## Next Action
+
+-
+
+---
+
+## Implementation Plan
+
+仅在 P5 填写：当前修改模块 / 预计文件 / 测试方式。
 
 -
 

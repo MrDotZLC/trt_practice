@@ -1,8 +1,7 @@
 # Design
 
 <!--
-章节必须与 phases/p2_design.md 的 Design Requirements 一致：少一节即不合规。
-Requirement Coverage 是 Exit Gate 的产物：无表、或表里有空落点，不得进入 P3。
+骨架文件：章节清单在此维护。每节必须写什么、以及 Exit Gate 判据，以 [phases/p2_design.md](../phases/p2_design.md) 为唯一权威，本文件不复述。
 -->
 
 ## Overview

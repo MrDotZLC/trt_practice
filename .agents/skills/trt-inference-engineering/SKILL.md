@@ -120,7 +120,7 @@ interview_notes.md
 
 ### Naming Conventions
 
-STATE.md 的 `phase` 字段使用连字符标识（`P0-Requirement` … `P9-Interview`），便于机器比对；正文叙述与状态机使用空格形式（`P3 Review`）。
+STATE.md 的 `phase` 字段使用连字符标识（feature 用 `P0-Requirement` … `P9-Interview`，bugfix 用 `B0-Reproduce` … `B4-Summary`），便于机器比对；正文叙述与状态机使用空格形式（`P3 Review`）。
 
 `status` 字段取值限定为 `in-progress` / `waiting-human-gate` / `completed`；结束状态由 `status` 表达，不写 `phase: DONE`。
 
@@ -214,11 +214,17 @@ P2 Quality：
 
 P7 Benchmark之后
 
+判据以 [phases/p7_benchmark.md](phases/p7_benchmark.md) 的 Performance Decision 为唯一权威（含判别下限前置）；缺依赖导致 P7 不可执行时，以 [phases/p4_baseline.md](phases/p4_baseline.md) 的 Dependency Missing 为唯一权威。
+
 规则：
 
-性能提升 >=5%：
+性能提升 >=5%，且 >= 判别下限：
 
 自动接受。
+
+低于判别下限：
+
+只能写"无显著差异"，等待确认。
 
 性能变化 0~5%：
 
@@ -302,6 +308,18 @@ Status:
 禁止：
 
 默认选择最近修改项目。
+
+### 写冲突
+
+当多条进行中 feature 需要修改同一个文件时。
+
+规则：
+
+- 必须由用户指定串行顺序，禁止并行开工。
+- 未指定顺序前，后开工的一方停在当前阶段，不动代码。
+- 冲突关系记入各方 STATE.md 的 Current Blockers（写清与哪条 feature、哪个文件冲突）。
+- 先开工的一方收口后，后开工的一方重新对齐基线再开工。
+- 禁止用"代码里查不到引用"判定自己可以先改：用户的代码外用法不在搜索范围内。
 
 ## File Index
 

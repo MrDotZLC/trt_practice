@@ -37,7 +37,7 @@ design.md
 格式：
 
 | Module | Responsibility | Dependency |
-||||
+|---|---|---|
 
 ### Data Structure
 

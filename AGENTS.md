@@ -153,8 +153,16 @@ ncu --set full -o ncu_report_kernel \
 
 ## 5. Incremental 开发推进流程
 
-**流程权威**：阶段链、Gate 判据、artifact 落点与模板、各阶段自检清单——**全部以技能
-`trt-inference-engineering` 为准**（`.agents/skills/trt-inference-engineering/SKILL.md`）。
+**技能清单（本仓库自带，均在 `.agents/skills/`）**
+
+| 技能 | 入口 | 何时使用 |
+| --- | --- | --- |
+| `trt-inference-engineering` | `.agents/skills/trt-inference-engineering/SKILL.md` | 功能开发 / Bug 修复 / 评审 / benchmark；**本指南各处的"技能"均指它** |
+| `cpp-comment-style` | `.agents/skills/cpp-comment-style/SKILL.md` | 生成或修改 C++ 注释时（对应 §3 的 C++ 工程规范） |
+| `progress-summary` | `.agents/skills/progress-summary/SKILL.md` | 生成可交接的进度总结时（对应 §6 的 `docs/PROGRESS.md`） |
+
+**流程权威**：阶段链、Gate 判据、artifact 落点与模板、各阶段自检清单——**全部以上表中
+`trt-inference-engineering` 为准**。
 本节**只**规定与权限、项目事实有关的部分，**不复述**技能内容。
 
 - **开工资格**：技能里的"自动进入下一阶段"（例如 P0 目标明确即自动进 P1）**不构成开工许可**。
@@ -163,9 +171,9 @@ ncu --set full -o ncu_report_kernel \
 - **单测外测试的授权范围**：技能规定的**基准与测量阶段**（P4 Baseline / P7 Benchmark）视为
   **已授权、可自动执行**；**其余单测外测试**（真机任务、精度验证、端到端等）仍按 §0.3
   **先请求确认**。
-- **性能判定的例外**：技能 P7 的"提升 ≥5% 自动接受"在本机**不适用**——本平台这类测量的判别下限
-  约 ±400~600 µs（见 `docs/PROGRESS.md` §5.13b）；低于下限的观测只能写"**无显著差异**"，
-  不得按百分比自动接受。
+- **性能判定的本机参数**：技能 P7 与 Gate-B 已内置"先声明本次口径的判别下限、低于下限只能写
+  **无显著差异**"的要求（见技能 `.agents/skills/trt-inference-engineering/phases/p7_benchmark.md`）；本机这类测量的判别下限约 ±400~600 µs
+  （见 `docs/PROGRESS.md` §5.13b），因此 Gate-B 的"≥5% 自动接受"必须同时满足该下限。
 - **改代码的前置**：技能 P5 要求先写 Implementation Plan（当前模块 / 预计文件 / 测试方式）并记进
   对应条目的 `STATE.md`；该步完成后再按下面四步推进。
 - **提交规则**：按技能的 Commit Rules（`.agents/skills/trt-inference-engineering/workflows/feature.md`）

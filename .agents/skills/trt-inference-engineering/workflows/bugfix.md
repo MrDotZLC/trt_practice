@@ -13,6 +13,14 @@
 
 最小修改。
 
+## Required Artifacts
+
+- requirement.md（问题与期望行为）
+- analysis.md（根因分析，候选修复方案写在其中的一节）
+- summary.md（B4）
+
+候选修复方案不单独新增 artifact 文件。
+
 ## Workflow State Machine
 
 B0 Reproduce  

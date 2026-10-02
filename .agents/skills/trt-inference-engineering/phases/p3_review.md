@@ -25,6 +25,7 @@ requirement.md
 规则：
 
 - 必须对四份 checklists 的**每一个 [P0] / [P1] 项逐条回答**，结论逐条记入 review.md。
+- 必须核对 requirement.md 中的每个模糊名词是否已在 analysis.md 的 Terminology 中给出可验证定义；未定义即 P0 Blocker（依据 [p1_analysis.md](p1_analysis.md) 的术语表规则）。
 - 只做"设计事实是否正确"的核对不算完成本阶段。
 
 ## Actions
@@ -72,15 +73,31 @@ review.md
 
 ### Self Check
 
-review.md必须包含：
+review.md 必须包含以下三张表；每张表的数据行数必须等于对应集合的条目数（表一 = 四份 checklists 中 [P0] / [P1] 项总数；表二 = Included 条数 + Acceptance Criteria 条数；表三 = requirement.md 中的模糊名词数），只有表头不算通过。
 
-| Issue | Level | Action |
-||||
+表一：checklists 结论表，四份 checklists 中每个 [P0] / [P1] 项各占一行。
 
-以及：
+| Item | Level | Result | Action |
+|---|---|---|---|
+
+- Item：checklist 项原文，或可定位到该条目的缩写。
+- Level：该项在 checklist 中的等级，取值 P0 / P1。
+- Result：通过 / 不通过 / 待确认。
+- Action：修复 / 人工确认 / 记录；P0 项必须给出修复落点。
+
+表二：需求落点表，requirement.md 中每条 Included 与每条 Acceptance Criteria 各占一行。
 
 | 需求条目 | 设计落点 | 结论 |
 |---|---|---|
+
+- 结论取值：已落点 / 空壳 / 缺失；空壳与缺失即 P0 Blocker（见 Review Classification）。
+
+表三：术语定义表，requirement.md 中每个模糊名词各占一行。
+
+| 模糊名词 | 定义所在 | 结论 |
+|---|---|---|
+
+- 结论取值：已定义（给出 analysis.md Terminology 中的条目）/ 未定义（P0 Blocker，见 Entry 规则）。
 
 ### Human Gate
 

@@ -45,23 +45,7 @@ requirement.md
 
 必须包含：
 
-```markdown
-## Current Architecture
-
-## Module Structure
-
-## Data Flow
-
-## Runtime Flow
-
-## Relevant Code Path
-
-## Existing Limitation
-
-## Extension Point
-
-## Terminology
-```
+章节骨架以 [templates/analysis.md](../templates/analysis.md) 为准（本文件不复述）。
 
 ### 4. 术语表
 
