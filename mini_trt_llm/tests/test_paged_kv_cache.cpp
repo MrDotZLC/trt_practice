@@ -345,6 +345,7 @@ TEST(PagedKVCacheTest, RejectsPrefillBeyondReservedTokens) {
     EXPECT_EQ(cache.WritePrefillKV(0, buffer.data(), buffer.data(), 5, rows.data(),
                                    static_cast<int32_t>(rows.size()), nullptr),
               cudaSuccess);
+}
 
 // S2 / 不变量 5：元数据缓冲在构造期按 max_batch 预分配，此后登记 / 释放都不得改变指针。
 // 指针一变，已经绑给引擎的地址就失效——那正是"静默读旧地址"这类问题的来源。
@@ -398,7 +399,6 @@ TEST(PagedKVCacheTest, FreeSequenceCompactsRemainingRows) {
     for (size_t i = 0; i < blocks2.size(); ++i) {
         EXPECT_EQ(mirror[width + i], blocks2[i]) << "seq 2 必须前移到第 1 行";
     }
-}
 }
 
 }  // namespace mini_trt_llm
