@@ -21,6 +21,12 @@ struct SamplerArgs {
     // 这样测试可用固定 seed 复现，同时避免 host-device 频繁同步。
     uint64_t seed = 0;
     uint64_t offset = 0;
+    // **per-batch 的 seed（[batch_size]，调用方持有）**。
+    // 非空时 kernel 走 `Uniform01(seeds[row], offset, 0)`——**行号不进随机流**，于是同一请求
+    // 无论落在批内哪一行、批次怎么组成，token 序列都逐位相同（AC1 对**所有**采样策略成立的前提，
+    // 也是工业界的口径：随机性只由 (请求 seed, 步数) 决定）。
+    // 为空时退化为旧的 `Uniform01(seed, offset, row)`，只服务单行 / 兼容路径。
+    const uint64_t* seeds = nullptr;
 };
 
 // Top-K / Top-P 的 k 与 p 都是 per-batch tensor（Q7），以支持连续批处理中

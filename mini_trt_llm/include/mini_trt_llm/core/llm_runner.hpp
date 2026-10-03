@@ -131,6 +131,8 @@ class LLMRunner {
     DeviceBuffer d_decode_logits_;
     DeviceBuffer d_top_k_;        // per-batch k（本版 batch = 1）
     DeviceBuffer d_top_p_;        // per-batch p
+    // per-batch seed（[B]）：让随机流只由 (请求 seed, 步数) 决定，与批位置无关（AC1 的前提）。
+    DeviceBuffer d_seeds_;
     DeviceBuffer d_sampler_workspace_;
     // 每层的 K/V 输出缓冲（prefill/decode 各自的形状不同）
     std::vector<std::unique_ptr<DeviceBuffer>> d_prefill_kv_;

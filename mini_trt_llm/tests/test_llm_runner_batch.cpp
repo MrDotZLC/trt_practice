@@ -92,7 +92,6 @@ LLMRunner::GenerateOptions GreedyOptions(int32_t max_new_tokens) {
     return options;
 }
 
-constexpr int32_t kPromptLen = 4;
 constexpr int32_t kNewTokens = 6;
 
 // AC1：批量运行 == 逐条单独运行（逐 token 逐位相同）。
@@ -196,20 +195,38 @@ TEST(LlmRunnerBatchTest, RejectsMixedSamplingStrategy) {
     EXPECT_TRUE(fixture.runner->GenerateBatch(requests).empty());
 }
 
-// S1 收窄：seed 是整批参数（随机流由 seed + offset + 行号混出）。
-TEST(LlmRunnerBatchTest, RejectsDifferentSeed) {
+// seed 是 per-row 的：随机流只由 (请求 seed, 步数) 决定，**与批内位置无关**。
+// 所以"同一请求 + 同一 seed，批量与单跑逐 token 相同"对**随机采样**也成立——这正是 AC1
+// 对所有策略的要求；"换个批邻居就换输出"的旧行为在这里被锁死。
+TEST(LlmRunnerBatchTest, BatchEqualsSequentialWithTopP) {
     MINI_TRT_SKIP_IF_NO_CUDA();
-    RunnerFixture fixture = MakeFixture("batch_seed", /*max_batch=*/2);
+    RunnerFixture fixture = MakeFixture("batch_topp", /*max_batch=*/2);
     ASSERT_TRUE(fixture.ok);
 
     std::vector<LLMRunner::GenerateRequest> requests(2);
     requests[0].input_ids = {3, 4, 5, 6};
     requests[0].options = GreedyOptions(kNewTokens);
+    requests[0].options.top_p = 0.9f;  // 转到 Top-P（随机路径）
+    requests[0].options.seed = 11;
     requests[1].input_ids = {7, 8, 9, 10};
     requests[1].options = GreedyOptions(kNewTokens);
-    requests[1].options.seed = 7;
+    requests[1].options.top_p = 0.9f;
+    requests[1].options.seed = 22;     // 与第 0 条不同 seed —— 现在允许（per-row seed）
 
-    EXPECT_TRUE(fixture.runner->GenerateBatch(requests).empty());
+    const std::vector<LLMRunner::GenerateResult> batch = fixture.runner->GenerateBatch(requests);
+    ASSERT_EQ(batch.size(), requests.size());
+    ASSERT_TRUE(batch[0].ok);
+    ASSERT_TRUE(batch[1].ok);
+
+    for (size_t b = 0; b < requests.size(); ++b) {
+        const std::vector<int64_t> alone =
+            fixture.runner->Generate(requests[b].input_ids, requests[b].options);
+        ASSERT_EQ(alone.size(), batch[b].tokens.size());
+        for (size_t i = 0; i < alone.size(); ++i) {
+            EXPECT_EQ(batch[b].tokens[i], alone[i])
+                << "第 " << b << " 条第 " << i << " 个 token 不一致（seed 不得与批位置相关）";
+        }
+    }
 }
 
 // 采样器契约：Top-K 路径的 top_k 不得超过 kTopKFastMaxK，否则该行会被写哨兵 -1。

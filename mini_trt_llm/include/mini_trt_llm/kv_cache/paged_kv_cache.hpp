@@ -41,6 +41,11 @@ class PagedKVCache {
         // **必须等于引擎侧 block_tables 输入的第二维**，也就是
         // ceil(n_positions / block_size)——那条推导在 GPT2ModelBuilder 里；
         // 这里要求显式传入而不是自己猜，避免两处推导悄悄不一致。
+        // **为什么物理池（num_blocks）可以比这个宽度大**（design.md D6 / §不变量 1）：
+        // PagedAttention 插件用**运行期算出的偏移**在传进来的连续缓冲里寻址，而 TRT 不校验输入
+        // 缓冲的实际容量——所以只要"池 ≥ 宽度"，插件的寻址就不会越过我们真正分配的那段。
+        // 这条依据以前只写在设计文档里，落到这里是因为**约束的是本类的构造期校验**
+        // （见构造函数里的 max_blocks_per_seq > num_blocks 检查）。
         int32_t max_blocks_per_seq = 0;
     };
 

@@ -100,28 +100,60 @@ Generate(ids, opt) == GenerateBatch({{ids, opt, -1}})[0].tokens，失败返回 {
 
 ## 5. 与设计 D4 的一处澄清
 
-D4 选的是"每序列独立 token 缓冲"。实现上取 **`[B_max, max_new]` 单次分配 + 行步长切分**：
-每行仍是一段独立的结果，只是共用一次分配与一次 D2H。S1 是静态批、循环固定跑 `max_new` 步，
-**不存在"先结束的序列要填充"**（截断在循环后逐行做），所以 D4 里担心的那个语义风险不成立。
-这一点在落代码时要同步改写 D4 的说明，避免下一个人照 D4 字面做出 B 次分配。
+D4 选的是"每序列独立 token 缓冲"。实现上取 **`[max_new, B_max]` 单次分配、步优先布局**：
+每行仍是一段独立的结果，只是共用一次分配与一次 D2H。为什么不是"B 个独立缓冲"：采样器写的
+是**连续 `[batch]`**，步优先让每步直接写、省掉"写暂存再逐步散播"。S1 是静态批、循环固定
+跑满 `max_new` 步，**不存在"先结束的序列要填充"**（截断在循环后逐行做），所以 D4 里担心的
+那个语义风险不成立。D4 的说明已按此改写（design.md，2026-10-03）。
 
 ## 6. 测试方式
 
+落码后实际写入 `tests/test_llm_runner_batch.cpp` 的 8 条用例（2026-10-03 与代码核对过）：
+
 | 用例 | 判据 | 环境 |
 |---|---|---|
-| `BatchEqualsSequential` | 同一组请求，批量结果与逐条单跑**逐 token 逐位相同**（AC1） | 真机 |
+| `BatchEqualsSequential` | 同一组请求，批量结果与逐条单跑**逐 token 逐位相同**（AC1，贪心） | 真机 |
+| `BatchEqualsSequentialWithTopP` | 同上但走 **Top-P 随机路径** —— 锁死"随机流与批位置无关"（AC1，随机采样） | 真机 |
 | `BatchSingleRowMatchesGenerate` | B=1 时 `GenerateBatch` 与 `Generate` 逐 token 相同（AC5） | 真机 |
 | `RejectsUnequalPromptLengths` | 不等长批被整批拒绝且日志指出第一条（D2=A） | 真机 |
-| `RejectsBatchOverProfileLimit` | 超 profile 上限被拒绝（不靠引擎报错兜底） | 真机 |
+| `RejectsBatchOverMaxBatch` | 超 `max_batch` 被入口拦下（不靠引擎报错兜底） | 真机 |
+| `RejectsMixedSamplingStrategy` | 批内混策略被拒绝（S1 收窄，见 §8） | 真机 |
 | `RejectsTopKOverFastMax` | 某行 `top_k` 超限被拒，**不出现 token = -1** | 真机 |
-| ~~`BlocksReturnedAfterBatch`~~ | **移到 S2**：S1 沿用"下次调用开头释放"的既有形态，跑到第 N 轮时第 N 轮的块仍被持有，不满足"回到初始值"。AC3 的断言属于 S2 的块生命周期工作 | 真机 |
+| `RejectsDuplicateSeqId` | 调用方指定的 `seq_id` 批内重复被拒 | 真机 |
+| ~~`BlocksReturnedAfterBatch`~~ | **移到 S2**（见 §8 第 3 条） | 真机 |
 | 全量回归 | 既有用例不新增红（AC4） | 真机 |
 
-沙箱（当前环境）：**无编译器，只能做静态检查**——本轮不写产品代码，就是为了避免
-"写进去一堆没人编得过的代码"。
+沙箱（当前环境）：**无编译器**，只能做与编译无关的静态检查（括号平衡、未使用符号、外部符号签名、
+include 完整性）——真机编译前所有代码一律按"未验证"对待。
 
 ## 7. 待作者确认的三点
 
 1. **接口形态**：`GenerateRequest{input_ids, options, seq_id}` + `GenerateResult{seq_id, tokens, ok}` + `GenerateBatch(...)`；`Generate` 变包装。是否认可？
 2. **`max_batch` 暂定 2**：P4 未跑，只能用保守值并标注"待实测"。是否接受？
-3. **`seq_id` 现在就引入**（为 S3 铺路，避免二次改签名）。是否认可？11## 8. 实现时新发现的约束（2026-10-03，落码时记录）11以下三条是写代码时才暴露的，**改动方案阅读者必须知道**：111. **采样策略与 seed 必须批内统一**（S1 收窄）。三种采样 kernel 各自是"整批一个分支"1   （`LaunchGreedySampler` / `LaunchTopKSampler` / `LaunchTopPSampler` 各接受一个 `batch_size`），1   而 `seed` 是整批参数（随机流由 `seed + offset + 行号` 混出）。因此 S1 的批内约束是：1   **策略与 seed 统一，`top_k` / `top_p` 逐行独立** —— D3 的"逐行参数"只落到了 k / p。1   实现方式是把校验放在入口（不满足即整批拒绝），**放回接口即可扩宽，不需要改签名**；1   要实现"同批混合策略 / 逐行 seed"必须改采样器（分组调用或 kernel 内分支）。12. **结果缓冲改成步优先 `[max_new, B_max]`**（见 §3 表）。原因：采样器写的是连续 `[batch]`，1   步优先布局让它每步直接写 8 字节起的一段，省掉"写暂存 + 逐步散播"。13. **AC3（块回收）的断言移到 S2**：S1 沿用既有"下次调用开头释放"的形态，跑到第 N 轮时1   第 N 轮的块仍被持有。把块生命周期收敛到调用内属于 S2。11另：批入口的"先检查后分配"（D9）目前靠 `PagedKVCache::AllocateSequence` 自身的**先查后分配**1实现（它在动分配器之前先比 `NumFree()`，因此不会走进 `BlockAllocator` 的异常路径）。1代价是日志里报不出"空闲多少块"——要报得给 `PagedKVCache` 加 `NumFreeBlocks()`，1那属于 S2 的资源可见性工作。1
+3. **`seq_id` 现在就引入**（为 S3 铺路，避免二次改签名）。是否认可？
+
+## 8. 实现时新发现的约束（2026-10-03，落码时记录）
+
+以下三条是写代码时才暴露的，**改动方案阅读者必须知道**：
+
+1. **采样策略必须批内统一**（S1 收窄）。三种采样 kernel 各自是"整批一个分支"
+   （`LaunchGreedySampler` / `LaunchTopKSampler` / `LaunchTopPSampler` 各接受一个 `batch_size`）。
+   因此 S1 的批内约束是：**策略统一；`top_k` / `top_p` / `seed` 均可逐行独立**。
+   这是入口校验层面的收窄，放宽校验即可扩回；"同批混策略"才需要改采样器（分组调用或 kernel 内分支）。
+
+   **同日已解决（随机流与批位置无关）**：原实现是 `Uniform01(seed, offset, 行号)`，行号进了哈希，
+   于是同一个请求换到别的批位置就换一串 token（固定 seed 的评估不可复现、线上问题无法复现）。
+   现改为 **per-batch `seeds` + `RowUniform01`**（行号不进随机流）→ **AC1 对随机采样也成立**。
+   代价：`sampler_kernels.cu` 4 个 kernel 签名 + 4 个调用点 + 6 个 launch；`seeds` 为空时保留旧行为，
+   既有用例逐位不变。回归用例：`BatchEqualsSequentialWithTopP`。
+
+2. **结果缓冲改成步优先 `[max_new, B_max]`**（见 §3 表）。原因：采样器写的是连续 `[batch]`，
+   步优先布局让它每步直接写，省掉"写暂存 + 逐步散播"。
+
+3. **AC3（块回收）的断言移到 S2**：S1 沿用既有"下次调用开头释放"的形态，跑到第 N 轮时
+   第 N 轮的块仍被持有。把块生命周期收敛到调用内属于 S2。
+
+另：批入口的"先检查后分配"（D9）目前靠 `PagedKVCache::AllocateSequence` 自身的**先查后分配**
+实现（它在动分配器之前先比 `NumFree()`，因此不会走进 `BlockAllocator` 的异常路径）。
+代价是日志里报不出"空闲多少块"——要报得给 `PagedKVCache` 加 `NumFreeBlocks()`，
+那属于 S2 的资源可见性工作。

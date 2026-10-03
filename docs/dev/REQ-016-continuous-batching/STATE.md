@@ -16,7 +16,7 @@
 
 - `requirement.md`（P0-Requirement，2026-10-03 重做）
 - `analysis.md`（P1-Analysis，2026-10-03 重做，**新增 Terminology**）
-- `design.md`（P2-Design，2026-10-03 重做，**新增 Requirement Coverage、验证策略、D11**）
+- `design.md`（P2-Design，2026-10-03 重做，**新增 Requirement Coverage、验证策略、D10/D11**）
 - `review.md`（P3-Review，2026-10-03 新建，结论 PASS）
 - `benchmark_before.md`（P4-Baseline，2026-10-03，**N/A：环境不可用，已按 Dependency Missing 记账**）
 - `p5_s1_interface_spec.md`（P5 补充：S1 接口细化，2026-10-03，经作者确认）
@@ -28,23 +28,22 @@
 ## Current Blockers
 
 - **P4 / P7 搁置（2026-10-03）**：当前不在 GTX 1660 Ti 环境，无法取基线。按
-  `phases/p4_baseline.md` 的 Dependency Missing 记 N/A，`benchmark_before.md` 已写明
-  环境恢复后必须补的四项测量；**批上限暂时只能取保守值并标注为暂定**，不得写成实测结论。
+  `phases/p4_baseline.md` 的 Dependency Missing 记 N/A；`benchmark_before.md` 写明环境恢复后
+  必须补的四项测量。**批上限（`max_batch`）暂时只能取保守值并标注"待实测"**，不得写成实测结论。
 - **本沙箱无编译能力**：没有 nvcc / cmake / 任何 C++ 编译器，也没有 TensorRT 与 build 目录，
-  因此 P5 的 Exit Gate（"编译通过、无新增 warning"）在本环境**无法执行**；
-  代码只能先在真机侧编译。**S1 的三个文件已按此前提落码，全部未编译验证。**
-- 三处留痕只完成两处：`benchmark_before.md` 与本文；`docs/PROGRESS.md` 的"已知问题与坑"
-  按 §6 的分工要等阶段/批次收口时才补。
+  因此 P5 的 Exit Gate（"编译通过、无新增 warning"）在本环境**无法执行**。
+  **S1 的代码改动（含采样器）全部未编译验证。**
 
 ---
 
 ## Next Action
 
-1. **P5-S1（代码已落，待编译）**：改了 `llm_runner.hpp` / `llm_runner.cpp`，新增 `tests/test_llm_runner_batch.cpp`。
-   下一步（真机）：`cmake --build build -j` → 全量 `mini_trt_llm_tests` → 新增的 `LlmRunnerBatchTest.*`；
-   编译错误与用例结果都要回填本文与 `test_plan.md`（P6）。
-2. **P5-S2 / P5-S3**：S1 通过后再做，不并笔提交。
-3. 环境恢复后补 P4，再按 P7 口径判收益；S3 的收益结论以那批数据为准（D10）。
+1. **P5-S1（代码已落，待编译）**：改了 `llm_runner.hpp` / `llm_runner.cpp` /
+   `sampler_common.hpp` / `sampler_kernels.cu`，新增 `tests/test_llm_runner_batch.cpp`。
+   真机下一步：`cmake --build build -j` → 全量 `mini_trt_llm_tests` → 新增的
+   `LlmRunnerBatchTest.*`（8 条）。编译错误与用例结果都要回填本文与 `test_plan.md`（P6）。
+2. **P5-S2 / S3**：S1 编译通过后再做，不并笔提交。
+3. 环境恢复后补 P4，再按 D10 的两种负载跑 P7。
 
 ---
 
@@ -52,21 +51,24 @@
 
 （技能 P5 要求：当前修改模块 / 预计文件 / 测试方式）
 
-**当前修改模块**：S1 批量执行 —— 运行时（`LLMRunner`）的批量入口与批量缓冲。**状态：已落码，未编译。**
+**当前修改模块**：S1 批量执行 —— 运行时（`LLMRunner`）的批量入口与批量缓冲；
+外加一处**采样器随机流口径修正**（见 Recovery Notes）。**状态：已落码，未编译。**
 
-**预计文件**（软约束 ≤3 个文件 / ≤300 行；超限需在提交说明里写明原因）：
-
-| 文件 | 预计改动 |
+| 文件 | 实际改动 |
 |---|---|
-| `mini_trt_llm/include/mini_trt_llm/core/llm_runner.hpp` | 新增批量请求/批量结果结构与批量入口声明；保留现有单序列入口不动（AC5） |
-| `mini_trt_llm/src/core/llm_runner.cpp` | 批量形状设置、按行绑定、批量采样、结果切分；单序列入口改为调用批量入口 |
-| `mini_trt_llm/tests/test_llm_runner_batch.cpp` | 新增 runner 级对拍用例（批量 == 逐条单跑） |
+| `mini_trt_llm/include/mini_trt_llm/core/llm_runner.hpp` | `Config` 加 `max_batch`（暂定 2）与 `enable_diagnostics`（D7，默认关）；新增 `GenerateRequest` / `GenerateResult` / `GenerateBatch`；私有函数与成员改成批量形态；新增 `d_seeds_` |
+| `mini_trt_llm/src/core/llm_runner.cpp` | 批量入口与缓冲、按行绑定、批量采样、解码循环、结果切分；`Generate` 变单元素批包装；新增 prefill 末行收集 |
+| `mini_trt_llm/include/mini_trt_llm/sampler/sampler_common.hpp` | `SamplerArgs` 新增 per-batch `seeds` |
+| `mini_trt_llm/src/sampler/sampler_kernels.cu` | 新增 `RowUniform01`；4 个 kernel 签名 + 4 个调用点 + 6 个 launch 改为带 `seeds` |
+| `mini_trt_llm/tests/test_llm_runner_batch.cpp`（新增） | 8 条用例（含随机采样的 AC1 对拍） |
 
 **测试方式**：
 
-1. 沙箱可跑的：与编译器无关的静态检查（本环境**只能做这一层**）。
-2. 真机必跑的：`mini_trt_llm_tests` 全量（回归）+ 新增对拍用例（AC1 / AC5）+ 块回收用例（AC3）。
-3. 口径：AC1 要求"逐 token 逐位相同"，不接受"接近"。
+1. 沙箱：**只能做与编译无关的静态检查**（括号平衡、未使用符号、外部符号签名、include 完整性）——
+   本轮已做，抓到并修掉 3 处（漏掉的命名空间收尾大括号、未使用的 `BlocksForTokens`/`DecodeLogitsRow`、
+   测试里的 `kPromptLen`）。
+2. 真机必跑：`mini_trt_llm_tests` 全量（回归）+ `LlmRunnerBatchTest.*` 8 条。
+   **块回收（AC3）的用例属于 S2**——S1 沿用"下次调用开头释放"的形态，跑到第 N 轮时最后一轮的块仍被持有。
 
 ---
 
@@ -77,10 +79,13 @@
 - 2026-10-01: P2 -> Gate-A（第一版，未通过）
 - 2026-10-02: 作者批准重做 P0–P2；三件产物按代码核实结果重写（第二版）
 - 2026-10-02: P2 -> Gate-A（第二版，未通过）
-- 2026-10-03: 作者批准"重新开始所有内容"；P0 -> P1 -> P2 -> P3 全量重做（本版）
+- 2026-10-03: 作者批准"重新开始所有内容"；P0 -> P1 -> P2 -> P3 全量重做
 - 2026-10-03: **Gate-A 通过**（D5 / D7 / D10 已拍板）
 - 2026-10-03: P4 -> N/A（无 GPU 环境，搁置）→ P5-Implementation
-- 2026-10-03: P5-S1 落码（3 个文件），**未编译验证**（本环境无编译器）
+- 2026-10-03: P5-S1 落码（5 个文件），**未编译验证**
+- 2026-10-03: 不变量 1 / 2 / 4 落地：D6 依据注释、D8 构造期 profile 校验、行号同源显式校验
+- 2026-10-03: 随机流改为 per-batch `seeds`（行号不进随机流）→ AC1 对**所有采样策略**成立；
+  同时把静态审查反查出的 4 处文档↔代码不一致改齐
 
 ---
 
@@ -89,16 +94,20 @@
 - **Gate-A 决定（2026-10-03）**：D5 本 feature 先做；D7 诊断开关默认关；**D10 做 S3**；
   AC2 不下修；D11 补齐与后续 feature 的接口面。
 - **P4 为什么是 N/A**：作者当前不在 GTX 1660 Ti 环境，先开发代码、GPU 测试搁置。
-  `benchmark_before.md` 写明了恢复后必须补的四项与口径（关诊断）；**不要**把它当成"性能已验证"。
-- **代码在本环境无法编译**：写代码可以，但编译/单测/真机验证都要等环境恢复；
-  在此之前所有 P5 改动都应视为未验证，不能在文档里写"已通过"。
+  `benchmark_before.md` 写明恢复后必须补的四项与口径（关诊断）；**不要**当成"性能已验证"。
+- **代码在本环境无法编译**：写代码可以，但编译 / 单测 / 真机验证都要等环境恢复；
+  在此之前所有 P5 改动都应视为未验证，**不能在文档里写"已通过"**。
+- **随机流口径（2026-10-03，不要回退）**：采样不再用行号做随机输入。`SamplerArgs::seeds`（per-batch）
+  非空时走 `RowUniform01` → `Uniform01(seeds[row], offset, 0)`；为空时保留旧行为（单行 / 兼容路径）。
+  这条决定 AC1 能不能对所有采样策略成立（原来行号进哈希 → 同一请求换批位置就换输出）。
+- **S1 的批内约束（入口校验）**：prompt 等长（D2=A）；**同一种采样策略**；
+  `top_k` / `top_p` / `seed` 均可逐行独立。
 - **写冲突**：本 feature 与 `REQ-017` / `REQ-019` 共用运行时入口。`REQ-019` 早已登记；
-  `REQ-017` 已于 2026-10-03 补登记（记在它的 Current Blockers 与 Recovery Notes）。
-- **复核过、本轮仍成立的既有事实**：
+  `REQ-017` 已于 2026-10-03 补登记。三者不并行改同一文件，本 feature 先做。
+- **复核过、仍成立的既有事实**：
   1. 元数据缓冲设备分配容量够就复用；正确性依赖"decode 每步重绑"，不是"指针不变"。
   2. 引擎把 cache 第 0 维声明成 `ceil(n_positions / block_size)`，同一个数又当块表宽度用；
      运行时期物理池可以更大，此关系此前未进任何契约。
   3. 随批增长的显存大头是 **prefill logits**（`S=512` 约 98 MiB/条），不是 K/V 池（64 块约 72 MiB）。
   4. 建图代码不进引擎指纹，**改图必须手工 bump `graph_version`**。
-  5. 运行期常驻诊断（同步 D2H + 逐层扫 K/V）**没有任何开关**，与 build 期的
-     `export_diagnostics` 不是一回事——D7 要解决的是前者。
+  5. 运行期常驻诊断（同步 D2H + 逐层扫 K/V）**没有任何开关**——D7 要解决的是它。

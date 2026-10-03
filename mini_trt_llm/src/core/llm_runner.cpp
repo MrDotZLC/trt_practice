@@ -88,6 +88,27 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
         return;
     }
 
+    // D8 / design.md §不变量 2：prefill 与 decode 各用一个**独立构建**的引擎，且各自恰好只有
+    // 一个 optimization profile。单引擎构建（kSingle）会把 Prefill / Decode 两组 profile 挂在
+    // 同一个引擎上，此时"decode 用 profile 0"就是错的组——而**用错组不会报错**，只会表现为
+    // "形状设了却不生效"这类极难查的现象。所以在构造期就拒绝，而不是等真机跑出怪结果。
+    const auto check_profile_count = [&](Engine* engine, const char* name) -> bool {
+        nvinfer1::ICudaEngine* cuda = engine->GetCudaEngine();
+        const int32_t profiles = cuda == nullptr ? 0 : cuda->getNbOptimizationProfiles();
+        if (profiles != 1) {
+            MINI_TRT_LOG_ERROR("LLMRunner: "
+                               << name << " declares " << profiles
+                               << " optimization profiles; this runtime requires exactly 1"
+                                  "（单引擎同时挂两组 profile 时 decode 并不是 0 号）");
+            return false;
+        }
+        return true;
+    };
+    if (!check_profile_count(prefill_engine_.get(), "prefill engine") ||
+        !check_profile_count(decode_engine_.get(), "decode engine")) {
+        return;
+    }
+
     // KV Cache 的创建放在精度查询**之后**：cache 的元素精度（is_half）取自家配置，
     // **源**精度（引擎导出的 K/V）取查询结果——两者不同时由写入内核做转换（`docs/TROUBLESHOOTING.md` + TS-018）。
     PagedKVCache::Config cache_config;
@@ -169,7 +190,8 @@ bool LLMRunner::ReserveBuffers(int32_t prompt_len, int32_t max_new_tokens, int32
     }
     if (!d_tokens_.Allocate(batch_sz * static_cast<size_t>(token_capacity_) * sizeof(int32_t)) ||
         !d_top_k_.Allocate(batch_sz * sizeof(int32_t)) ||
-        !d_top_p_.Allocate(batch_sz * sizeof(float))) {
+        !d_top_p_.Allocate(batch_sz * sizeof(float)) ||
+        !d_seeds_.Allocate(batch_sz * sizeof(uint64_t))) {
         MINI_TRT_LOG_ERROR("LLMRunner: failed to allocate token/sampling buffers");
         return false;
     }
@@ -212,6 +234,7 @@ bool LLMRunner::SampleBatch(void* token_out, bool from_prefill, int32_t batch, u
         args.is_half = logits_half;
         args.seed = options_seed_;
         args.offset = offset;
+        args.seeds = static_cast<const uint64_t*>(d_seeds_.data());
         return LaunchGreedySampler(args, stream) == cudaSuccess;
     }
     if (use_top_p) {
@@ -223,6 +246,7 @@ bool LLMRunner::SampleBatch(void* token_out, bool from_prefill, int32_t batch, u
         args.is_half = logits_half;
         args.seed = options_seed_;
         args.offset = offset;
+        args.seeds = static_cast<const uint64_t*>(d_seeds_.data());
         args.top_p = static_cast<const float*>(d_top_p_.data());
         return LaunchTopPSampler(args, stream, d_sampler_workspace_.data(),
                                  d_sampler_workspace_.size()) == cudaSuccess;
@@ -235,6 +259,7 @@ bool LLMRunner::SampleBatch(void* token_out, bool from_prefill, int32_t batch, u
     args.is_half = logits_half;
     args.seed = options_seed_;
     args.offset = offset;
+    args.seeds = static_cast<const uint64_t*>(d_seeds_.data());
     args.top_k = static_cast<const int32_t*>(d_top_k_.data());
     // **快速路径暂时不接生产路径**：真机实测它比旧路径慢 6~9 倍
     // （见 future_iterations_development_plan.md §10.5 的失败记录），根因是 occupancy 与 bank conflict。
@@ -361,9 +386,9 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
             MINI_TRT_LOG_ERROR("LLMRunner: request " << b << " has invalid sampling parameters");
             return {};
         }
-        // 策略与 seed 必须整批一致：三种采样 kernel 各自是"整批一个分支"，seed 也是整批参数
-        // （随机流由 seed + offset + 行号混出，逐行不同 seed 做不到）。
-        // top_k / top_p 可以逐行不同——这是 D3 在 S1 里能落到的部分。
+        // 策略必须整批一致：三种采样 kernel 各自是"整批一个分支"（入口校验）。
+        // top_k / top_p / seed 都可以逐行不同：seed 走 per-batch 数组，
+        // 行号不进随机流（见 sampler_common.hpp 的 seeds 与 RowUniform01）。
         const bool first_top_p = first.top_p < 1.0f;
         const bool first_topk = !first_top_p && first.top_k > 1;
         const bool row_top_p = r.options.top_p < 1.0f;
@@ -372,12 +397,6 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
             MINI_TRT_LOG_ERROR("LLMRunner: request " << b
                                << " uses a different sampling strategy than request 0"
                                   " —— S1 要求批内同策略（D3 的逐行策略需要改采样器）");
-            return {};
-        }
-        if (r.options.seed != first.seed) {
-            MINI_TRT_LOG_ERROR("LLMRunner: request " << b
-                               << " uses a different seed than request 0"
-                                  " —— S1 要求批内同 seed");
             return {};
         }
         // Top-K 路径的调用方契约：top_k 不得超过 kTopKFastMaxK，越界行会被写哨兵 -1
@@ -420,20 +439,24 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
         return {};
     }
 
-    // 采样参数：seed 整批一个（已校验一致），top_k / top_p 逐行上传。
+    // 采样参数：top_k / top_p / seed 都逐行上传（seed 决定随机流，且行号不进随机流）。
     options_top_k_ = first.top_k;
     options_top_p_ = first.top_p;
     options_seed_ = first.seed;
     {
         std::vector<int32_t> top_k(static_cast<size_t>(batch));
         std::vector<float> top_p(static_cast<size_t>(batch));
+        std::vector<uint64_t> seeds(static_cast<size_t>(batch));
         for (int32_t b = 0; b < batch; ++b) {
             top_k[static_cast<size_t>(b)] = requests[b].options.top_k;
             top_p[static_cast<size_t>(b)] = requests[b].options.top_p;
+            seeds[static_cast<size_t>(b)] = requests[b].options.seed;
         }
         if (cudaMemcpyAsync(d_top_k_.data(), top_k.data(), top_k.size() * sizeof(int32_t),
                             cudaMemcpyHostToDevice, nullptr) != cudaSuccess ||
             cudaMemcpyAsync(d_top_p_.data(), top_p.data(), top_p.size() * sizeof(float),
+                            cudaMemcpyHostToDevice, nullptr) != cudaSuccess ||
+            cudaMemcpyAsync(d_seeds_.data(), seeds.data(), seeds.size() * sizeof(uint64_t),
                             cudaMemcpyHostToDevice, nullptr) != cudaSuccess) {
             return {};
         }
@@ -461,6 +484,36 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
         }
         active_seqs_.push_back(seq_ids[static_cast<size_t>(b)]);
     }
+
+    // design.md §不变量 4（行号同源）：下列五处**必须共享同一个行号**，任何一处另立下标，
+    // 都会让"形状看起来对"配上错行的数据——而这类错通常不报错，只让结果悄悄不对：
+    //   ① 分页 cache 的批内顺序（= 登记顺序，决定 block_tables 第 i 行与 context_lens[i]）
+    //   ② d_top_k_[i] / d_top_p_[i] / d_seeds_[i]（逐行采样参数）
+    //   ③ 引擎输出 logits 的第 i 行（prefill 的 [B,S,V] 与 decode 的 [B,V]）
+    //   ④ d_tokens_ 第 i 步的第 i 个元素（步优先布局 [max_new, B_max]）
+    //   ⑤ 结果 results[i] ↔ seq_ids[i]
+    // 前者的前提是"登记顺序 == 请求顺序"，所以在动元数据之前显式校一次。
+    if (active_seqs_.size() != static_cast<size_t>(batch)) {
+        MINI_TRT_LOG_ERROR("LLMRunner: batch bookkeeping mismatch (" << active_seqs_.size()
+                           << " allocated vs " << batch << " requested)");
+        for (int32_t id : active_seqs_) {
+            kv_cache_->FreeSequence(id);
+        }
+        active_seqs_.clear();
+        return {};
+    }
+    for (size_t b = 0; b < active_seqs_.size(); ++b) {
+        if (active_seqs_[b] != seq_ids[b]) {
+            MINI_TRT_LOG_ERROR("LLMRunner: row index mismatch at " << b
+                               << "（登记顺序必须等于请求顺序）");
+            for (int32_t id : active_seqs_) {
+                kv_cache_->FreeSequence(id);
+            }
+            active_seqs_.clear();
+            return {};
+        }
+    }
+
     if (kv_cache_->UploadMetadata(nullptr) != cudaSuccess) {
         for (int32_t id : active_seqs_) {
             kv_cache_->FreeSequence(id);
