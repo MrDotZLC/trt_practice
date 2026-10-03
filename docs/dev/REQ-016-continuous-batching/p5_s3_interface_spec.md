@@ -90,6 +90,9 @@ S1/S2 的批内等长让两者恒等，所以过去一个 `tokens` 就够。
   代价是**块预留要按 `tokens`（stride）算**，不是按真实长度：`ceil((S_step + max_new) / block_size)`。
   若实测出池压力（D9 的准入被预算卡住），再考虑"按 `row_lengths[i]` 逐行截断写入"
   （那需要把 lengths 也搬上设备）——**本步不做**。
+  **适用面（2026-10-04 第二遍复评补）**：这条约束**只属于 padding 路径**。S4 的 packed 路径没有填充，
+  context 段只写真实长度，所以它的准入预算 = `ceil((L_i + max_new)/block_size)` ——
+  即"按 stride 预留"在 packed 下自动消失（见 `p5_s4_interface_spec.md` §5）。
 
 **不改它的后果**：写回会按 `order_.size()` 逐行写，而源缓冲里只有前 `B_new` 行是本次算出来的、其余是**上一轮的残留** —— 会覆盖别的序列自己的 prompt K/V（静默算错）。
 

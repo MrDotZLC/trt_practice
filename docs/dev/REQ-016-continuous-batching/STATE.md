@@ -223,6 +223,12 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
   调度层的混批/分块优先级策略）、Included 增第 8 条、AC 增第 9 条（分块与不分块逐位相同）；
   design.md 新增 **D15**（范围 / 依赖 S4 / 仍然排除项 / S5 自己设计要解的四件事）。
   **S4/S5 的 P3 增量复评已出**（review.md）：P0 无、P1 两条（性能类判据绑真机；S5 的 P2 待补）
+- 2026-10-04: **S4 文档第二遍复评**（作者要求）：修 6 处陈旧措辞（§2/§5/§6 仍用单数组时代的
+  `cu_seqlens[...]` 与本应只在 §4 出现的"两段共用一个 i"表述）、补 5 处实现级缺口
+  （S3 元数据镜像直传在 S4 失效 → 每步按 packed 行序重建；`position_ids` 走 host 长度镜像；
+  写回/追加的源基址与设备端 `cu_seqlens`；**块预留不再需要 stride**（S4 的收益）；
+  采样聚集复用 S3 的逐行 async D2D），新增用例 `PackedMetadataFollowsPackedOrder` 与两条风险。
+  另新增 2 条待作者定：`SchedulerStats` 口径在 S4 下失效、profile 的 `opt` 值（建议 P4 后定）
 - 2026-10-03: 不变量 1 / 2 / 4 落地：D6 依据注释、D8 构造期 profile 校验、行号同源显式校验
 - 2026-10-03: **P5-S2 落码**（6 个文件）：元数据缓冲按 max_batch 预分配、`NumFreeBlocks()`、
   `FreeSequence` 补"压实行 + 重建镜像"（补掉一个被掩盖的洞）、调用内归还（RAII 守卫）、
