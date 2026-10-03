@@ -13,11 +13,11 @@ P6 产物。本版 2026-10-03 建立（S1 代码已落、未编译）。
 | Included 2：每序列长度记账 / 位置编码 / 结果收集 | 每行用自己的长度与位置 | 同上 + `BatchEqualsSequentialWithTopP` | 待真机 |
 | Included 3：每序列独立采样参数 | `top_k` / `top_p` / `seed` 逐行生效 | `BatchEqualsSequentialWithTopP`（逐行不同 seed） | 待真机 |
 | Included 4：每序列 K/V 分配与回收 | 跑 N 轮后空闲块回初始值 | **属于 S2**（S1 沿用"下次调用开头释放"） | 待 S2 |
-| Included 5：请求级调度 | 静态批先跑通；连续批在 S3 | `BatchEqualsSequential`（静态批） | 待真机 |
+| Included 5：请求级调度 | 静态批先跑通；连续批（活跃批 + 压实）在 S3 | `BatchEqualsSequential`（静态批）+ `BatchEqualsSequentialUnderScheduling`（连续批总闸） | 待真机 |
 | Included 6：批量 == 逐条单跑 | 逐 token 逐位相同 | `BatchEqualsSequential` + `BatchEqualsSequentialWithTopP` | 待真机 |
 | AC1 数值一致性 | 同上 | 同上两条（贪心 + 随机各一条） | 待真机 |
-| AC2 长度不齐 | 批内长度不同时逐行正确 | **属于 S3**（S1 限制等长） | 待 S3 |
-| AC3 资源回收 | 空闲块回到初始值 | **属于 S2** | 待 S2 |
+| AC2 长度不齐 | 批内长度不同时逐行正确 | `UnequalPromptLengthsInFlight`（S3）+ `RejectsUnequalPromptLengths`（S1 静态批拒绝） | 待真机 |
+| AC3 资源回收 | 空闲块回到初始值 | `BlocksReturnAtEnd`（S3，含失败路径）+ `FreeBlocksReturnAfterBatch` / `FreeBlocksUnchangedAfterFailure`（S2） | 待真机 |
 | AC4 不回归 | 既有用例不新增红 | 全量 `mini_trt_llm_tests` | 待真机 |
 | AC5 单序列语义不变 | B=1 与旧路径逐位相同 | `BatchSingleRowMatchesGenerate` | 待真机 |
 | AC6 性能可复现 | 先声明判别下限，再 A/B | **属于 P4/P7**（环境搁置） | 待环境 |
@@ -43,6 +43,23 @@ S1 没有新增单元级用例（改动集中在 runner 与采样器的接口层
 | `RejectsDuplicateSeqId` | `seq_id` 批内重复被拒 |
 | `FreeBlocksReturnAfterBatch`（S2） | 一次批量调用后空闲块数**回到调用前水位**（AC3） |
 | `FreeBlocksUnchangedAfterFailure`（S2） | 块不足整批拒绝后水位不变（失败路径也要归还） |
+
+### S3 调度（`LlmRunnerSchedulerTest.*`，2026-10-04 落码，未编译验证）
+
+> 两条判据在公开接口上**本来不可观测**，靠 `LLMRunner::SchedulerStats`（只读观测口）固定：
+> `steps` 判"EOS 是否提前退出"，`context_rows` 判"context 段是否只装新入批的行"。
+
+| 用例 | 判据 |
+|---|---|
+| `ContextPassDoesNotTouchInactiveSequences` | 只映射到第 1 行的写回，第 0 行**逐字节不变**（cache 层）；反向自证"确实写了第 1 行" |
+| `WriteBackRowsMapCorrectly` | `RowOf()` 与行映射一致；`rows = {2}` 时 K/V 落到 seq 11 自己的块，未映射行的长度不动 |
+| `ContextSegmentOnlyCoversNewRows` | `context_rows == 2 && prefill_calls == 2`（整批跑会变成 3）—— 守门用例的 runner 层同伴 |
+| `SequenceRetiresAndRowCompacts` | 3 条 / `max_batch = 2` → 必须"退出→准入"；结果逐位等于单跑；块全归还 |
+| `UnequalPromptLengthsInFlight` | AC2：长度 4 与 6 同批（右填充），逐条与单跑逐位相同 |
+| `EosRetiresImmediately` | `max_batch = 1` + `steps ≤ 8`（不提前退出则 ≈ 11）；EOS 不进结果；同批另一条不受影响 |
+| `DeterminismWithArrivalSteps` | 换一组 `arrival_step`（Top-P 随机流）→ 逐条逐位相同（锁 per-row 随机步号） |
+| `BlocksReturnAtEnd` | AC3：正常路径与"重复 seq_id 整批拒绝"路径都全归还 |
+| `BatchEqualsSequentialUnderScheduling` | **总闸**：4 条 > `max_batch`、长度不齐、Top-P，全部与逐条单跑逐位相同；顺带锁 `context_rows == 请求数` / `prefill_calls == 2` / `max_active ≤ max_batch` |
 
 ## Regression Test
 
