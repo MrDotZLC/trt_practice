@@ -370,16 +370,20 @@ TEST(LlmRunnerSchedulerTest, UnequalPromptLengthsInFlight) {
 // 采到 EOS 的序列按 EOS 收口：结果与"逐条单跑"的截断口径一致，且不影响同批其它序列。
 //
 // "提前退出"的**时刻**用观测口判：`max_batch = 1` 让第二条必须等第一条腾出位置。
-//   * 提前退出：A 在第 1 步采到 EOS、第 2 步退出 → B 第 2 步入批 → 总步数 ≈ 7（≤ 8）；
-//   * 若"跑满 max_new 再截断"：A 要占满 5 步，B 第 6 步才入批 → 总步数 ≈ 11。
-// 结果是等价的（EOS 之后的 token 都被截掉），所以**只有步数能区分这两种实现**。
+// 判据用**同一组请求跑两遍**自校准，不写死步数阈值：
+//   * 设了 EOS → A 采到就退出，位子立刻让给 B；
+//   * 不设 EOS（同 prompt、同 max_new）→ A 占满 max_new 步，B 只能在它跑完后入批。
+// 两者的 token 结果等价（EOS 之后的 token 反正被截掉），**只有步数能区分这两种实现**——
+// 所以判据写成"设 EOS 的总步数显著小于不设 EOS 的"（差值下界取 4 步，
+// 给异步回读晚一两步落地留余量：那是实现的正常路径，不该把用例判红）。
 TEST(LlmRunnerSchedulerTest, EosRetiresImmediately) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     // 先跑一次贪心，拿到该 prompt 的首个 token，再把它设成 EOS
     SchedulerFixture probe = MakeSchedulerFixture("sched_eos_probe", /*max_batch=*/1);
     ASSERT_TRUE(probe.ok);
     const std::vector<int64_t> prompt = {3, 4, 5, 6};
-    const LLMRunner::GenerateOptions options = GreedyOptions(/*max_new_tokens=*/5);
+    constexpr int32_t kMaxNew = 8;
+    const LLMRunner::GenerateOptions options = GreedyOptions(kMaxNew);
     const std::vector<int64_t> greedy = probe.runner->Generate(prompt, options);
     ASSERT_FALSE(greedy.empty());
     const int32_t eos_token = static_cast<int32_t>(greedy.front());
@@ -393,10 +397,28 @@ TEST(LlmRunnerSchedulerTest, EosRetiresImmediately) {
     const std::vector<LLMRunner::GenerateResult> scheduled = fixture.runner->RunScheduler(requests);
     ASSERT_EQ(scheduled.size(), requests.size());
     const LLMRunner::SchedulerStats stats = fixture.runner->scheduler_stats();
-    std::cout << "[诊断] EOS 用例步数=" << stats.steps << "（提前退出应 ≤ 8；不退出则 ≈ 11）\n";
-    EXPECT_LE(stats.steps, 8) << "EOS 没有让序列提前退出（位子没腾出来，B 只能等 A 跑满）";
+
+    // 对照组：同样的请求与 max_new，但不判 EOS —— 第一条会占满 kMaxNew 步
+    SchedulerFixture without_eos =
+        MakeSchedulerFixture("sched_eos_control", /*max_batch=*/1, /*eos_token_id=*/-1);
+    ASSERT_TRUE(without_eos.ok);
+    const std::vector<LLMRunner::GenerateResult> control =
+        without_eos.runner->RunScheduler(requests);
+    ASSERT_EQ(control.size(), requests.size());
+    const int32_t control_steps = without_eos.runner->scheduler_stats().steps;
+
+    std::cout << "[诊断] EOS 用例步数=" << stats.steps << "（不判 EOS 的对照=" << control_steps
+              << "）\n";
+    EXPECT_LE(stats.steps + 4, control_steps)
+        << "EOS 没有让序列提前退出（位子没腾出来，第二条只能等第一条跑满 max_new）";
     EXPECT_EQ(stats.max_active, 1) << "max_batch = 1：同时只能有一条";
     EXPECT_EQ(stats.context_rows, 2) << "两条各 prefill 一次";
+    // 对照组的 token 与 EOS 组必须"截断等价"：EOS 那条在两组里都被截在同一个位置
+    ASSERT_EQ(control[1].tokens.size(), scheduled[1].tokens.size());
+    for (size_t k = 0; k < control[1].tokens.size(); ++k) {
+        EXPECT_EQ(control[1].tokens[k], scheduled[1].tokens[k])
+            << "第 2 条不该受第一条是否提前退出的影响（第 " << k << " 个 token）";
+    }
     // EOS 截断口径与 S1 一致：末尾那个 EOS 不进结果（所以这条序列的结果是空的、ok = false）
     EXPECT_TRUE(scheduled[0].tokens.empty()) << "采到 EOS 的序列不该把 EOS 交出去";
     EXPECT_FALSE(scheduled[0].ok);
