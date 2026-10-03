@@ -197,6 +197,10 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
 - 2026-10-04: 作者授权收口两处发现：修复 `tests/test_paged_kv_cache.cpp` 被错位的大括号（`45ac102`）；
   `WritePrefillKV` 加逐行真实长度 `row_lengths`（padding 路径的 `context_lens`）；删掉交接用的
   `next_session_prompt.md`
+- 2026-10-04: **作者授权按序收口四项**：① S3 复评（review.md 增量复评 + 两条 P0 由"待确认"改判）；
+  ② `test_plan.md` 补 S3 行；③ 加只读观测口 `SchedulerStats`（`steps` / `context_rows` 把两条
+  原本不可观测的判据固定进用例）；④ 公共 fixture `SmallGpt2BuilderConfig(max_batch)` 修掉
+  S1 批量用例的 profile 越界。**全部未编译验证**
 - 2026-10-03: 不变量 1 / 2 / 4 落地：D6 依据注释、D8 构造期 profile 校验、行号同源显式校验
 - 2026-10-03: **P5-S2 落码**（6 个文件）：元数据缓冲按 max_batch 预分配、`NumFreeBlocks()`、
   `FreeSequence` 补"压实行 + 重建镜像"（补掉一个被掩盖的洞）、调用内归还（RAII 守卫）、
