@@ -642,7 +642,7 @@ TEST(Gpt2DecodeConsistencyTest, TwoStepDecodeMatchesPrefillAfterAppend) {
             keys[static_cast<size_t>(layer)] = kv[static_cast<size_t>(layer) * 2]->data();
             values[static_cast<size_t>(layer)] = kv[static_cast<size_t>(layer) * 2 + 1]->data();
         }
-        if (cache.AppendDecodeStep(keys, values, nullptr) != cudaSuccess) {
+        if (cache.AppendDecodeStep(keys, values, cache.batch_size(), nullptr) != cudaSuccess) {
             return false;
         }
         CUDA_CHECK(cudaDeviceSynchronize());

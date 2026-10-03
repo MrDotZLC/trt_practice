@@ -94,6 +94,12 @@ S1/S2 的批内等长让两者恒等，所以过去一个 `tokens` 就够。
 **不改它的后果**：写回会按 `order_.size()` 逐行写，而源缓冲里只有前 `B_new` 行是本次算出来的、其余是**上一轮的残留** —— 会覆盖别的序列自己的 prompt K/V（静默算错）。
 
 **映射从哪来**：给 `PagedKVCache` 加 `int32_t RowOf(int32_t seq_id)`（显式查询某序列当前在批内第几行）。
+
+**追加也要按行数收口（2026-10-04 补，落码时发现）**：`AppendDecodeStep` / `AppendDecodeKV` 原来按
+`batch_size()`（全部已登记行）追加并推进长度。生成段只有**活跃表前缀**有本步的 K/V——本步刚入批的
+context 行还没走 generation，给它们也追加就会写进**它们自己的块**、并把它们的语境长度多推一格
+（和"写回覆盖"是同一类静默错）。因此两个入口都加 `row_count`：只写、只推进前 `row_count` 行。
+静态批传 `batch_size()`，行为逐位不变。
 备选是靠"`AllocateSequence` 一定追加在尾部"推出 `rows[i] = order_.size() - B_new + i` —— 那是**隐式约定**，按 D6 的教训不再引入。
 
 **必须先验证的两个点**：
@@ -117,6 +123,12 @@ S1/S2 的批内等长让两者恒等，所以过去一个 `tokens` 就够。
 
 调度必须可复现（AC1 的逐位对拍要求）：请求由调用方给 `arrival_step`，准入严格按 `(arrival_step, 请求下标)` 的字典序，**追加到活跃表尾部**。同一输入 → 同一结果。
 
+**随机步号必须逐行（2026-10-04 补，落码时发现）**：`SamplerArgs::offset` 是标量，但调度下同一次引擎
+调用里各行的"已生成计数"不同（有的在采第 3 个 token、有的才第 0 个）。AC1 要求同一请求无论
+`arrival_step` 怎么排都逐位相同 → 随机流只能由 `(请求 seed, 该请求自己的步号)` 决定，
+因此加 per-row `offsets`（为空退回标量 `offset`，只服务 S1 / 兼容路径）。标量 offset 下
+`BatchEqualsSequentialUnderScheduling` 直接不成立。
+
 ## 6. 接口形态
 
 ```cpp
@@ -135,6 +147,8 @@ std::vector<GenerateResult> RunScheduler(const std::vector<SchedulerRequest>& re
 | 文件 | 改动 |
 |---|---|
 | `include/.../kv_cache/paged_kv_cache.hpp` | `WritePrefillKV` 加 `rows` / `row_count` / `row_lengths`（逐行真实长度，见 §3）；新增 `RowOf(seq_id)`；契约注释更新 |
+| `include/.../kv_cache/paged_kv_cache.hpp`（追加路径） | `AppendDecodeKV` / `AppendDecodeStep` 加 `row_count`：只追加、只推进前 `row_count` 行（见 §3） |
+| `include/.../sampler/sampler_common.hpp` + `src/sampler/sampler_kernels.cu` | `SamplerArgs` 加 per-row `offsets`（见 §5）；6 个 kernel / launch 同步 |
 | `src/kv_cache/paged_kv_cache.cpp` + `paged_kv_cache_kernels.cu` | 写回 kernel 用 `rows[b]` 寻址；`RowOf` 实现 |
 | `include/.../core/llm_runner.hpp` | 活跃表与 finish flag 的 pinned 暂存随实现落地（`RunScheduler` 接口已在） |
 | `src/core/llm_runner.cpp` | 五步调度循环；**每步重建逐行缓冲**；`padding_bias` 按真实长度填；finish flag 回读与兜底 |

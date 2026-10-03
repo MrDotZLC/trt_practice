@@ -257,7 +257,8 @@ TEST(PagedKVCacheTest, AppendCrossesBlockBoundaryAndAdvancesContextLens) {
             key_ptrs[layer] = d_key[layer].data();
             value_ptrs[layer] = d_value[layer].data();
         }
-        ASSERT_EQ(cache.AppendDecodeStep(key_ptrs, value_ptrs, nullptr), cudaSuccess);
+        ASSERT_EQ(cache.AppendDecodeStep(key_ptrs, value_ptrs, cache.batch_size(), nullptr),
+                  cudaSuccess);
         CUDA_CHECK(cudaDeviceSynchronize());
         EXPECT_EQ(cache.SequenceLength(0), kPrefillTokens + step + 1);
     }
@@ -315,7 +316,8 @@ TEST(PagedKVCacheTest, AppendDecodeStepRejectsLayerCountMismatch) {
                           cudaMemcpyHostToDevice));
 
     // 只传 1 对而配置要求 2 对 → 必须返回错误码，而不是"写一半"
-    EXPECT_EQ(cache.AppendDecodeStep({d_key.data()}, {d_value.data()}, nullptr),
+    EXPECT_EQ(cache.AppendDecodeStep({d_key.data()}, {d_value.data()}, cache.batch_size(),
+                                     nullptr),
               cudaErrorInvalidValue);
     // host 侧记账与设备端 context_lens 都必须停在 0
     EXPECT_EQ(cache.SequenceLength(0), 0);

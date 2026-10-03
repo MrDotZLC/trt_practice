@@ -72,9 +72,13 @@ __device__ __forceinline__ float Uniform01(uint64_t seed, uint64_t offset, uint3
 // 为什么：`Uniform01(seed, offset, row)` 把行号混进哈希，于是同一个请求换到别的批位置
 // 就会换一串 token——那会让固定 seed 的评估不可复现、线上问题无法复现（AC1 的前置）。
 // 生产路径（LLMRunner 的批量入口）一律提供 seeds；为空时保留旧行为，只服务单行/兼容路径。
-__device__ __forceinline__ float RowUniform01(const uint64_t* seeds, uint64_t seed,
-                                              uint64_t offset, uint32_t row) {
-    return seeds != nullptr ? Uniform01(seeds[row], offset, 0u) : Uniform01(seed, offset, row);
+// `offsets` 非空时用该行自己的步号（调度下各行步号不同，见 sampler_common.hpp）；
+// 为空则退回整批共用的标量 `offset`。
+__device__ __forceinline__ float RowUniform01(const uint64_t* seeds, const uint64_t* offsets,
+                                              uint64_t seed, uint64_t offset, uint32_t row) {
+    const uint64_t row_offset = (offsets != nullptr) ? offsets[row] : offset;
+    return seeds != nullptr ? Uniform01(seeds[row], row_offset, 0u)
+                            : Uniform01(seed, row_offset, row);
 }
 
 // 写 token，并（可选）写"该行采到 EOS"的设备侧标记。
@@ -132,6 +136,7 @@ __global__ void FastTopKSampleKernel(const T* __restrict__ logits,
                                      int32_t* __restrict__ token_ids, int32_t vocab_size,
                                      uint64_t seed, uint64_t offset,
                                      const uint64_t* __restrict__ seeds,
+                                     const uint64_t* __restrict__ offsets,
                                      int8_t* __restrict__ eos_hit, int32_t eos_token_id) {
     const int32_t row = blockIdx.x;
     const int32_t lane = threadIdx.x;
@@ -209,7 +214,8 @@ __global__ void FastTopKSampleKernel(const T* __restrict__ logits,
         for (int32_t i = 0; i < k; ++i) {
             total += __expf(s_picked_value[i] - max_value);
         }
-        const float target = RowUniform01(seeds, seed, offset, static_cast<uint32_t>(row)) * total;
+        const float target =
+            RowUniform01(seeds, offsets, seed, offset, static_cast<uint32_t>(row)) * total;
         float cumulative = 0.0f;
         int32_t chosen = s_picked_index[0];
         for (int32_t i = 0; i < k; ++i) {
@@ -308,6 +314,7 @@ __global__ void TopKSampleKernel(const float* __restrict__ sorted_logits,
                                  int32_t* __restrict__ token_ids, int32_t batch_size,
                                  int32_t vocab_size, uint64_t seed, uint64_t offset,
                                  const uint64_t* __restrict__ seeds,
+                                 const uint64_t* __restrict__ offsets,
                                  int8_t* __restrict__ eos_hit, int32_t eos_token_id) {
     const int32_t row = blockIdx.x * blockDim.x + threadIdx.x;
     // 最后一个 block 可能不满，必须挡住越界的 row
@@ -333,7 +340,8 @@ __global__ void TopKSampleKernel(const float* __restrict__ sorted_logits,
         total += __expf(row_logits[i] - max_value);
     }
 
-    const float target = RowUniform01(seeds, seed, offset, static_cast<uint32_t>(row)) * total;
+    const float target =
+        RowUniform01(seeds, offsets, seed, offset, static_cast<uint32_t>(row)) * total;
     float cumulative = 0.0f;
     int32_t chosen = row_indices[0];
     for (int32_t i = 0; i < k; ++i) {
@@ -356,6 +364,7 @@ __global__ void TopPSampleKernel(const float* __restrict__ sorted_logits,
                                  int32_t* __restrict__ token_ids, int32_t batch_size,
                                  int32_t vocab_size, uint64_t seed, uint64_t offset,
                                  const uint64_t* __restrict__ seeds,
+                                 const uint64_t* __restrict__ offsets,
                                  int8_t* __restrict__ eos_hit, int32_t eos_token_id) {
     const int32_t row = blockIdx.x * blockDim.x + threadIdx.x;
     // 最后一个 block 可能不满，必须挡住越界的 row
@@ -397,7 +406,8 @@ __global__ void TopPSampleKernel(const float* __restrict__ sorted_logits,
         kept_total += __expf(row_logits[i] - max_value);
     }
 
-    const float target = RowUniform01(seeds, seed, offset, static_cast<uint32_t>(row)) * kept_total;
+    const float target =
+        RowUniform01(seeds, offsets, seed, offset, static_cast<uint32_t>(row)) * kept_total;
     cumulative = 0.0f;
     int32_t chosen = row_indices[0];
     for (int32_t i = 0; i < cutoff; ++i) {
@@ -442,6 +452,7 @@ __global__ void TopPParallelSampleKernel(const float* __restrict__ sorted_logits
                                          int32_t* __restrict__ token_ids, int32_t vocab_size,
                                          uint64_t seed, uint64_t offset,
                                          const uint64_t* __restrict__ seeds,
+                                         const uint64_t* __restrict__ offsets,
                                          int8_t* __restrict__ eos_hit, int32_t eos_token_id) {
     const int32_t row = blockIdx.x;
     const int32_t tid = threadIdx.x;
@@ -518,7 +529,8 @@ __global__ void TopPParallelSampleKernel(const float* __restrict__ sorted_logits
 
     // 在被保留的前缀内重新归一化后采样。阈值 `u * kept_total < kept_total`，因此交叉点必然
     // 落在 [0, cutoff) 内；第二次调用把 size 传成 cutoff，是为了不越过截断边界去找交叉点。
-    const float target = RowUniform01(seeds, seed, offset, static_cast<uint32_t>(row)) * kept_total;
+    const float target =
+        RowUniform01(seeds, offsets, seed, offset, static_cast<uint32_t>(row)) * kept_total;
     float ignored_prefix = 0.0f;
     const int32_t chosen_prefix = FindCrossingByLevels(s_chunk_sum, chunk_count, sub_sums,
                                                        sub_chunks, chunk_size, sub_size, cutoff,
@@ -687,7 +699,8 @@ cudaError_t LaunchTopKSampler(const TopKSamplerArgs& args, cudaStream_t stream,
         [&](const float* sorted_logits, const int32_t* sorted_indices, cudaStream_t s) {
             TopKSampleKernel<<<blocks, kThreadsPerBlock, 0, s>>>(
                 sorted_logits, sorted_indices, args.top_k, args.token_ids,
-                args.batch_size, args.vocab_size, args.seed, args.offset, args.seeds, args.eos_hit, args.eos_token_id);
+                args.batch_size, args.vocab_size, args.seed, args.offset, args.seeds,
+                args.offsets, args.eos_hit, args.eos_token_id);
         });
 }
 
@@ -712,11 +725,13 @@ cudaError_t LaunchTopKSamplerFast(const TopKSamplerArgs& args, cudaStream_t stre
     if (args.is_half) {
         FastTopKSampleKernel<__half><<<grid, block, 0, stream>>>(
             static_cast<const __half*>(args.logits), args.top_k, args.token_ids,
-            args.vocab_size, args.seed, args.offset, args.seeds, args.eos_hit, args.eos_token_id);
+            args.vocab_size, args.seed, args.offset, args.seeds, args.offsets, args.eos_hit,
+            args.eos_token_id);
     } else {
         FastTopKSampleKernel<float><<<grid, block, 0, stream>>>(
             static_cast<const float*>(args.logits), args.top_k, args.token_ids,
-            args.vocab_size, args.seed, args.offset, args.seeds, args.eos_hit, args.eos_token_id);
+            args.vocab_size, args.seed, args.offset, args.seeds, args.offsets, args.eos_hit,
+            args.eos_token_id);
     }
     return cudaGetLastError();
 }
@@ -736,7 +751,8 @@ cudaError_t LaunchTopPSampler(const TopPSamplerArgs& args, cudaStream_t stream,
         [&](const float* sorted_logits, const int32_t* sorted_indices, cudaStream_t s) {
             TopPParallelSampleKernel</*kSubChunked=*/true><<<grid, block, 0, s>>>(
                 sorted_logits, sorted_indices, args.top_p, args.token_ids, args.vocab_size,
-                args.seed, args.offset, args.seeds, args.eos_hit, args.eos_token_id);
+                args.seed, args.offset, args.seeds, args.offsets, args.eos_hit,
+                args.eos_token_id);
         });
 }
 
@@ -756,7 +772,8 @@ cudaError_t LaunchTopPSamplerTwoLevel(const TopPSamplerArgs& args, cudaStream_t 
         [&](const float* sorted_logits, const int32_t* sorted_indices, cudaStream_t s) {
             TopPParallelSampleKernel</*kSubChunked=*/false><<<grid, block, 0, s>>>(
                 sorted_logits, sorted_indices, args.top_p, args.token_ids, args.vocab_size,
-                args.seed, args.offset, args.seeds, args.eos_hit, args.eos_token_id);
+                args.seed, args.offset, args.seeds, args.offsets, args.eos_hit,
+                args.eos_token_id);
         });
 }
 
@@ -774,7 +791,8 @@ cudaError_t LaunchTopPSamplerLegacy(const TopPSamplerArgs& args, cudaStream_t st
         [&](const float* sorted_logits, const int32_t* sorted_indices, cudaStream_t s) {
             TopPSampleKernel<<<blocks, kThreadsPerBlock, 0, s>>>(
                 sorted_logits, sorted_indices, args.top_p, args.token_ids,
-                args.batch_size, args.vocab_size, args.seed, args.offset, args.seeds, args.eos_hit, args.eos_token_id);
+                args.batch_size, args.vocab_size, args.seed, args.offset, args.seeds,
+                args.offsets, args.eos_hit, args.eos_token_id);
         });
 }
 

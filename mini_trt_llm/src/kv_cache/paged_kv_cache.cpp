@@ -320,7 +320,7 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
 }
 
 cudaError_t PagedKVCache::AppendDecodeKV(int32_t layer, const void* key, const void* value,
-                                         cudaStream_t stream) {
+                                         int32_t row_count, cudaStream_t stream) {
     if (!valid_ || key == nullptr || value == nullptr) {
         return cudaErrorInvalidValue;
     }
@@ -330,7 +330,9 @@ cudaError_t PagedKVCache::AppendDecodeKV(int32_t layer, const void* key, const v
         return cudaErrorInvalidValue;
     }
     const int32_t batch = batch_size();
-    if (batch <= 0) {
+    // 只追加前 row_count 行：S3 的生成段只有活跃表前缀有本步的 K/V；越界直接拒绝，
+    // 不静默截断（静默截断会让"少写了谁"变成无人知晓的错）。
+    if (batch <= 0 || row_count <= 0 || row_count > batch) {
         return cudaErrorInvalidValue;
     }
 
@@ -344,7 +346,7 @@ cudaError_t PagedKVCache::AppendDecodeKV(int32_t layer, const void* key, const v
     // decode 的行序就等于批内顺序（= order_），所以用构造期备好的恒等表：
     // 这里每步都会被调用，另拷一份映射会让解码循环里出现 H2D（AGENTS.md §3.A.3）。
     args.rows = static_cast<const int32_t*>(identity_rows_device_.data());
-    args.row_count = batch;
+    args.row_count = row_count;
     args.tokens = 1;
     args.num_kv_heads = config_.num_kv_heads;
     args.head_size = config_.head_size;
@@ -359,6 +361,7 @@ cudaError_t PagedKVCache::AppendDecodeKV(int32_t layer, const void* key, const v
 
 cudaError_t PagedKVCache::AppendDecodeStep(const std::vector<const void*>& keys,
                                            const std::vector<const void*>& values,
+                                           int32_t row_count,
                                            cudaStream_t stream) {
     if (keys.size() != values.size() ||
         keys.size() != static_cast<size_t>(config_.num_layers)) {
@@ -367,21 +370,22 @@ cudaError_t PagedKVCache::AppendDecodeStep(const std::vector<const void*>& keys,
     }
     for (int32_t layer = 0; layer < config_.num_layers; ++layer) {
         const cudaError_t err = AppendDecodeKV(layer, keys[static_cast<size_t>(layer)],
-                                              values[static_cast<size_t>(layer)], stream);
+                                              values[static_cast<size_t>(layer)], row_count,
+                                              stream);
         if (err != cudaSuccess) {
             return err;
         }
     }
     // 推进必须发生在所有写入之后，所以独立成一个 kernel（同一 stream 上串行）；
-    // 且**整步只推进一次**。
+    // 且**只推进这一批（前 row_count 行）一次**。
     const cudaError_t err = LaunchAdvanceContextLens(
-        const_cast<int32_t*>(context_lens()), batch_size(), /*tokens=*/1, stream);
+        const_cast<int32_t*>(context_lens()), row_count, /*tokens=*/1, stream);
     if (err != cudaSuccess) {
         return err;
     }
-    for (size_t b = 0; b < order_.size(); ++b) {
-        context_lens_host_[b] += 1;
-        sequences_[order_[b]].length += 1;
+    for (int32_t b = 0; b < row_count; ++b) {
+        context_lens_host_[static_cast<size_t>(b)] += 1;
+        sequences_[order_[static_cast<size_t>(b)]].length += 1;
     }
     return cudaSuccess;
 }

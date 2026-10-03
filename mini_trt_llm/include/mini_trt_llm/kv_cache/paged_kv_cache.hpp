@@ -138,14 +138,18 @@ class PagedKVCache {
     // 只负责写数据，**不推进语境长度**——长度是"每个 token 一个"的量，
     // 按层推进会把它算成 n_layer 倍（真机上表现为第 3 个 token 就发散，
     // 因为第 1、2 个 token 只用到 prefill 写好的长度）。
+    // `row_count`：本次只写前几行（引擎行 = 批内行）；S3 的生成段只有活跃表前缀有本步的 K/V。
     cudaError_t AppendDecodeKV(int32_t layer, const void* key, const void* value,
-                              cudaStream_t stream);
+                               int32_t row_count, cudaStream_t stream);
 
-    // 追加一步 decode 的**所有层**，写完后只推进一次语境长度。
+    // 追加一步 decode 的**所有层**，只追加**前 row_count 行**，写完后只推进这一批的语境长度。
     // runner 应当用这个入口：把"必须恰好推进一次"这件事收进 API，
     // 而不是留给调用方记得。
+    // **为什么需要 row_count**：S3 的生成段只装本步在跑的序列（活跃表前缀），本步刚入批的
+    // context 行还没算出 decode 的 K/V —— 给它们也追加会写进**它们自己的块**、并把它们的语境
+    // 长度多推一格（静默算错，p5_s3_interface_spec §3）。静态批传 batch_size() 即原行为。
     cudaError_t AppendDecodeStep(const std::vector<const void*>& keys,
-                                 const std::vector<const void*>& values,
+                                 const std::vector<const void*>& values, int32_t row_count,
                                  cudaStream_t stream);
 
     // 整块缓冲（含所有层）与单层的字节数。单层尺寸才是使用方需要的：

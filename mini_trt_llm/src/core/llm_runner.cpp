@@ -682,7 +682,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
                 d_decode_kv_[static_cast<size_t>(layer) * 2 + 1]->data();
         }
         // 整步只推进一次语境长度（逐层推进会被算成 n_layer 倍）。
-        if (kv_cache_->AppendDecodeStep(keys, values, nullptr) != cudaSuccess) {
+        if (kv_cache_->AppendDecodeStep(keys, values, batch, nullptr) != cudaSuccess) {
             MINI_TRT_LOG_ERROR("LLMRunner: failed to append decode K/V at step " << i);
 
             return {};

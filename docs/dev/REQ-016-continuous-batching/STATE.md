@@ -108,6 +108,29 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
    **残留约束（调度器步要照做）**：填充位置的 K/V 仍按 stride 写进 cache，所以块预留要按
    `ceil((S_step + max_new) / block_size)` 算，不是按真实长度。
 
+### P5-S3 第 4 步：调度循环（**状态：进行中，未编译验证**，2026-10-04）
+
+**当前修改模块**：运行时（`LLMRunner`）的请求级调度 + 两处被它逼出来的接口（采样器随机流、按行追加 K/V）。
+
+| 文件 | 计划改动 |
+|---|---|
+| `mini_trt_llm/include/mini_trt_llm/sampler/sampler_common.hpp` | `SamplerArgs` 加 per-row `offsets`（为空 → 退回标量 `offset`） |
+| `mini_trt_llm/src/sampler/sampler_kernels.cu` | `RowUniform01` 与 6 个 kernel / launch 支持 per-row offset |
+| `mini_trt_llm/include/.../kv_cache/paged_kv_cache.hpp`、`src/.../paged_kv_cache.cpp` | `AppendDecodeStep` / `AppendDecodeKV` 加 `row_count`：只追加并推进**前 row_count 行** |
+| `mini_trt_llm/include/mini_trt_llm/core/llm_runner.hpp` | 活跃表结构、每步重建用的成员（步 token / 结果 token / eos flag / per-row 参数）、辅助函数签名 |
+| `mini_trt_llm/src/core/llm_runner.cpp` | `RunScheduler` 五步循环；`BindPrefill` 按行长度填 `padding_bias`；`PrefillLogitsRow` 按行取真实末位；`SampleBatch` 传 per-row offset 与 `eos_hit`；finish flag 异步回读 + 兜底 |
+| `docs/dev/REQ-016-continuous-batching/p5_s3_interface_spec.md` | §3/§4 补 per-row offset 与按行追加；§7 文件表同步 |
+
+**为什么 offset 也要逐行**：AC1（批量 == 逐条单跑）要求随机流只由 `(请求 seed, 该请求自己的步号)` 决定。
+调度下同一引擎步里各行的已生成计数不同，标量 offset 会让"到得晚"的请求拿到不同的随机流 ——
+`BatchEqualsSequentialUnderScheduling` 直接不成立。
+
+**测试方式**：本沙箱无编译器 → 静态自检（逐行括号深度、符号成对、最长行、CRLF/无 BOM）。
+真机待跑：`mini_trt_llm_tests` 全量 + S3 的 8 条（下一步补）。
+
+**本步的取舍（写下来供作者复核）**：context 段之后**不做每步同步**（沿用 decode 段"每步重绑、同流有序"的既有形态）；
+若真机出现"重绑踩到未执行完的 enqueue"，退路是加 event 依赖或只在"还有待准入请求"时同步一次。
+
 ---
 
 ## Phase History
