@@ -27,6 +27,10 @@
 
 ## Current Blockers
 
+- **S1 批量用例的 profile 配置不足（2026-10-04 发现，未改）**：`tests/test_llm_runner_batch.cpp` 用
+  `SmallGpt2BuilderConfig()`（`max_prefill_batch = max_decode_batch = 1`）却声明 `max_batch = 2` ——
+  真机首次跑 P6 时这批用例会因 profile 形状越界而红。S3 的用例已自带抬到 4 的配置；
+  S1 那处怎么改（改 fixture / 把配置上提）待作者定夺。
 - **P4 / P7 搁置（2026-10-03）**：当前不在 GTX 1660 Ti 环境，无法取基线。按
   `phases/p4_baseline.md` 的 Dependency Missing 记 N/A；`benchmark_before.md` 写明环境恢复后
   必须补的四项测量。**批上限（`max_batch`）暂时只能取保守值并标注"待实测"**，不得写成实测结论。
@@ -42,9 +46,11 @@
    `sampler_common.hpp` / `sampler_kernels.cu`，新增 `tests/test_llm_runner_batch.cpp`。
    真机下一步：`cmake --build build -j` → 全量 `mini_trt_llm_tests` → 新增的
    `LlmRunnerBatchTest.*`（8 条）。编译错误与用例结果都要回填本文与 `test_plan.md`（P6）。
-2. **P5-S2 / S3**：S1 编译通过后再做，不并笔提交。**S3 第 3 步（写回行映射）已落码、未编译**；
-   下一步是 `RunScheduler` 的调度循环（活跃表、每步重建逐行缓冲、`padding_bias` 按真实长度填、
-   finish flag 异步回读与兜底），之后是 `p5_s3_interface_spec.md` §8 的 8 条用例。
+2. **P5-S2 / S3**：S1 编译通过后再做，不并笔提交。**S3 已全部落码（写回行映射 → 逐行真长度 →
+   调度循环 → 8 条用例），全部未编译验证**。S3 真机收口要按序做：① 编译（P5 Exit Gate，
+   注意上面那条 S1 profile 的已知问题）；② 跑 `mini_trt_llm_tests` 全量 + `LlmRunnerSchedulerTest.*`
+   8 条；③ 结果回填 `test_plan.md`（P6）。
+   另有一条待办：`EosRetiresImmediately` 判不了退出的**时刻**，要判得加一个可观测的步数计数器。
 3. 环境恢复后补 P4，再按 D10 的两种负载跑 P7。
 
 ---
@@ -138,6 +144,38 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
    采样后按行散射回序列槽位（每步 ≤ 2B 次 4 字节 D2D）。
 2. **finish flag 最多一个回读在飞**：未消费就发新的会让两次 D2H 同时写同一块 pinned 缓冲（数据竞争）。
    推迟期间退出判定晚一步，连续 4 步没落地强制同步一次（兜底）。
+
+### P5-S3 第 5 步：8 条用例（**状态：已落码，未编译验证**，2026-10-04）
+
+**新增**：`mini_trt_llm/tests/test_llm_runner_scheduler.cpp`（`file(GLOB)` 收，CMake 无需改）。
+
+| 用例 | 层次 | 锁的东西 |
+|---|---|---|
+| `ContextPassDoesNotTouchInactiveSequences` | cache | 只映射到第 1 行的写回，第 0 行**逐字节不变**；反向自证"确实写了第 1 行" |
+| `WriteBackRowsMapCorrectly` | cache | `RowOf()` 与行映射一致；`rows={2}` 时 K/V 落到 seq 11 自己的块、行 0/1 长度不动 |
+| `SequenceRetiresAndRowCompacts` | runner | 3 条请求 / `max_batch=2` → 必须"退出→准入"；结果与单跑逐位相同 + 块全归还 |
+| `UnequalPromptLengthsInFlight` | runner | AC2：长度 4 与 6 同批（右填充），逐条与单跑逐位相同 |
+| `EosRetiresImmediately` | runner | EOS 截断口径与 S1 一致；同批另一条不受影响 |
+| `DeterminismWithArrivalSteps` | runner | 换一组 `arrival_step`（含 Top-P 随机流）→ 逐条逐位相同 |
+| `BlocksReturnAtEnd` | runner | AC3：正常路径与"重复 seq_id 整批拒绝"路径都全归还 |
+| `BatchEqualsSequentialUnderScheduling` | runner | **总闸**：4 条 > `max_batch`、长度不齐、Top-P，全部与逐条单跑逐位相同 |
+
+**两条必须写下来的局限（免得后人高估这两条用例）**：
+
+1. `EosRetiresImmediately` **判不了"退出的时刻"**：公开接口看不到第几步退出，而"下一步退出"与
+   "跑满 max_new 再截断"在结果上等价（EOS 之后的 token 反正被截掉）。要判时刻，需要可观测的步数
+   计数器或在池压力下做差分 —— 记入下一步待办。
+2. `ContextPassDoesNotTouchInactiveSequences` 在 **cache 层**验（runner 没有读回 cache 的观测口），
+   锁的是写回机制；"调度器确实只装新入批的行"由总闸从结果侧兜住。
+
+**本步的 builder config 自带**：用例用 `SchedulerBuilderConfig()`（批上限抬到 4），
+因为 `SmallGpt2BuilderConfig()` 是 `max_prefill_batch = max_decode_batch = 1`。
+
+**由此发现的既有问题（未改，Independent 缺陷）**：S1 的批量用例
+（`tests/test_llm_runner_batch.cpp`）直接复用 `SmallGpt2BuilderConfig()` 却声明 `max_batch = 2`，
+**批 2 的 prefill/decode 落在 profile 之外**（`SetInputShape` 会失败）——真机首次跑 P6 时这批用例
+会红，且红的不是批量逻辑而是 profile 配置。修法是把 S1 的 fixture 也换成抬批上限的配置
+（或把该配置提到 `gpt2_test_support.hpp` 里）。**待作者定夺**。
 
 ---
 
