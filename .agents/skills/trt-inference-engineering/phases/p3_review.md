@@ -82,7 +82,7 @@ review.md 必须包含以下三张表；每张表的数据行数必须等于对�
 
 - Item：checklist 项原文，或可定位到该条目的缩写。
 - Level：该项在 checklist 中的等级，取值 P0 / P1。
-- Result：通过 / 不通过 / 待确认。
+- Result：通过 / 不通过 / 待确认 / 不适用；取"不适用"时必须写明理由（例如"本轮不改 kernel"），无理由的"不适用"按未回答处理。
 - Action：修复 / 人工确认 / 记录；P0 项必须给出修复落点。
 
 表二：需求落点表，requirement.md 中每条 Included 与每条 Acceptance Criteria 各占一行。
