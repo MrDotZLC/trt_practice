@@ -27,6 +27,12 @@ struct SamplerArgs {
     // 也是工业界的口径：随机性只由 (请求 seed, 步数) 决定）。
     // 为空时退化为旧的 `Uniform01(seed, offset, row)`，只服务单行 / 兼容路径。
     const uint64_t* seeds = nullptr;
+    // 可选：设备侧"该行采到 EOS"的输出（`[batch_size]`，1 = 命中）。nullptr 表示不需要。
+    // 有了它，调度器每步只回读 batch_size 字节就能决定谁退出，不必把 token 拷回主机自己比 EOS
+    // （见 design.md D12 与 p5_s3_interface_spec.md §4）。
+    int8_t* eos_hit = nullptr;
+    // <0 → 不判 EOS（此时整批 eos_hit 都写 0）。
+    int32_t eos_token_id = -1;
 };
 
 // Top-K / Top-P 的 k 与 p 都是 per-batch tensor（Q7），以支持连续批处理中

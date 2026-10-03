@@ -77,6 +77,19 @@ __device__ __forceinline__ float RowUniform01(const uint64_t* seeds, uint64_t se
     return seeds != nullptr ? Uniform01(seeds[row], offset, 0u) : Uniform01(seed, offset, row);
 }
 
+// 写 token，并（可选）写"该行采到 EOS"的设备侧标记。
+//
+// 为什么要有它：调度器每步只需要"谁结束了"这一个比特，而不是整批 token。有了它就能只回读
+// batch_size 字节，避免为了比 EOS 把 B 个 token 都拷回主机（design.md D12 / S3 方案 §4）。
+__device__ __forceinline__ void StoreToken(int32_t* token_ids, int8_t* eos_hit,
+                                           int32_t eos_token_id, int32_t row, int32_t token) {
+    token_ids[row] = token;
+    if (eos_hit != nullptr) {
+        eos_hit[row] = (eos_token_id >= 0 && token == eos_token_id) ? static_cast<int8_t>(1)
+                                                                    : static_cast<int8_t>(0);
+    }
+}
+
 // 并列时取最小下标，与 torch.argmax 语义一致。
 __device__ __forceinline__ bool IsBetter(float value, int32_t index, float best_value,
                                          int32_t best_index) {
@@ -118,7 +131,8 @@ __global__ void FastTopKSampleKernel(const T* __restrict__ logits,
                                      const int32_t* __restrict__ top_k,
                                      int32_t* __restrict__ token_ids, int32_t vocab_size,
                                      uint64_t seed, uint64_t offset,
-                                     const uint64_t* __restrict__ seeds) {
+                                     const uint64_t* __restrict__ seeds,
+                                     int8_t* __restrict__ eos_hit, int32_t eos_token_id) {
     const int32_t row = blockIdx.x;
     const int32_t lane = threadIdx.x;
 
@@ -128,7 +142,7 @@ __global__ void FastTopKSampleKernel(const T* __restrict__ logits,
     // 契约被破坏时不静默给错答案：整组 lane 走同一条（uniform）分支，避免 warp 内分叉。
     const bool violates_contract = k > kTopKFastMaxK;
     if (violates_contract) {
-        if (lane == 0) token_ids[row] = -1;
+        if (lane == 0) StoreToken(token_ids, eos_hit, eos_token_id, row, -1);
         return;
     }
 
@@ -205,13 +219,14 @@ __global__ void FastTopKSampleKernel(const T* __restrict__ logits,
                 break;
             }
         }
-        token_ids[row] = chosen;
+        StoreToken(token_ids, eos_hit, eos_token_id, row, chosen);
     }
 }
 
 template <typename T>
 __global__ void GreedyKernel(const T* __restrict__ logits, int32_t* __restrict__ token_ids,
-                             int32_t vocab_size) {
+                             int32_t vocab_size, int8_t* __restrict__ eos_hit,
+                             int32_t eos_token_id) {
     __shared__ float shared_value[kThreadsPerBlock / 32];
     __shared__ int32_t shared_index[kThreadsPerBlock / 32];
 
@@ -259,7 +274,7 @@ __global__ void GreedyKernel(const T* __restrict__ logits, int32_t* __restrict__
             }
         }
         if (lane == 0) {
-            token_ids[row] = best_index;
+            StoreToken(token_ids, eos_hit, eos_token_id, row, best_index);
         }
     }
 }
@@ -292,7 +307,8 @@ __global__ void TopKSampleKernel(const float* __restrict__ sorted_logits,
                                  const int32_t* __restrict__ top_k,
                                  int32_t* __restrict__ token_ids, int32_t batch_size,
                                  int32_t vocab_size, uint64_t seed, uint64_t offset,
-                                 const uint64_t* __restrict__ seeds) {
+                                 const uint64_t* __restrict__ seeds,
+                                 int8_t* __restrict__ eos_hit, int32_t eos_token_id) {
     const int32_t row = blockIdx.x * blockDim.x + threadIdx.x;
     // 最后一个 block 可能不满，必须挡住越界的 row
     if (row >= batch_size) {
@@ -327,7 +343,7 @@ __global__ void TopKSampleKernel(const float* __restrict__ sorted_logits,
             break;
         }
     }
-    token_ids[row] = chosen;
+    StoreToken(token_ids, eos_hit, eos_token_id, row, chosen);
 }
 
 // Top-P 的 legacy 采样 kernel：整行由**一个线程**处理（4 趟 O(vocab) 串行扫描，每趟每元素
@@ -339,7 +355,8 @@ __global__ void TopPSampleKernel(const float* __restrict__ sorted_logits,
                                  const float* __restrict__ top_p,
                                  int32_t* __restrict__ token_ids, int32_t batch_size,
                                  int32_t vocab_size, uint64_t seed, uint64_t offset,
-                                 const uint64_t* __restrict__ seeds) {
+                                 const uint64_t* __restrict__ seeds,
+                                 int8_t* __restrict__ eos_hit, int32_t eos_token_id) {
     const int32_t row = blockIdx.x * blockDim.x + threadIdx.x;
     // 最后一个 block 可能不满，必须挡住越界的 row
     if (row >= batch_size) {
@@ -390,7 +407,7 @@ __global__ void TopPSampleKernel(const float* __restrict__ sorted_logits,
             break;
         }
     }
-    token_ids[row] = chosen;
+    StoreToken(token_ids, eos_hit, eos_token_id, row, chosen);
 }
 
 // Top-P 的并行采样（P9_2-5 + P9_2-5b）：一行一个 block。
@@ -424,7 +441,8 @@ __global__ void TopPParallelSampleKernel(const float* __restrict__ sorted_logits
                                          const float* __restrict__ top_p,
                                          int32_t* __restrict__ token_ids, int32_t vocab_size,
                                          uint64_t seed, uint64_t offset,
-                                         const uint64_t* __restrict__ seeds) {
+                                         const uint64_t* __restrict__ seeds,
+                                         int8_t* __restrict__ eos_hit, int32_t eos_token_id) {
     const int32_t row = blockIdx.x;
     const int32_t tid = threadIdx.x;
 
@@ -505,7 +523,7 @@ __global__ void TopPParallelSampleKernel(const float* __restrict__ sorted_logits
     const int32_t chosen_prefix = FindCrossingByLevels(s_chunk_sum, chunk_count, sub_sums,
                                                        sub_chunks, chunk_size, sub_size, cutoff,
                                                        target, exp_at, &ignored_prefix);
-    token_ids[row] = row_indices[chosen_prefix > 0 ? chosen_prefix - 1 : 0];
+    StoreToken(token_ids, eos_hit, eos_token_id, row,
 }
 
 // 分段排序的 workspace 布局。
@@ -640,10 +658,10 @@ cudaError_t LaunchGreedySampler(const SamplerArgs& args, cudaStream_t stream) {
     (void)cudaGetLastError();
     if (args.is_half) {
         GreedyKernel<__half><<<grid, block, 0, stream>>>(
-            static_cast<const __half*>(args.logits), args.token_ids, args.vocab_size);
+            static_cast<const __half*>(args.logits), args.token_ids, args.vocab_size,
     } else {
         GreedyKernel<float><<<grid, block, 0, stream>>>(
-            static_cast<const float*>(args.logits), args.token_ids, args.vocab_size);
+            static_cast<const float*>(args.logits), args.token_ids, args.vocab_size,
     }
     return cudaGetLastError();
 }
@@ -669,7 +687,7 @@ cudaError_t LaunchTopKSampler(const TopKSamplerArgs& args, cudaStream_t stream,
         [&](const float* sorted_logits, const int32_t* sorted_indices, cudaStream_t s) {
             TopKSampleKernel<<<blocks, kThreadsPerBlock, 0, s>>>(
                 sorted_logits, sorted_indices, args.top_k, args.token_ids,
-                args.batch_size, args.vocab_size, args.seed, args.offset, args.seeds);
+                args.batch_size, args.vocab_size, args.seed, args.offset, args.seeds, args.eos_hit, args.eos_token_id);
         });
 }
 
@@ -694,11 +712,11 @@ cudaError_t LaunchTopKSamplerFast(const TopKSamplerArgs& args, cudaStream_t stre
     if (args.is_half) {
         FastTopKSampleKernel<__half><<<grid, block, 0, stream>>>(
             static_cast<const __half*>(args.logits), args.top_k, args.token_ids,
-            args.vocab_size, args.seed, args.offset, args.seeds);
+            args.vocab_size, args.seed, args.offset, args.seeds, args.eos_hit, args.eos_token_id);
     } else {
         FastTopKSampleKernel<float><<<grid, block, 0, stream>>>(
             static_cast<const float*>(args.logits), args.top_k, args.token_ids,
-            args.vocab_size, args.seed, args.offset, args.seeds);
+            args.vocab_size, args.seed, args.offset, args.seeds, args.eos_hit, args.eos_token_id);
     }
     return cudaGetLastError();
 }
@@ -718,7 +736,7 @@ cudaError_t LaunchTopPSampler(const TopPSamplerArgs& args, cudaStream_t stream,
         [&](const float* sorted_logits, const int32_t* sorted_indices, cudaStream_t s) {
             TopPParallelSampleKernel</*kSubChunked=*/true><<<grid, block, 0, s>>>(
                 sorted_logits, sorted_indices, args.top_p, args.token_ids, args.vocab_size,
-                args.seed, args.offset, args.seeds);
+                args.seed, args.offset, args.seeds, args.eos_hit, args.eos_token_id);
         });
 }
 
@@ -738,7 +756,7 @@ cudaError_t LaunchTopPSamplerTwoLevel(const TopPSamplerArgs& args, cudaStream_t 
         [&](const float* sorted_logits, const int32_t* sorted_indices, cudaStream_t s) {
             TopPParallelSampleKernel</*kSubChunked=*/false><<<grid, block, 0, s>>>(
                 sorted_logits, sorted_indices, args.top_p, args.token_ids, args.vocab_size,
-                args.seed, args.offset, args.seeds);
+                args.seed, args.offset, args.seeds, args.eos_hit, args.eos_token_id);
         });
 }
 
@@ -756,7 +774,7 @@ cudaError_t LaunchTopPSamplerLegacy(const TopPSamplerArgs& args, cudaStream_t st
         [&](const float* sorted_logits, const int32_t* sorted_indices, cudaStream_t s) {
             TopPSampleKernel<<<blocks, kThreadsPerBlock, 0, s>>>(
                 sorted_logits, sorted_indices, args.top_p, args.token_ids,
-                args.batch_size, args.vocab_size, args.seed, args.offset, args.seeds);
+                args.batch_size, args.vocab_size, args.seed, args.offset, args.seeds, args.eos_hit, args.eos_token_id);
         });
 }
 
