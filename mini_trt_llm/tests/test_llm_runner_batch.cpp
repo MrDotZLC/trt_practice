@@ -58,7 +58,8 @@ RunnerFixture MakeFixture(const std::string& engine_prefix, int32_t max_batch) {
         !fixture.directory.WriteWeights(SmallGpt2Weights())) {
         return fixture;
     }
-    EngineBuilder::Config builder_config = SmallGpt2BuilderConfig();
+    // profile 的批上限必须跟着 max_batch 走：1/1/1 的 profile 装不下批 2 的 prefill/decode
+    EngineBuilder::Config builder_config = SmallGpt2BuilderConfig(max_batch);
     EngineBuilder builder(fixture.logger, builder_config);
     const std::string prefill_path = fixture.directory.EnginePath(engine_prefix + "_prefill.engine");
     const std::string decode_path = fixture.directory.EnginePath(engine_prefix + "_decode.engine");

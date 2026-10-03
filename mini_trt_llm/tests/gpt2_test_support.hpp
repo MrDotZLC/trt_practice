@@ -179,20 +179,24 @@ inline std::map<std::string, TensorSpec> SmallGpt2Weights() {
     return tensors;
 }
 
-inline EngineBuilder::Config SmallGpt2BuilderConfig() {
+// `max_batch` 默认 1 —— 单序列用例的口径，**不改**；批量用例必须显式传更大的值。
+// 为什么要有这个参数：用例声明 `max_batch = 2` 却沿用 1/1/1 的 profile 时，批 2 的
+// prefill/decode 形状直接落在 profile 之外，`SetInputShape` 会失败 —— 表现为"批量逻辑坏了"，
+// 实际是 profile 配置不足（REQ-016 的 S1 批量用例踩过，见 review.md 的 S3 复评）。
+inline EngineBuilder::Config SmallGpt2BuilderConfig(int32_t max_batch = 1) {
     EngineBuilder::Config config;
     config.precision = Precision::FP32;
     config.min_prefill_batch = 1;
-    config.opt_prefill_batch = 1;
-    config.max_prefill_batch = 1;
+    config.opt_prefill_batch = max_batch < 2 ? max_batch : 2;
+    config.max_prefill_batch = max_batch;
     config.min_prefill_seq_len = 1;
     config.opt_prefill_seq_len = kSmallGpt2PromptTokens;
     // 上限必须覆盖"prompt + 生成长度"：无 cache 的参考路径每步都要把整段重新喂进去。
     // 用 n_positions 当上界，正好也是引擎 profile 允许的最大值。
     config.max_prefill_seq_len = kPositions;
     config.min_decode_batch = 1;
-    config.opt_decode_batch = 1;
-    config.max_decode_batch = 1;
+    config.opt_decode_batch = max_batch < 2 ? max_batch : 2;
+    config.max_decode_batch = max_batch;
     return config;
 }
 
