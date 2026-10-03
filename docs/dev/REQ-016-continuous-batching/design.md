@@ -157,6 +157,11 @@ generation 段之前，kernel 才能用一个运行时边界标量切开两条�
 接口级细节（输入契约、段边界张量、packed 与缓存行序的映射、写回与采样、profile、开关与用例）
 见 `p5_s4_interface_spec.md`。
 
+**段边界与下标纪律（2026-10-04 作者补充）**：`cu_seqlens` **每段一份、下标从 0 起**，配合**一个段边界标量**
+（context 段的序列数）；generation 段那份是退化的（每序列 1 个 token），由标量与行号推出。
+**两段的下标禁止混用** —— 任何按行/按序列的输入都按 packed 行序排列（context 行在前），
+段内下标与 packed 行下标之间只差一个 `B_ctx`，但这个差必须显式写出来。
+
 ## Resource Lifecycle
 
 | 资源 | 何时创建 | 何时释放 |
@@ -377,13 +382,13 @@ generation 段之前，kernel 才能用一个运行时边界标量切开两条�
 
 | 方案 | 说明 | 取舍 |
 |---|---|---|
-| **A. 一个混合引擎（采用，待作者确认）** | 每步一次调用，context-only / generation-only / 混合三种步共用同一张图（`context_seq_count == 0` 即纯 generation） | 直接消掉 D10 说的"每步第二次调用"的收益损失；纯 generation 步与今天的 decode 用法等价；代价是**插件内部两份 attention 实现**，且缓存输入在纯 context 步也要绑定 |
+| **A. 一个混合引擎（采用，作者 2026-10-04 确认）** | 每步一次调用，context-only / generation-only / 混合三种步共用同一张图（`context_seq_count == 0` 即纯 generation） | 直接消掉 D10 说的"每步第二次调用"的收益损失；纯 generation 步与今天的 decode 用法等价；代价是**插件内部两份 attention 实现**，且缓存输入在纯 context 步也要绑定 |
 | B. 两个引擎各自 packed | context 引擎不带 cache 输入、generation 引擎带 | 两段仍不在同一次调用里 → "选择性批处理"退化成"各自 packed"，与作者口径不符 |
 
-**决策：A（待作者确认后生效）。** 段边界是**运行时标量**，TRT 图里没有数据相关的分支，
+**决策：A（作者 2026-10-04 确认）。** 段边界是**运行时标量**，TRT 图里没有数据相关的分支，
 所以"两段分派"只能落在插件内部：一个 attention 插件读 `context_seq_count`，对边界之前的 token 走
-varlen 自注意力、之后的走分页注意力（含当前 token）。两个插件 + 图内按运行时标量切片再合并（Select/Concat）
-作为对照方案 A2 保留。
+varlen 自注意力、之后的走分页注意力（含当前 token）——**这就是 A1，作者已选定**；
+"两个插件 + 图内按运行时标量切片再合并（Select/Concat）"（A2）作为对照方案保留。
 
 **它不替代 `PagedAttentionPlugin`**：S3 回退路径继续用它（该插件只支持 decode：query seq_len 必须为 1）。
 

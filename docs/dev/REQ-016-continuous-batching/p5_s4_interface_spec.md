@@ -22,7 +22,7 @@ kernel 才能用一个运行时边界标量把两条路径切开。顺序一乱�
 
 | 不做的事 | 理由 |
 |---|---|
-| chunked prefill（把一个 prompt 切成多步） | requirement Excluded；S4 只做"两相同批"，不做"同一条序列跨步" |
+| chunked prefill（把一个 prompt 切成多步） | **出处是 requirement.md 的 Excluded 第 3 条，不是本设计的取舍**。作者 2026-10-04 提问"主流框架都支持，为什么不支持" → 这条已从"刻意不做"改为**待作者决定的范围问题**（见 §11-1）。技术代价：context 段也要读缓存（多出第三种 kernel 模式）+ 每序列 prompt 进度记账 + 与 D9 预算 / 退出判据联动；建议作为 S5 增量，S4 的 packed 契约对它是加法（每序列 token 数 ≥ 1 已成立） |
 | 抢占与换出 | requirement Excluded（块不足仍按 D9 留在队列） |
 | 服务层形态（流式 Submit/Step） | 项目定位不做服务层 |
 
@@ -65,11 +65,23 @@ kernel 才能用一个运行时边界标量把两条路径切开。顺序一乱�
 |---|---|---|
 | `input_ids` | `[T]` INT32 | context 段按序列相接；随后 generation 段每行 1 个 token |
 | `position_ids` | `[T]` INT32 | context 段第 i 条 = `0..L_i-1`；generation 段第 j 行 = 该序列当前的 `context_lens[j]`（**推进前**的值，与 S3 的 `LaunchFillPositionIds` 同源） |
-| `cu_seqlens` | `[B_total+1]` INT32 | 第 i 条序列的 token 区间 = `[cu_seqlens[i], cu_seqlens[i+1])`；generation 段的区间长度恒为 1 |
-| `context_seq_count` | `[1]` INT32 | 段边界（context 段的序列数）；`num_context_tokens = cu_seqlens[context_seq_count]` 由 kernel 自取，不需要第二个标量 |
+| `context_seq_count` | `[1]` INT32 | 段边界：context 段的序列数 `B_ctx`。**段内 token 总数 = `cu_seqlens_ctx[B_ctx]`**，generation 段的 token 总数 = `B_gen`（每序列恰好 1 个） |
+| `cu_seqlens_ctx` | `[B_ctx+1]` INT32 | **段内下标**：context 段第 j 条序列的 token 区间 = `[cu_seqlens_ctx[j], cu_seqlens_ctx[j+1])`，取值是**段内相对偏移**（都从 0 起） |
 | `block_tables` | `[B_total, W]` INT32 | 只有 generation 段会读；context 段不读（自注意力用 packed 自己的 K/V） |
 | `context_lens` | `[B_total]` INT32 | 同上，只有 generation 段读（**推进前**的值） |
 | `key_cache_{i}` / `value_cache_{i}` | 每层一段 | generation 段读分页缓存；context 段不读 |
+
+**下标纪律（2026-10-04 作者指出，必须写死）**：**每一段的序列下标独立、从 0 起，禁止跨段混用**。
+
+- 作者的原始方案是"**段边界一个标量 + 每段一份 `cu_seqlens`**"。本设计采纳；其中 generation 段那份是
+  **退化的**（每序列恰好 1 个 token），因此不单独传，由段边界与行号推出：
+  generation 段第 j 行的 token 在 packed 张量里的绝对位置 = `cu_seqlens_ctx[B_ctx] + j`。
+  若实现时需要两段共用同一段索引代码，再把退化的那份作为输入补上（不改变语义）。
+- **所有按行/按序列的输入（`block_tables` / `context_lens` / 采样参数 / `eos_hit` / 结果）都按 packed 行序排列**，
+  也就是 **context 行在前（下标 0..B_ctx-1）、generation 行在后（下标 B_ctx..B_total-1）**。
+  段内下标与 packed 行下标之间只差一个 `B_ctx`，但这个差必须**显式写出来**，不能靠"看起来对"。
+- 绝对偏移一律写成"段内偏移 + 段起点"：context = `cu_seqlens_ctx[j]`（段起点 0），
+  generation = `cu_seqlens_ctx[B_ctx] + j`。
 
 **去掉 `padding_bias`**：packed 无填充，掩码由 `cu_seqlens` 分段表达。两套图的输入契约不同 →
 S3 / S4 各自一套图（见 §7）。
@@ -82,8 +94,11 @@ S3 / S4 各自一套图（见 §7）。
    **不变量 4 的口径随之改写**：引擎（packed）行、缓存行、采样参数、结果段之间靠**显式映射数组**同源，
    不再依靠"下标天然相同"。
    *为什么不改缓存行序*：那会动 S2 的压实契约与 `AllocateSequence` 的尾部追加，代价远大于一个映射数组。
-2. **末位定位统一**：context 段与 generation 段"第 i 条序列的末位"都是 `cu_seqlens[i+1]-1` ——
-   采样前的聚集只需一条规则覆盖两段（S3 里是 `(row, L-1)` 与 decode 的逐行两种）。
+2. **末位定位（按段各写一遍，避免下标混用）**：
+   - context 段第 `j` 条（`j ∈ [0, B_ctx)`）的末位（packed 绝对位置）= `cu_seqlens_ctx[j+1] - 1`；
+   - generation 段第 `j` 行（`j ∈ [0, B_gen)`，packed 行下标 = `B_ctx + j`）的末位 = `cu_seqlens_ctx[B_ctx] + j`。
+   两条合起来才是"采样前一步把所有行的 logits 聚成 `[B_total, V]`"的完整规则 —— S3 里对应的是
+   `(row, L-1)`（padding 段）与 decode 的逐行两种；**这里同样不能只写一条就以为覆盖了两段**。
 
 ## 5. K/V 与写回
 
@@ -98,7 +113,8 @@ S3 / S4 各自一套图（见 §7）。
 ## 6. 采样与 logits
 
 - 图输出 `logits`：默认 `[T, V]`（不做图内 gather，先求简单可验证）。
-- 采样前按 `cu_seqlens[i+1]-1` 聚集出 `[B_total, V]`，行序 = packed 行序 = **context 行在前、generation 行在后**。
+- 采样前按 §4 的两条规则（context 段一段、generation 段一段，**各自用段内下标**）聚集出 `[B_total, V]`，
+  行序 = packed 行序 = **context 行在前、generation 行在后**。
 - 采样参数（top_k/top_p/seed）、随机步号（`offsets` = 该行已生成计数）、`eos_hit` 全部按 packed 行序上传；
   结果写进"按请求槽位聚集"的结果缓冲（S3 的机制不变），映射用 §4 的 `packed_row → result_slot`。
 - **可选优化（P4 量过再定）**：图内 `Gather(cu_seqlens[i+1]-1)` 直接出 `[B_total, V]`，
@@ -111,15 +127,15 @@ packed 路径是 `T · V ≈ Σ L_i · V` —— 这正是"不等长批按真实
 
 | 方案 | 说明 | 取舍 |
 |---|---|---|
-| **A. 一个混合引擎（采用）** | 每步一次调用：context-only / generation-only / 混合三种步共用同一张图；`context_seq_count == 0` 即纯 generation（context 段为空，kernel 天然跳过） | 省掉 D10 说的"每步第二次调用"；纯 generation 步与今天的 decode 用法一致；代价是插件复杂（一个插件内两份 attention 实现）与缓存输入在纯 context 步也绑定 |
+| **A. 一个混合引擎（采用，作者 2026-10-04 确认）** | 每步一次调用：context-only / generation-only / 混合三种步共用同一张图；`context_seq_count == 0` 即纯 generation（context 段为空，kernel 天然跳过） | 省掉 D10 说的"每步第二次调用"；纯 generation 步与今天的 decode 用法一致；代价是插件复杂（一个插件内两份 attention 实现）与缓存输入在纯 context 步也绑定 |
 | B. 两个引擎（各自 packed） | context 引擎不带 cache 输入、generation 引擎带 —— 但两段不在同一次调用里，"选择性批处理"退化成"各自 packed" | 保留 S3 的两段式开销；**与作者口径不符**（作者明确两者参与同一个 packed 张量） |
 
 **决策：A。** 段边界是运行时标量，图里没有数据相关的分支；把两段放进一次调用、由 attention 插件按
 `context_seq_count` 内部分派，是唯一既能满足作者口径、又不引入"空槽 / 空行"的形态。
 
-**插件形态（子决策，建议 A1）**：
+**插件形态（子决策，作者 2026-10-04 选定 A1）**：
 
-- **A1（建议）**：**一个新插件**，内部按段分派 —— context 段走 varlen 自注意力，generation 段走分页 + 自包含当前 token。
+- **A1（采用）**：**一个新插件**，内部按段分派 —— context 段走 varlen 自注意力，generation 段走分页 + 自包含当前 token。
   理由：段边界在设备端；两插件方案要在图里按运行时标量切片再合并（Select/Concat），多一层显存与出错面。
   **它不替代现有 `PagedAttentionPlugin`**：S3 回退路径仍用它。
 - A2：两个插件 + 图内按 `context_seq_count` 切片/合并。留作对照（若 A1 的 kernel 复杂度失控）。
@@ -158,12 +174,23 @@ packed 路径是 `T · V ≈ Σ L_i · V` —— 这正是"不等长批按真实
 
 ## 11. 待作者确认（进入 P3 之前）
 
-1. **requirement.md Excluded 的口径要收窄**：现在写着排除"prefill/decode 混批的调度策略"，
-   而 S4 正是"同一次前向内 mix"，需要改成——"排除 **chunked prefill**（同一条序列跨步切块）；
-   同一次前向内按段分派 kernel 不属于混批"。**这条属需求变更，由作者改或授权我改。**
-2. **design.md 的"每次引擎调用只装一种相"要改成分路径前提**：S3 padding 路径仍要求它；
-   S4 packed 路径一次装两相、由 kernel 分段（D12 的覆盖隐患在 packed 下不成立，因为 context 段只含新入批的 token）。
-3. **`p5_s3_interface_spec.md` §10 的"不重写调度"要限定**：调度**策略**不重写，
-   每步的**调用形态**从两段式变一次调用。
-4. **插件形态选 A1（单插件内部分派，建议）还是 A2（两插件 + 图内切片）**。
-5. **§4 的映射与不变量 4 口径改写**：包的映射数组成为行号同源的唯一依据 —— 确认可接受。
+**已确认（作者 2026-10-04）**：
+
+| # | 事项 | 结论 |
+|---|---|---|
+| 2 | "每次引擎调用只装一种相"改成分路径前提 | 确认：S3 padding 路径仍要求；S4 packed 路径一次装两相、由 kernel 分段 |
+| 3 | `p5_s3_interface_spec.md` §10 的"不重写调度"限定为"调度**策略**不重写" | 确认，已回填 |
+| 4 | 插件形态 | 选定 **A1**：单插件内部分派 |
+| 5 | §4 的映射 + 不变量 4 口径改写（映射数组是行号同源的唯一依据） | 确认；并采纳"段边界一个标量 + 每段一份 `cu_seqlens`"、**段内下标禁止跨段混用**（已写进 §3 的下标纪律） |
+
+**待定（唯一一条）**：
+
+1. **chunked prefill 是否纳入本 feature 的范围**：requirement.md 的 Excluded 第 3 条现在排除它，
+   但作者 2026-10-04 指出主流框架都支持。两种走法：
+   （a）维持排除，并在 Excluded 里把"混批"的口径收窄为"排除 chunked prefill；同一次前向内按段分派 kernel 不算混批"（**推荐**：S4 的交付面已经很大）；
+   （b）纳入范围 → 需要改 requirement（把 Excluded 那条拆开）+ 在 design.md 增一条 S5 里程碑
+   （context 段读缓存 + 每序列 prompt 进度 + D9 联动 + "分块与不分块逐位相同"的判据）。
+   本设计对两种走法都成立（S4 的 packed 契约对 chunked prefill 是加法）。
+
+**另有一条口径提醒**：本文件 §0 的"刻意不做"表里，chunked prefill 那行的出处已改标为
+requirement 的 Excluded（不是本设计的取舍），避免下一个人误以为是设计者的选择。

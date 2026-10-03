@@ -31,9 +31,10 @@
   用 `SmallGpt2BuilderConfig()`（`max_prefill_batch = max_decode_batch = 1`）却声明 `max_batch = 2` ——
   真机首次跑 P6 时这批用例会因 profile 形状越界而红。已改成 `SmallGpt2BuilderConfig(max_batch)`
   （默认仍是 1/1/1，单序列用例不受影响）。
-- **S4 设计待作者确认（2026-10-04）**：S4 的 P2 级设计草案已出（`p5_s4_interface_spec.md` §11），
-  其中 **requirement.md 的 Excluded 口径属需求变更**、D14 的引擎形态（一个混合引擎）与插件形态（A1/A2）
-  需要作者拍板；确认后才进 P3 复评，**在那之前不动 S4 的代码**（技能：改代码前必须有对应设计 artifact）。
+- **S4 设计已确认 4/5（2026-10-04）**：作者确认——分路径前提、`p5_s3` §10 的限定、插件形态 **A1**（单插件内部分派）、
+  映射与不变量 4 的口径改写（并采纳"段边界一个标量 + 每段一份 `cu_seqlens`、段内下标禁止跨段混用"）。
+  **唯一待定**：chunked prefill 是否纳入范围（requirement 的 Excluded 第 3 条）——两种走法与代价见
+  `p5_s4_interface_spec.md` §11-1。**确认前进 P3 复评，且不动 S4 的代码**。
 - **P4 / P7 搁置（2026-10-03）**：当前不在 GTX 1660 Ti 环境，无法取基线。按
   `phases/p4_baseline.md` 的 Dependency Missing 记 N/A；`benchmark_before.md` 写明环境恢复后
   必须补的四项测量。**批上限（`max_batch`）暂时只能取保守值并标注"待实测"**，不得写成实测结论。
@@ -48,7 +49,9 @@
 0. **S4（下一步主线）**：作者 2026-10-04 给出"选择性批处理"的口径（两相共享一个 packed 张量、
    attention 按段分派、context token 必须在前），据此已出 **P2 级设计草案**：新建
    `p5_s4_interface_spec.md`（§11 列了 5 条待确认）+ design.md 的 D13 扩充 / S4 小节 / D14。
-   **顺序**：作者确认 §11（其中 Excluded 口径属需求变更）→ S4 过 P3 复评 → 才动代码。
+   作者已确认其中 4 条（分路径前提 / §10 限定 / 插件 A1 / 映射与不变量 4 口径），
+   **只剩 chunked prefill 是否纳入范围待定**（§11-1）。
+   **顺序**：这条定下来 → S4 过 P3 复评 → 才动代码。
 1. **P5-S1（代码已落，待编译）**：改了 `llm_runner.hpp` / `llm_runner.cpp` /
    `sampler_common.hpp` / `sampler_kernels.cu`，新增 `tests/test_llm_runner_batch.cpp`。
    真机下一步：`cmake --build build -j` → 全量 `mini_trt_llm_tests` → 新增的
@@ -209,6 +212,10 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
 - 2026-10-04: **S4 出 P2 级设计草案**：作者给出"选择性批处理"的口径（两相共享 packed 张量、
   attention 按段分派、context token 在前）→ 新建 `p5_s4_interface_spec.md`，design.md 扩写
   D13 / 新增 S4 小节与 D14（引擎形态）；§11 的 5 条待作者确认后才进 P3 复评
+- 2026-10-04: **作者确认 S4 设计的 4/5 条**（分路径前提、§10 限定为"调度策略不重写"、插件 A1 单插件内部分派、
+  映射 + 不变量 4 口径改写），并采纳"段边界一个标量 + 每段一份 `cu_seqlens`、段内下标禁止跨段混用"
+  （作者指出原 §4 那句"两段第 i 条末位都是 `cu_seqlens[i+1]-1`"会诱导把段内下标当全局用，已改）。
+  唯一待定：chunked prefill 是否纳入范围（原 Excluded 第 3 条）
 - 2026-10-03: 不变量 1 / 2 / 4 落地：D6 依据注释、D8 构造期 profile 校验、行号同源显式校验
 - 2026-10-03: **P5-S2 落码**（6 个文件）：元数据缓冲按 max_batch 预分配、`NumFreeBlocks()`、
   `FreeSequence` 补"压实行 + 重建镜像"（补掉一个被掩盖的洞）、调用内归还（RAII 守卫）、
