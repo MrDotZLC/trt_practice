@@ -796,6 +796,8 @@ std::vector<int64_t> LLMRunner::Generate(const std::vector<int64_t>& input_ids,
 // 写回时覆盖它们自己的 prompt K/V（D12 的静默错）。
 std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
     const std::vector<SchedulerRequest>& requests) {
+    // 观测口每次调用从零开始：入口校验失败时也保持全 0（"上一次的统计"不会骗人）。
+    scheduler_stats_ = SchedulerStats{};
     if (!valid_) {
         MINI_TRT_LOG_ERROR("LLMRunner::RunScheduler called on an invalid runner");
         return {};
@@ -1055,6 +1057,8 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
             active.push_back(s);
         }
         next_waiting += admit_count;
+        scheduler_stats_.max_active =
+            std::max(scheduler_stats_.max_active, static_cast<int32_t>(active.size()));
 
         // 块表 / 语境长度每步重建并上传：登记与退出都改了行号（不变量 4 的"同源"就靠这一步）。
         if (kv_cache_->UploadMetadata(nullptr) != cudaSuccess) {
@@ -1101,6 +1105,10 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
                 MINI_TRT_LOG_ERROR("LLMRunner: context segment failed");
                 return {};
             }
+            // 观测口：Σ B_new 与 context 段调用次数 —— "只装新入批的行"就靠这两个量从结果侧锁定
+            // （真按整批跑，context_rows 会大于请求总数）。
+            scheduler_stats_.context_rows += new_rows;
+            scheduler_stats_.prefill_calls += 1;
             // 末位 logits 要取**每行自己的真实末位**（S_step-1 是填充位置，那里的 logits 无意义）
             const size_t elem = ElementSize(prefill_logits_half_);
             const size_t row_bytes = static_cast<size_t>(config_.vocab_size) * elem;
@@ -1159,6 +1167,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
                 MINI_TRT_LOG_ERROR("LLMRunner: failed to bind generation inputs");
                 return {};
             }
+            scheduler_stats_.decode_calls += 1;
             // position_ids 取自**推进前**的设备端语境长度，所以必须在 AppendDecodeStep 之前
             if (LaunchFillPositionIds(kv_cache_->context_lens(),
                                       static_cast<int32_t*>(d_position_.data()), generation_rows,
@@ -1223,6 +1232,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
             eos_pending_steps = 0;
         }
         ++step;
+        scheduler_stats_.steps += 1;  // 轮次计数：一条序列"提前退出"会让它明显变小
         if (static_cast<int64_t>(step) > step_limit) {
             MINI_TRT_LOG_ERROR("LLMRunner: scheduler step limit (" << step_limit << ") exceeded");
             return {};

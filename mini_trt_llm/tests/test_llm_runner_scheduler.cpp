@@ -25,20 +25,13 @@ using test_support::kHeads;
 using test_support::kLayers;
 using test_support::kVocab;
 
-// 调度用例的 profile 必须允许批 > 1：`SmallGpt2BuilderConfig()` 是 1/1/1（给单序列用例的），
-// 那种 profile 下批 2 的 prefill/decode 直接落在形状范围之外。
-// **本文件自带一份抬到 4 的配置**，不动公共 fixture（S1 的批量用例那处是另一个问题，见 STATE.md）。
+// 调度用例的 profile 必须允许批 > 1：`SmallGpt2BuilderConfig()` 的默认是 1/1/1（单序列用例的口径），
+// 那种 profile 下批 2 的 prefill/decode 直接落在形状范围之外。这里显式传批上限
+// （公共 fixture 已支持该参数，S1 的批量用例同样受益）。
 constexpr int32_t kMaxBatch = 4;
 
 EngineBuilder::Config SchedulerBuilderConfig() {
-    EngineBuilder::Config config = test_support::SmallGpt2BuilderConfig();
-    config.min_prefill_batch = 1;
-    config.opt_prefill_batch = 2;
-    config.max_prefill_batch = kMaxBatch;
-    config.min_decode_batch = 1;
-    config.opt_decode_batch = 2;
-    config.max_decode_batch = kMaxBatch;
-    return config;
+    return test_support::SmallGpt2BuilderConfig(kMaxBatch);
 }
 
 PagedKVCache::Config SchedulerCacheConfig() {
@@ -330,6 +323,34 @@ TEST(LlmRunnerSchedulerTest, SequenceRetiresAndRowCompacts) {
     EXPECT_EQ(fixture.runner->NumFreeKvBlocks(), free_before) << "跑完后块必须全部归还";
 }
 
+// 守门用例的 **runner 层同伴**（对应 p5_s3 §8 的 `ContextPassDoesNotTouchInactiveSequences`）。
+//
+// cache 层那条锁的是"写回不会碰别的行"（逐字节）；这条从**调度怎么走**的角度锁同一件事：
+// 第二条请求晚到，它入批那一步的 context 段只能装**它自己**，不能把正在 generation 的第一条
+// 也算一遍 —— 真按整批跑的话 `context_rows` 会变成 3（1 + 2）而不是 2。
+// 这正是 D12 推翻"固定槽位 + 全批定长"的理由：整批跑会把正在跑的行的 prompt K/V 覆盖掉。
+TEST(LlmRunnerSchedulerTest, ContextSegmentOnlyCoversNewRows) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    SchedulerFixture fixture = MakeSchedulerFixture("sched_ctx_rows", /*max_batch=*/2);
+    ASSERT_TRUE(fixture.ok);
+
+    std::vector<LLMRunner::SchedulerRequest> requests;
+    requests.push_back(MakeRequest({3, 4, 5, 6}, GreedyOptions(/*max_new_tokens=*/4), 0));
+    requests.push_back(MakeRequest({7, 8, 9, 10}, GreedyOptions(/*max_new_tokens=*/4), 2));
+
+    const std::vector<LLMRunner::GenerateResult> scheduled = fixture.runner->RunScheduler(requests);
+    ASSERT_EQ(scheduled.size(), requests.size());
+    const LLMRunner::SchedulerStats stats = fixture.runner->scheduler_stats();
+    std::cout << "[诊断] context_rows=" << stats.context_rows
+              << " prefill_calls=" << stats.prefill_calls << " decode_calls=" << stats.decode_calls
+              << " max_active=" << stats.max_active << "\n";
+    EXPECT_EQ(stats.context_rows, 2) << "只该写回两条各自的 prompt（整批跑会变成 3）";
+    EXPECT_EQ(stats.prefill_calls, 2) << "两次准入各一段 context";
+    EXPECT_GE(stats.decode_calls, 1) << "第一条在第二条入批前应当已经在 generation 上跑过";
+    EXPECT_EQ(stats.max_active, 2);
+    ExpectMatchesSequential(fixture.runner.get(), requests, scheduled);
+}
+
 // AC2：批内 prompt 长度不齐（右填充 + padding mask）时，每条序列的位置与语境长度都要对。
 TEST(LlmRunnerSchedulerTest, UnequalPromptLengthsInFlight) {
     MINI_TRT_SKIP_IF_NO_CUDA();
@@ -348,14 +369,14 @@ TEST(LlmRunnerSchedulerTest, UnequalPromptLengthsInFlight) {
 
 // 采到 EOS 的序列按 EOS 收口：结果与"逐条单跑"的截断口径一致，且不影响同批其它序列。
 //
-// **这条用例的局限（写在用例里，免得后人高估它）**：从公开接口看不到"退出发生在第几步"，
-// 而"与单跑逐位相同"在'下一步退出'与'跑满 max_new 再截断'两种实现下都成立（后面的 token
-// 反正被 EOS 截掉了）。所以它锁的是 EOS 路径与同批隔离，**不是**"提前退出的时刻"。
-// 要判"时刻"，需要一个可观测的步数计数器或池压力场景 —— 记在 STATE.md 待办里。
+// "提前退出"的**时刻**用观测口判：`max_batch = 1` 让第二条必须等第一条腾出位置。
+//   * 提前退出：A 在第 1 步采到 EOS、第 2 步退出 → B 第 2 步入批 → 总步数 ≈ 7（≤ 8）；
+//   * 若"跑满 max_new 再截断"：A 要占满 5 步，B 第 6 步才入批 → 总步数 ≈ 11。
+// 结果是等价的（EOS 之后的 token 都被截掉），所以**只有步数能区分这两种实现**。
 TEST(LlmRunnerSchedulerTest, EosRetiresImmediately) {
     MINI_TRT_SKIP_IF_NO_CUDA();
     // 先跑一次贪心，拿到该 prompt 的首个 token，再把它设成 EOS
-    SchedulerFixture probe = MakeSchedulerFixture("sched_eos_probe", /*max_batch=*/2);
+    SchedulerFixture probe = MakeSchedulerFixture("sched_eos_probe", /*max_batch=*/1);
     ASSERT_TRUE(probe.ok);
     const std::vector<int64_t> prompt = {3, 4, 5, 6};
     const LLMRunner::GenerateOptions options = GreedyOptions(/*max_new_tokens=*/5);
@@ -363,7 +384,7 @@ TEST(LlmRunnerSchedulerTest, EosRetiresImmediately) {
     ASSERT_FALSE(greedy.empty());
     const int32_t eos_token = static_cast<int32_t>(greedy.front());
 
-    SchedulerFixture fixture = MakeSchedulerFixture("sched_eos", /*max_batch=*/2, eos_token);
+    SchedulerFixture fixture = MakeSchedulerFixture("sched_eos", /*max_batch=*/1, eos_token);
     ASSERT_TRUE(fixture.ok);
     std::vector<LLMRunner::SchedulerRequest> requests;
     requests.push_back(MakeRequest(prompt, options, 0));                    // 第一个 token 就是 EOS
@@ -371,6 +392,11 @@ TEST(LlmRunnerSchedulerTest, EosRetiresImmediately) {
 
     const std::vector<LLMRunner::GenerateResult> scheduled = fixture.runner->RunScheduler(requests);
     ASSERT_EQ(scheduled.size(), requests.size());
+    const LLMRunner::SchedulerStats stats = fixture.runner->scheduler_stats();
+    std::cout << "[诊断] EOS 用例步数=" << stats.steps << "（提前退出应 ≤ 8；不退出则 ≈ 11）\n";
+    EXPECT_LE(stats.steps, 8) << "EOS 没有让序列提前退出（位子没腾出来，B 只能等 A 跑满）";
+    EXPECT_EQ(stats.max_active, 1) << "max_batch = 1：同时只能有一条";
+    EXPECT_EQ(stats.context_rows, 2) << "两条各 prefill 一次";
     // EOS 截断口径与 S1 一致：末尾那个 EOS 不进结果（所以这条序列的结果是空的、ok = false）
     EXPECT_TRUE(scheduled[0].tokens.empty()) << "采到 EOS 的序列不该把 EOS 交出去";
     EXPECT_FALSE(scheduled[0].ok);
@@ -460,6 +486,12 @@ TEST(LlmRunnerSchedulerTest, BatchEqualsSequentialUnderScheduling) {
 
     const std::vector<LLMRunner::GenerateResult> scheduled = fixture.runner->RunScheduler(requests);
     ASSERT_EQ(scheduled.size(), requests.size());
+    const LLMRunner::SchedulerStats stats = fixture.runner->scheduler_stats();
+    // 总闸顺带锁调度形状：每条请求恰好 prefill 一次；两批准入（arrival 0,0 / 3,3）；并发不超上限
+    EXPECT_EQ(stats.context_rows, static_cast<int32_t>(requests.size()))
+        << "每条请求只该被 context 段装一次";
+    EXPECT_EQ(stats.prefill_calls, 2) << "两批准入 = 两段 context";
+    EXPECT_LE(stats.max_active, 2) << "并发不得超过 max_batch";
     ExpectMatchesSequential(fixture.runner.get(), requests, scheduled);
 }
 

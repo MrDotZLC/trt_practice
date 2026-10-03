@@ -119,6 +119,25 @@ class LLMRunner {
     // 内部状态（活跃表、finish flag 与它的 pinned 暂存）随实现一起落地。
     std::vector<GenerateResult> RunScheduler(const std::vector<SchedulerRequest>& requests);
 
+    // ---- S3 调度的观测口（**只读**，不参与任何计算）----
+    //
+    // 为什么需要它：S3 有两条判据在公开接口上**本来不可观测**——
+    //   ① "采到 EOS 的序列在下一步就退出"：只看 token 分不出"提前退出"与"跑满 max_new 再截断"
+    //      （EOS 之后的 token 反正会被截掉）；
+    //   ② "context 段只装本步新入批的行"：runner 不暴露 KV cache，读不回 K/V 做逐位比对。
+    // 有了 `steps` 与 `context_rows`，这两条都能在 runner 层用可观测的量固定（见 test_plan.md）。
+    // 注意：这些量只反映"调度怎么走的"，**不是**性能指标——性能仍按 P4/P7 的协议测。
+    struct SchedulerStats {
+        int32_t steps = 0;          // 本次调用实际走了多少轮循环（空闲跳步只算一轮）
+        int32_t max_active = 0;     // 同时活跃的最大序列数
+        int32_t context_rows = 0;   // Σ B_new：本次调用一共写回了几行 prompt K/V
+        int32_t prefill_calls = 0;  // context 段（prefill 引擎）调用次数
+        int32_t decode_calls = 0;   // generation 段（decode 引擎）调用次数
+    };
+
+    // 上一次 RunScheduler 的统计；没跑过、或入口校验直接拒绝时全为 0（GenerateBatch 不写它）。
+    const SchedulerStats& scheduler_stats() const { return scheduler_stats_; }
+
  private:
     // ---- S3 调度的活跃表（行号 = 本步的引擎行号；退出即压实行号）----
     struct ActiveSequence {
@@ -189,6 +208,8 @@ class LLMRunner {
     DeviceBuffer d_eos_hit_;        // [max_batch] int8：设备侧 finish flag
     DeviceBuffer d_result_tokens_;  // [请求数, max_new] int32：结果按序列聚集
     PinnedBuffer host_eos_;         // finish flag 的 pinned 回读暂存
+    // 上一次 RunScheduler 的观测统计（只读出口是 scheduler_stats()）。
+    SchedulerStats scheduler_stats_;
     // 每层的 K/V 输出缓冲（prefill/decode 各自的形状不同）
     std::vector<std::unique_ptr<DeviceBuffer>> d_prefill_kv_;
     std::vector<std::unique_ptr<DeviceBuffer>> d_decode_kv_;
