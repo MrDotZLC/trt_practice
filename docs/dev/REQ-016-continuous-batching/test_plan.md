@@ -41,6 +41,8 @@ S1 没有新增单元级用例（改动集中在 runner 与采样器的接口层
 | `RejectsMixedSamplingStrategy` | 批内混策略被拒（S1 收窄） |
 | `RejectsTopKOverFastMax` | `top_k > kTopKFastMaxK` 被拒，**不出现 token = -1** |
 | `RejectsDuplicateSeqId` | `seq_id` 批内重复被拒 |
+| `FreeBlocksReturnAfterBatch`（S2） | 一次批量调用后空闲块数**回到调用前水位**（AC3） |
+| `FreeBlocksUnchangedAfterFailure`（S2） | 块不足整批拒绝后水位不变（失败路径也要归还） |
 
 ## Regression Test
 
@@ -69,7 +71,7 @@ S1 的失败路径（对应 `GenerateBatch` 的整批拒绝）：
 
 **未覆盖的失败路径**（登记，供 S2/S3 处理）：
 
-- 失败发生在**已分配部分块之后**：当前代码逐个 `FreeSequence` 归还，但**没有用例**验证"失败后空闲块数回到调用前水位"——属于 S2 的 AC3。
+- ~~失败发生在已分配部分块之后~~ **已覆盖（S2）**：`FreeBlocksUnchangedAfterFailure`；正常路径另由 `FreeBlocksReturnAfterBatch` 锁住。
 - 引擎 `Enqueue` / 采样失败时的中途退出：同样只做了归还，没有用例覆盖。
 
 ## 不变量 ↔ 代码对账
@@ -82,7 +84,7 @@ design.md 的 5 条不变量，逐条对到当前代码（2026-10-03 静态核�
 | 2 profile 归属（两引擎各只有一个 profile） | **已落地（2026-10-03）**：构造期 `check_profile_count()` 要求两个引擎各恰好 1 个 profile，否则拒绝启动（D8）。**`getNbOptimizationProfiles()` 的 API 可用性待真机编译确认** | — |
 | 3 循环内零 H2D/D2H | 静态核对通过：解码循环内只有设备侧动作（`SetInputAddress` / 填位置 kernel / enqueue / 追加 K/V / 采样），无 `cudaMemcpy*` | 用例化：P6 里加一条"解码循环内不发生同步拷贝"的检查（可用 `cudaMemcpy` 计数或代码审查 + 注释） |
 | 4 批内行号同源 | **已落地（2026-10-03）**：五处行号的清单写成注释 + 登记后显式校验 `active_seqs_[b] == seq_ids[b]`；输出侧由 AC1 的逐位对拍覆盖 | — |
-| 5 元数据缓冲指针恒定 | 属于 S2（S1 仍是"容量够则复用"） | S2 落地后加"多次调用后指针不变"的断言 |
+| 5 元数据缓冲指针恒定 | **已落地（S2，2026-10-03）**：构造期按 `max_batch` 预分配；`PagedKVCacheTest.MetadataPointersStableAcrossAllocFree` 锁住指针恒定 | — |
 
 ## Expected Result
 

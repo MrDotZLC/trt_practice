@@ -30,6 +30,9 @@ PagedKVCache::Config MakeConfig(bool is_half = false) {
     config.head_size = kHeadSize;
     config.is_half = is_half;
     config.max_blocks_per_seq = kMaxBlocksPerSeq;
+    // S2：元数据缓冲按 max_batch 预分配。本文件有多序列用例（登记两条序列），
+    // 所以显式声明容量而不是吃库里的默认值。
+    config.max_batch = 4;
     return config;
 }
 
@@ -334,6 +337,60 @@ TEST(PagedKVCacheTest, RejectsPrefillBeyondReservedTokens) {
     // 预留范围内的写入应当成功
     EXPECT_EQ(cache.WritePrefillKV(0, buffer.data(), buffer.data(), 5, nullptr),
               cudaSuccess);
+
+// S2 / 不变量 5：元数据缓冲在构造期按 max_batch 预分配，此后登记 / 释放都不得改变指针。
+// 指针一变，已经绑给引擎的地址就失效——那正是"静默读旧地址"这类问题的来源。
+TEST(PagedKVCacheTest, MetadataPointersStableAcrossAllocFree) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    PagedKVCache cache(MakeConfig());
+    ASSERT_TRUE(cache.valid());
+
+    ASSERT_TRUE(cache.AllocateSequence(/*seq_id=*/0, /*max_tokens=*/8));
+    const int32_t* tables_before = cache.block_tables();
+    const int32_t* lens_before = cache.context_lens();
+    ASSERT_NE(tables_before, nullptr);
+    ASSERT_NE(lens_before, nullptr);
+
+    cache.FreeSequence(0);
+    ASSERT_TRUE(cache.AllocateSequence(/*seq_id=*/1, /*max_tokens=*/8));
+
+    EXPECT_EQ(cache.block_tables(), tables_before) << "预分配后块表指针必须恒定";
+    EXPECT_EQ(cache.context_lens(), lens_before) << "预分配后长度指针必须恒定";
+}
+
+// S2 补的那个洞：FreeSequence 必须把幸存的行**整体前移**并重建镜像。
+// 只从 order_ 移除的话，后面的行会错位而镜像不动 —— 引擎会读到别的序列的块表，静默算错。
+// 做法：登记 3 条 → 释放中间那条 → 上传 → 直接读回设备侧镜像逐行核对。
+TEST(PagedKVCacheTest, FreeSequenceCompactsRemainingRows) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    PagedKVCache cache(MakeConfig());
+    ASSERT_TRUE(cache.valid());
+    ASSERT_TRUE(cache.AllocateSequence(/*seq_id=*/0, /*max_tokens=*/8));
+    ASSERT_TRUE(cache.AllocateSequence(/*seq_id=*/1, /*max_tokens=*/8));
+    ASSERT_TRUE(cache.AllocateSequence(/*seq_id=*/2, /*max_tokens=*/8));
+
+    std::vector<int32_t> blocks0;
+    std::vector<int32_t> blocks2;
+    ASSERT_TRUE(cache.GetBlockTable(0, &blocks0));
+    ASSERT_TRUE(cache.GetBlockTable(2, &blocks2));
+
+    cache.FreeSequence(/*seq_id=*/1);
+    ASSERT_EQ(cache.batch_size(), 2);
+    ASSERT_EQ(cache.UploadMetadata(nullptr), cudaSuccess);
+
+    const size_t width = static_cast<size_t>(kMaxBlocksPerSeq);
+    std::vector<int32_t> mirror(static_cast<size_t>(cache.batch_size()) * width, -1);
+    ASSERT_EQ(cudaMemcpy(mirror.data(), cache.block_tables(),
+                         mirror.size() * sizeof(int32_t), cudaMemcpyDeviceToHost),
+              cudaSuccess);
+
+    for (size_t i = 0; i < blocks0.size(); ++i) {
+        EXPECT_EQ(mirror[i], blocks0[i]) << "第 0 行必须仍是 seq 0 的块表";
+    }
+    for (size_t i = 0; i < blocks2.size(); ++i) {
+        EXPECT_EQ(mirror[width + i], blocks2[i]) << "seq 2 必须前移到第 1 行";
+    }
+}
 }
 
 }  // namespace mini_trt_llm

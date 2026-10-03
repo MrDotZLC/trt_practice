@@ -88,6 +88,9 @@ class LLMRunner {
     // 构造期资源（KV Cache 显存、缓冲）是否就绪。
     bool ok() const { return valid_; }
 
+    // KV 块池里还有多少块空闲。AC3 的判据依据；未就绪时返回 -1。
+    int32_t NumFreeKvBlocks() const;
+
     // 返回**新生成**的 token（不含 prompt）。
     // 约定：成功时至少返回 1 个 token，因此**返回空 vector 表示失败**，原因同时记录日志。
     std::vector<int64_t> Generate(const std::vector<int64_t>& input_ids,
@@ -152,8 +155,6 @@ class LLMRunner {
 
     // 本次请求的采样参数。放在成员里是为了让 SampleInto 不必逐层传参；
     // 每个 Generate 开头覆写，生命周期不超出该次调用。
-    // 上一次调用登记、尚未归还的序列（S1 沿用"下次调用开头释放"的形态；S2 会改成调用内归还）。
-    std::vector<int32_t> active_seqs_;
 
     int32_t options_top_k_ = 1;
     float options_top_p_ = 1.0f;

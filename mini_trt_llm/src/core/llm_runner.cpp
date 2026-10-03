@@ -19,6 +19,29 @@ namespace {
 
 size_t ElementSize(bool is_half) { return is_half ? 2u : 4u; }
 
+// 本批已登记序列的作用域守卫：**任何出口都归还**（正常结束与各条失败路径共用一条路径）。
+// 为什么不手工归还：GenerateBatch 有多条失败出口，靠人记得在每个出口 FreeSequence 早晚会漏；
+// 而漏一个就是静默泄漏——AC3（跑 N 轮后空闲块回到初始水位）会直接不成立。
+class SequenceScope {
+ public:
+    explicit SequenceScope(PagedKVCache* cache) : cache_(cache) {}
+    ~SequenceScope() {
+        for (int32_t seq_id : ids_) {
+            cache_->FreeSequence(seq_id);
+        }
+    }
+
+    SequenceScope(const SequenceScope&) = delete;
+    SequenceScope& operator=(const SequenceScope&) = delete;
+
+    void Add(int32_t seq_id) { ids_.push_back(seq_id); }
+    const std::vector<int32_t>& ids() const { return ids_; }
+
+ private:
+    PagedKVCache* cache_;
+    std::vector<int32_t> ids_;
+};
+
 }  // namespace
 LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engine,
                      std::shared_ptr<Engine> decode_engine,
@@ -120,6 +143,8 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
     cache_config.is_half = config_.is_half;
     cache_config.source_is_half = prefill_kv_half_;
     cache_config.max_blocks_per_seq = config_.max_blocks_per_seq;
+    // 元数据缓冲按 max_batch 预分配（S2）——必须与 runner 侧同源，否则批号超出的行没地方放。
+    cache_config.max_batch = config_.max_batch;
     kv_cache_ = std::make_unique<PagedKVCache>(cache_config);
     if (!kv_cache_->valid()) {
         MINI_TRT_LOG_ERROR("LLMRunner: failed to create KV cache");
@@ -132,6 +157,10 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
 }
 
 LLMRunner::~LLMRunner() = default;
+
+int32_t LLMRunner::NumFreeKvBlocks() const {
+    return kv_cache_ ? kv_cache_->NumFreeBlocks() : -1;
+}
 bool LLMRunner::ReserveBuffers(int32_t prompt_len, int32_t max_new_tokens, int32_t batch) {
     const size_t prefill_kv_elem = ElementSize(prefill_kv_half_);
     const size_t decode_kv_elem = ElementSize(decode_kv_half_);
@@ -463,26 +492,30 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
     }
 
     // ---- 2. 登记序列：按请求顺序 → 引擎第 i 行就是第 i 条请求 ----
-    // 先把上一次调用留下的序列还回去（S1 沿用既有的"下次调用开头释放"形态；
-    // 把块生命周期收敛到调用内是 S2 的事，见 STATE.md 的里程碑划分）。
-    for (int32_t id : active_seqs_) {
-        kv_cache_->FreeSequence(id);
-    }
-    active_seqs_.clear();
-
+    // D9 的完整形态：**登记之前**把总块需求算清并与空闲量比，不足则整批拒绝并报出两个数。
+    // 为什么要在登记前算：AllocateSequence 是先查后分配的，但它只知道自己那一条的需求；
+    // 到第 k 条才发现不够时前 k-1 条已经占了块——守卫会归还，但错误信息说不清全局。
+    int64_t blocks_needed = 0;
     for (int32_t b = 0; b < batch; ++b) {
-        // 先检查后分配：AllocateSequence 自己会先查空闲量再动分配器，
-        // 因此这里不会走进 BlockAllocator 的异常路径（D9）。
+        const int64_t tokens = prompt_len + requests[b].options.max_new_tokens;
+        blocks_needed += (tokens + config_.block_size - 1) / config_.block_size;
+    }
+    const int32_t blocks_free = kv_cache_->NumFreeBlocks();
+    if (blocks_needed > blocks_free) {
+        MINI_TRT_LOG_ERROR("LLMRunner: not enough KV cache blocks —— 需要 " << blocks_needed
+                           << " 块，空闲 " << blocks_free << " 块（batch = " << batch << "）");
+        return {};
+    }
+
+    // 本批已登记的序列由作用域守卫统一归还：**任何出口都归还**（正常结束与各条失败路径共用
+    // 一条路径）。AC3 要求"跑 N 轮后空闲块回到初始水位"，靠人记得在每个出口归还早晚会漏。
+    SequenceScope scope(kv_cache_);
+    for (int32_t b = 0; b < batch; ++b) {
         if (!kv_cache_->AllocateSequence(seq_ids[static_cast<size_t>(b)], prompt_len + max_new)) {
-            MINI_TRT_LOG_ERROR("LLMRunner: not enough KV cache blocks for request "
-                               << b << " (" << (prompt_len + max_new) << " tokens)");
-            for (int32_t id : active_seqs_) {
-                kv_cache_->FreeSequence(id);
-            }
-            active_seqs_.clear();
+            MINI_TRT_LOG_ERROR("LLMRunner: failed to allocate KV blocks for request " << b);
             return {};
         }
-        active_seqs_.push_back(seq_ids[static_cast<size_t>(b)]);
+        scope.Add(seq_ids[static_cast<size_t>(b)]);
     }
 
     // design.md §不变量 4（行号同源）：下列五处**必须共享同一个行号**，任何一处另立下标，
@@ -492,33 +525,25 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
     //   ③ 引擎输出 logits 的第 i 行（prefill 的 [B,S,V] 与 decode 的 [B,V]）
     //   ④ d_tokens_ 第 i 步的第 i 个元素（步优先布局 [max_new, B_max]）
     //   ⑤ 结果 results[i] ↔ seq_ids[i]
-    // 前者的前提是"登记顺序 == 请求顺序"，所以在动元数据之前显式校一次。
-    if (active_seqs_.size() != static_cast<size_t>(batch)) {
-        MINI_TRT_LOG_ERROR("LLMRunner: batch bookkeeping mismatch (" << active_seqs_.size()
-                           << " allocated vs " << batch << " requested)");
-        for (int32_t id : active_seqs_) {
-            kv_cache_->FreeSequence(id);
-        }
-        active_seqs_.clear();
-        return {};
-    }
-    for (size_t b = 0; b < active_seqs_.size(); ++b) {
-        if (active_seqs_[b] != seq_ids[b]) {
-            MINI_TRT_LOG_ERROR("LLMRunner: row index mismatch at " << b
-                               << "（登记顺序必须等于请求顺序）");
-            for (int32_t id : active_seqs_) {
-                kv_cache_->FreeSequence(id);
-            }
-            active_seqs_.clear();
+    // 前件是"登记顺序 == 请求顺序"，所以在动元数据之前显式校一次。
+    {
+        const std::vector<int32_t>& registered = scope.ids();
+        if (registered.size() != static_cast<size_t>(batch)) {
+            MINI_TRT_LOG_ERROR("LLMRunner: batch bookkeeping mismatch (" << registered.size()
+                               << " allocated vs " << batch << " requested)");
             return {};
+        }
+        for (size_t b = 0; b < registered.size(); ++b) {
+            if (registered[b] != seq_ids[b]) {
+                MINI_TRT_LOG_ERROR("LLMRunner: row index mismatch at " << b
+                                   << "（登记顺序必须等于请求顺序）");
+                return {};
+            }
         }
     }
 
     if (kv_cache_->UploadMetadata(nullptr) != cudaSuccess) {
-        for (int32_t id : active_seqs_) {
-            kv_cache_->FreeSequence(id);
-        }
-        active_seqs_.clear();
+
         return {};
     }
 
@@ -532,10 +557,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
     }
     if (!BindPrefill(flat, batch, prompt_len) || !prefill_engine_->Enqueue(nullptr)) {
         MINI_TRT_LOG_ERROR("LLMRunner: prefill failed");
-        for (int32_t id : active_seqs_) {
-            kv_cache_->FreeSequence(id);
-        }
-        active_seqs_.clear();
+
         return {};
     }
     prefill_engine_->Synchronize(nullptr);  // 每个请求一次，代价可接受
@@ -547,10 +569,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
                 d_prefill_kv_[static_cast<size_t>(layer) * 2 + 1]->data(), prompt_len,
                 nullptr) != cudaSuccess) {
             MINI_TRT_LOG_ERROR("LLMRunner: failed to write prefill K/V for layer " << layer);
-            for (int32_t id : active_seqs_) {
-                kv_cache_->FreeSequence(id);
-            }
-            active_seqs_.clear();
+
             return {};
         }
     }
@@ -601,10 +620,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
                 cudaMemcpyAsync(dst, src, row_bytes, cudaMemcpyDeviceToDevice, nullptr) !=
                     cudaSuccess) {
                 MINI_TRT_LOG_ERROR("LLMRunner: failed to gather prefill logits rows");
-                for (int32_t id : active_seqs_) {
-                    kv_cache_->FreeSequence(id);
-                }
-                active_seqs_.clear();
+
                 return {};
             }
         }
@@ -614,10 +630,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
     if (!SampleBatch(static_cast<char*>(d_tokens_.data()), /*from_prefill=*/true, batch,
                      /*offset=*/0, nullptr)) {
         MINI_TRT_LOG_ERROR("LLMRunner: sampling after prefill failed");
-        for (int32_t id : active_seqs_) {
-            kv_cache_->FreeSequence(id);
-        }
-        active_seqs_.clear();
+
         return {};
     }
 
@@ -630,10 +643,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
             static_cast<size_t>(i - 1) * static_cast<size_t>(batch_capacity_);
         if (!BindDecode(input_tokens, batch)) {
             MINI_TRT_LOG_ERROR("LLMRunner: failed to bind decode inputs at step " << i);
-            for (int32_t id : active_seqs_) {
-                kv_cache_->FreeSequence(id);
-            }
-            active_seqs_.clear();
+
             return {};
         }
         // position_ids 由设备端的 context_lens 填，避免为整数回主机。
@@ -642,10 +652,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
                                   nullptr) != cudaSuccess ||
             !decode_engine_->Enqueue(nullptr)) {
             MINI_TRT_LOG_ERROR("LLMRunner: decode failed at step " << i);
-            for (int32_t id : active_seqs_) {
-                kv_cache_->FreeSequence(id);
-            }
-            active_seqs_.clear();
+
             return {};
         }
         std::vector<const void*> keys(static_cast<size_t>(config_.num_layers));
@@ -659,10 +666,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
         // 整步只推进一次语境长度（逐层推进会被算成 n_layer 倍）。
         if (kv_cache_->AppendDecodeStep(keys, values, nullptr) != cudaSuccess) {
             MINI_TRT_LOG_ERROR("LLMRunner: failed to append decode K/V at step " << i);
-            for (int32_t id : active_seqs_) {
-                kv_cache_->FreeSequence(id);
-            }
-            active_seqs_.clear();
+
             return {};
         }
         if (!SampleBatch(static_cast<char*>(d_tokens_.data()) +
@@ -670,10 +674,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
                                  sizeof(int32_t),
                          /*from_prefill=*/false, batch, static_cast<uint64_t>(i), nullptr)) {
             MINI_TRT_LOG_ERROR("LLMRunner: sampling failed at step " << i);
-            for (int32_t id : active_seqs_) {
-                kv_cache_->FreeSequence(id);
-            }
-            active_seqs_.clear();
+
             return {};
         }
     }
@@ -686,10 +687,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
                         cudaMemcpyDeviceToHost, nullptr) != cudaSuccess ||
         cudaStreamSynchronize(nullptr) != cudaSuccess) {
         MINI_TRT_LOG_ERROR("LLMRunner: failed to fetch generated tokens");
-        for (int32_t id : active_seqs_) {
-            kv_cache_->FreeSequence(id);
-        }
-        active_seqs_.clear();
+
         return {};
     }
 

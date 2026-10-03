@@ -47,6 +47,13 @@ class PagedKVCache {
         // 这条依据以前只写在设计文档里，落到这里是因为**约束的是本类的构造期校验**
         // （见构造函数里的 max_blocks_per_seq > num_blocks 检查）。
         int32_t max_blocks_per_seq = 0;
+        // 同时存在的序列数上限（= `LLMRunner::Config::max_batch`）。
+        // **元数据缓冲按它预分配**，所以必须与 runner 侧一致；超出时直接报错而不是扩容
+        // ——扩容会让 `block_tables` 指针变化，破坏 design.md §不变量 5。
+        // 默认 4：取项目 MVP 引擎 profile 的批上限（`core/builder.hpp` 的 max_prefill_batch /
+        // max_decode_batch 默认就是 4）。**不能默认成 1**——那会让"登记第二条序列"直接失败，
+        // 而多序列是这套分页 cache 的常态用法；多备几行的代价可忽略。
+        int32_t max_batch = 4;
     };
 
     explicit PagedKVCache(const Config& config);
@@ -59,7 +66,14 @@ class PagedKVCache {
     const Config& config() const { return config_; }
 
     // 为一个序列预留 ceil(max_tokens / block_size) 个物理块，并加入批内顺序尾部。
+    // 为一个序列预留 `ceil(max_tokens / block_size)` 个物理块，并**追加到批内顺序尾部**。
+    // 只填自己那一行：元数据缓冲已在构造期按 `max_batch` 备好，这里不重建、不重分配
+    // （指针恒定，design.md §不变量 5）。批内顺序 = 引擎的行号，调用方必须按请求顺序登记。
     bool AllocateSequence(int32_t seq_id, int32_t max_tokens);
+    // 释放该序列的块，并把批内顺序里它之后的行**整体前移、重建 host 镜像**。
+    // 为什么内部就把镜像改对：只从 `order_` 移除的话，后面的行会错位而镜像不动，引擎会读到
+    // 别的序列的块表——**静默算错**。这类错在 S1 被"下次登记会整体重建"掩盖着，批内退出（S3）
+    // 一出现就会显形。设备侧由调用方随后 `UploadMetadata` 同步。
     void FreeSequence(int32_t seq_id);
 
     // 批内登记顺序：第 i 个序列对应引擎输入的第 i 行。
@@ -67,6 +81,9 @@ class PagedKVCache {
     int32_t batch_size() const { return static_cast<int32_t>(order_.size()); }
     bool GetBlockTable(int32_t seq_id, std::vector<int32_t>* blocks) const;
     int32_t SequenceLength(int32_t seq_id) const;
+
+    // 块池里还有多少块空闲。AC3 的断言依据；D9 的预算日志也用它。
+    int32_t NumFreeBlocks() const;
 
     // 交给引擎的输入指针（设备地址）。按层返回，因为插件只看每层那 4-D 的一段。
     void* key_cache(int32_t layer);

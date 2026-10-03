@@ -26,7 +26,7 @@ PagedKVCache::PagedKVCache(const Config& config)
                                                          : 0)) {
     if (config_.num_blocks <= 0 || config_.block_size <= 0 || config_.num_layers <= 0 ||
         config_.num_kv_heads <= 0 || config_.head_size <= 0 ||
-        config_.max_blocks_per_seq <= 0) {
+        config_.max_blocks_per_seq <= 0 || config_.max_batch <= 0) {
         MINI_TRT_LOG_ERROR("PagedKVCache: invalid config");
         return;
     }
@@ -45,11 +45,17 @@ PagedKVCache::PagedKVCache(const Config& config)
     key_cache_bytes_ = layer_stride_bytes_ * static_cast<size_t>(config_.num_layers);
     value_cache_bytes_ = key_cache_bytes_;
 
-    block_tables_host_.clear();
-    context_lens_host_.clear();
+    // 元数据缓冲**在构造期按 max_batch 一次备好**：此后跨请求、跨批大小都不再重分配，
+    // 指针恒定（design.md §不变量 5）。
+    // 注意 `DeviceBuffer::Allocate(0)` 的语义是**释放**，所以这里必须是正尺寸——
+    // max_batch ≥ 1 已在上面的校验里保证。
+    block_tables_host_.assign(static_cast<size_t>(config_.max_batch) *
+                                  static_cast<size_t>(config_.max_blocks_per_seq), 0);
+    context_lens_host_.assign(static_cast<size_t>(config_.max_batch), 0);
 
-    if (!block_tables_device_.Allocate(0) || !context_lens_device_.Allocate(0)) {
-        MINI_TRT_LOG_ERROR("PagedKVCache: failed to allocate metadata buffers");
+    if (!block_tables_device_.Allocate(block_tables_host_.size() * sizeof(int32_t)) ||
+        !context_lens_device_.Allocate(context_lens_host_.size() * sizeof(int32_t))) {
+        MINI_TRT_LOG_ERROR("PagedKVCache: failed to pre-allocate metadata buffers");
         return;
     }
     if (!key_cache_device_.Allocate(key_cache_bytes_) ||
@@ -81,11 +87,21 @@ bool PagedKVCache::AllocateSequence(int32_t seq_id, int32_t max_tokens) {
     if (!valid_ || max_tokens <= 0 || sequences_.count(seq_id) != 0) {
         return false;
     }
+    // 元数据缓冲按 max_batch 预分配，没有第 max_batch 行可以放 —— 直接拒绝，不扩容
+    // （扩容会让 block_tables 指针变化，破坏 §不变量 5）。
+    if (static_cast<int32_t>(order_.size()) >= config_.max_batch) {
+        MINI_TRT_LOG_ERROR("PagedKVCache: batch limit reached (" << config_.max_batch
+                           << " sequences already registered)");
+        return false;
+    }
     const int32_t blocks_needed = BlocksForTokens(max_tokens, config_.block_size);
     if (blocks_needed > config_.max_blocks_per_seq ||
         allocator_.NumFree() < static_cast<size_t>(blocks_needed)) {
         MINI_TRT_LOG_ERROR("PagedKVCache: cannot reserve " << max_tokens
-                                                          << " tokens for seq " << seq_id);
+                                                          << " tokens for seq " << seq_id
+                                                          << " (需要 " << blocks_needed
+                                                          << " 块，空闲 "
+                                                          << allocator_.NumFree() << " 块)");
         return false;
     }
     Sequence sequence;
@@ -98,29 +114,16 @@ bool PagedKVCache::AllocateSequence(int32_t seq_id, int32_t max_tokens) {
     sequences_.emplace(seq_id, std::move(sequence));
     order_.push_back(seq_id);
 
-    // 元数据缓冲按当前批大小重建（序列数很少变化，重分配比"取最大宽度"更直观）。
-    const size_t batch = order_.size();
-    block_tables_host_.assign(batch * static_cast<size_t>(config_.max_blocks_per_seq), 0);
-    context_lens_host_.assign(batch, 0);
-    if (!block_tables_device_.Allocate(block_tables_host_.size() * sizeof(int32_t)) ||
-        !context_lens_device_.Allocate(context_lens_host_.size() * sizeof(int32_t))) {
-        MINI_TRT_LOG_ERROR("PagedKVCache: failed to grow metadata buffers");
-        valid_ = false;
-        return false;
+    // 只填自己那一行：缓冲在构造期已按 max_batch 备好，这里既不重建也不重分配。
+    const size_t row = order_.size() - 1;
+    const size_t width = static_cast<size_t>(config_.max_blocks_per_seq);
+    const Sequence& stored = sequences_.at(seq_id);
+    // 整行都写：该行可能被上一轮的序列用过，尾部残留必须清掉（块表宽度是引擎契约的一部分）。
+    for (size_t i = 0; i < width; ++i) {
+        block_tables_host_[row * width + i] =
+            i < stored.blocks.size() ? stored.blocks[i] : 0;
     }
-
-    // 把每个已登记序列的块表填进 host 镜像
-    for (size_t b = 0; b < order_.size(); ++b) {
-        const auto it = sequences_.find(order_[b]);
-        if (it == sequences_.end()) {
-            continue;
-        }
-        for (size_t i = 0; i < it->second.blocks.size(); ++i) {
-            block_tables_host_[b * static_cast<size_t>(config_.max_blocks_per_seq) + i] =
-                it->second.blocks[i];
-        }
-        context_lens_host_[b] = it->second.length;
-    }
+    context_lens_host_[row] = stored.length;
     return true;
 }
 
@@ -134,6 +137,19 @@ void PagedKVCache::FreeSequence(int32_t seq_id) {
     }
     sequences_.erase(it);
     order_.erase(std::remove(order_.begin(), order_.end(), seq_id), order_.end());
+
+    // 把幸存的行整体前移、重建 host 镜像。只从 order_ 移除是不够的：order_ 是引擎的行号，
+    // 后面的行会错位而镜像不动 —— 引擎会读到**别的序列**的块表，静默算错（§不变量 4/5）。
+    // 这类错在 S1 被"下次登记会整体重建"掩盖着，批内退出（S3）一出现就会显形。
+    // 设备侧由调用方随后 UploadMetadata 同步。
+    const size_t width = static_cast<size_t>(config_.max_blocks_per_seq);
+    for (size_t b = 0; b < order_.size(); ++b) {
+        const Sequence& seq = sequences_.at(order_[b]);
+        for (size_t i = 0; i < width; ++i) {
+            block_tables_host_[b * width + i] = i < seq.blocks.size() ? seq.blocks[i] : 0;
+        }
+        context_lens_host_[b] = seq.length;
+    }
 }
 
 bool PagedKVCache::GetBlockTable(int32_t seq_id, std::vector<int32_t>* blocks) const {
@@ -148,6 +164,10 @@ bool PagedKVCache::GetBlockTable(int32_t seq_id, std::vector<int32_t>* blocks) c
 int32_t PagedKVCache::SequenceLength(int32_t seq_id) const {
     const auto it = sequences_.find(seq_id);
     return it == sequences_.end() ? -1 : it->second.length;
+}
+
+int32_t PagedKVCache::NumFreeBlocks() const {
+    return static_cast<int32_t>(allocator_.NumFree());
 }
 
 cudaError_t PagedKVCache::UploadMetadata(cudaStream_t stream) {

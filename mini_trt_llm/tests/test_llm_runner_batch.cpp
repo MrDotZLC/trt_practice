@@ -260,5 +260,49 @@ TEST(LlmRunnerBatchTest, RejectsDuplicateSeqId) {
     EXPECT_TRUE(fixture.runner->GenerateBatch(requests).empty());
 }
 
+// AC3：一次批量调用结束后，空闲块数必须回到调用前的水位（**引用相等**，不是"不低于"）。
+// S1 的"下次调用开头释放"做不到这条——最后一轮的块仍被持有；S2 改成调用内归还。
+TEST(LlmRunnerBatchTest, FreeBlocksReturnAfterBatch) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    RunnerFixture fixture = MakeFixture("batch_blocks", /*max_batch=*/2);
+    ASSERT_TRUE(fixture.ok);
+
+    const int32_t baseline = fixture.runner->NumFreeKvBlocks();
+    ASSERT_GE(baseline, 0);
+
+    std::vector<LLMRunner::GenerateRequest> requests(2);
+    requests[0].input_ids = {3, 4, 5, 6};
+    requests[0].options = GreedyOptions(kNewTokens);
+    requests[1].input_ids = {7, 8, 9, 10};
+    requests[1].options = GreedyOptions(kNewTokens);
+
+    ASSERT_EQ(fixture.runner->GenerateBatch(requests).size(), requests.size());
+    EXPECT_EQ(fixture.runner->NumFreeKvBlocks(), baseline) << "调用内必须归还本批的块";
+
+    // 再跑一轮：水位仍须回到同一个值（不是"只回一次"）。
+    ASSERT_EQ(fixture.runner->GenerateBatch(requests).size(), requests.size());
+    EXPECT_EQ(fixture.runner->NumFreeKvBlocks(), baseline);
+}
+
+// 失败路径同样必须归还：块不足导致整批拒绝时，水位不得变化。
+// max_new 取 300 是为了**与 block_size 无关地**超过池子：池 8 块，两条各需
+// ceil(304 / block_size) 块，block_size ≤ 64 时 2 × 5 = 10 > 8（16 时更大），必定触发预算拒绝。
+TEST(LlmRunnerBatchTest, FreeBlocksUnchangedAfterFailure) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    RunnerFixture fixture = MakeFixture("batch_block_fail", /*max_batch=*/2);
+    ASSERT_TRUE(fixture.ok);
+
+    const int32_t baseline = fixture.runner->NumFreeKvBlocks();
+    ASSERT_GE(baseline, 0);
+
+    std::vector<LLMRunner::GenerateRequest> requests(2);
+    for (LLMRunner::GenerateRequest& request : requests) {
+        request.input_ids = {3, 4, 5, 6};
+        request.options = GreedyOptions(300);
+    }
+    EXPECT_TRUE(fixture.runner->GenerateBatch(requests).empty()) << "块不足必须整批拒绝";
+    EXPECT_EQ(fixture.runner->NumFreeKvBlocks(), baseline) << "拒绝路径不得改变水位";
+}
+
 }  // namespace
 }  // namespace mini_trt_llm
