@@ -56,7 +56,7 @@ S1 没有新增单元级用例（改动集中在 runner 与采样器的接口层
 | `ContextSegmentOnlyCoversNewRows` | `context_rows == 2 && prefill_calls == 2`（整批跑会变成 3）—— 守门用例的 runner 层同伴 |
 | `SequenceRetiresAndRowCompacts` | 3 条 / `max_batch = 2` → 必须"退出→准入"；结果逐位等于单跑；块全归还 |
 | `UnequalPromptLengthsInFlight` | AC2：长度 4 与 6 同批（右填充），逐条与单跑逐位相同 |
-| `EosRetiresImmediately` | `max_batch = 1` + `steps ≤ 8`（不提前退出则 ≈ 11）；EOS 不进结果；同批另一条不受影响 |
+| `EosRetiresImmediately` | `max_batch = 1`，同一组请求跑两遍自校准：`steps(设 EOS) + 4 ≤ steps(不设 EOS)`（差值下界给异步回读留余量），且两遍的第二条 token 逐位相同；EOS 不进结果 |
 | `DeterminismWithArrivalSteps` | 换一组 `arrival_step`（Top-P 随机流）→ 逐条逐位相同（锁 per-row 随机步号） |
 | `BlocksReturnAtEnd` | AC3：正常路径与"重复 seq_id 整批拒绝"路径都全归还 |
 | `BatchEqualsSequentialUnderScheduling` | **总闸**：4 条 > `max_batch`、长度不齐、Top-P，全部与逐条单跑逐位相同；顺带锁 `context_rows == 请求数` / `prefill_calls == 2` / `max_active ≤ max_batch` |
