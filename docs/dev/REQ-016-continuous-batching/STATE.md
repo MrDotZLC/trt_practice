@@ -42,7 +42,9 @@
    `sampler_common.hpp` / `sampler_kernels.cu`，新增 `tests/test_llm_runner_batch.cpp`。
    真机下一步：`cmake --build build -j` → 全量 `mini_trt_llm_tests` → 新增的
    `LlmRunnerBatchTest.*`（8 条）。编译错误与用例结果都要回填本文与 `test_plan.md`（P6）。
-2. **P5-S2 / S3**：S1 编译通过后再做，不并笔提交。
+2. **P5-S2 / S3**：S1 编译通过后再做，不并笔提交。**S3 第 3 步（写回行映射）已落码、未编译**；
+   下一步是 `RunScheduler` 的调度循环（活跃表、每步重建逐行缓冲、`padding_bias` 按真实长度填、
+   finish flag 异步回读与兜底），之后是 `p5_s3_interface_spec.md` §8 的 8 条用例。
 3. 环境恢复后补 P4，再按 D10 的两种负载跑 P7。
 
 ---
@@ -70,6 +72,35 @@
 2. 真机必跑：`mini_trt_llm_tests` 全量（回归）+ `LlmRunnerBatchTest.*` 8 条。
    **块回收（AC3）的用例属于 S2**——S1 沿用"下次调用开头释放"的形态，跑到第 N 轮时最后一轮的块仍被持有。
 
+### P5-S3 第 3 步：写回行映射（**状态：已落码，未编译验证**，2026-10-04）
+
+**当前修改模块**：分页 cache 的 prefill 写回路径（`PagedKVCache` + 写回 kernel）与它的调用点。
+
+| 文件 | 实际改动 |
+|---|---|
+| `mini_trt_llm/include/mini_trt_llm/kv_cache/paged_kv_cache.hpp` | `WritePrefillKV` 加 `rows` / `row_count`（契约注释）；新增 `RowOf(seq_id)`；新增 `rows_device_` / `identity_rows_device_` |
+| `mini_trt_llm/src/kv_cache/paged_kv_cache.cpp` | 行映射校验（行号范围 + 被映射行的预留量）、映射 H2D 到常驻缓冲、只更新**被映射行**的长度；`RowOf` 实现；构造期推恒等表；`AppendDecodeKV` 复用恒等表 |
+| `mini_trt_llm/include/mini_trt_llm/kv_cache/paged_kv_cache_kernels.hpp` | `PagedKVWriteArgs`：去掉 `batch_size`，加 `rows` / `row_count` |
+| `mini_trt_llm/src/kv_cache/paged_kv_cache_kernels.cu` | 寻址改 `block_tables[rows[b] * W + position / block_size]` 与 `context_lens[rows[b]]`；元素总数按 `row_count`；launch 同步传参 |
+| `mini_trt_llm/src/core/llm_runner.cpp` | `GenerateBatch` 的 prefill 写回显式传**恒等映射**（静态批行为逐位不变，AC5 不受影响） |
+| `mini_trt_llm/tests/test_paged_kv_cache.cpp`、`tests/test_gpt2_decode_consistency.cpp` | 6 处按旧签名调用的点改成恒等映射（签名变更的机械后果，断言未动） |
+
+**为什么必须带映射**：S3 的活跃批下上下文段只装本步新入批的序列（B_new 行），而缓存批里还有正在
+generation 的行。按"缓存已登记序列数"整批写会拿源缓冲里上一轮的残留行去覆盖**别的序列自己的**
+prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`AppendDecodeStep` 的行序就等于
+`order_`，不需要映射，本步未动它。
+
+**测试方式**：本沙箱无编译器 → 只做静态自检（锚点唯一、花括号/圆括号/方括号平衡、最长行 < 200、
+关键符号成对、CRLF 无 BOM）。真机待跑：`mini_trt_llm_tests` 全量。
+
+**本步发现（不在本步范围内，未改）**：`tests/test_paged_kv_cache.cpp` 的
+`RejectsPrefillBeyondReservedTokens` 少一个收尾 `}` —— 由 P5-S2 提交 `182fff0` 引入，其后两个 TEST
+被嵌进它的函数体（括号深度 3，其余 TEST 都是 2），`mini_trt_llm_tests` 会编译不过。待作者定夺是否单独补一笔。
+
+**留给下一步的接口缺口（未改签名）**：padding 路径下每行真实 prompt 长度不同，而
+`WritePrefillKV` 只有全局 `tokens`，会把被映射行的 `context_lens` 统一推成 `tokens`；
+调度器步要按**逐行真实长度**写回，否则 decode 会从填充位置起算、并把填充位置纳入注意力。
+
 ---
 
 ## Phase History
@@ -85,6 +116,8 @@
 - 2026-10-03: P5-S1 落码（5 个文件），**未编译验证**
 - 2026-10-04: **S3 路线修正**：D12 由"固定槽位 + 全批定长"改为"**活跃批 + 压实**"——前者被证明会让上下文段把正在 generation 的行也算一遍、写回时覆盖其 prompt K/V；新增 D13（S3 padding 为生产路径、S4 packed 为默认路径）
 - 2026-10-04: **S4 并入本 feature**（打包路径，默认；`REQ-020` 曾分配后同日撤销，编号作废不复用）
+- 2026-10-04: **P5-S3 第 3 步落码**（写回行映射：`WritePrefillKV` 带 `rows`/`row_count` + `RowOf` +
+  kernel 按映射寻址 + 恒等表复用；7 个文件），**未编译验证**
 - 2026-10-03: 不变量 1 / 2 / 4 落地：D6 依据注释、D8 构造期 profile 校验、行号同源显式校验
 - 2026-10-03: **P5-S2 落码**（6 个文件）：元数据缓冲按 max_batch 预分配、`NumFreeBlocks()`、
   `FreeSequence` 补"压实行 + 重建镜像"（补掉一个被掩盖的洞）、调用内归还（RAII 守卫）、

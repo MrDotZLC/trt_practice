@@ -79,6 +79,10 @@ class PagedKVCache {
     // 批内登记顺序：第 i 个序列对应引擎输入的第 i 行。
     const std::vector<int32_t>& sequence_order() const { return order_; }
     int32_t batch_size() const { return static_cast<int32_t>(order_.size()); }
+    // 该序列当前在批内第几行（= 引擎输入的行号）；未登记时返回 -1。
+    // 写回映射的来源。**为什么是显式查询**：靠"AllocateSequence 一定追加在尾部"推出
+    // 行号是一种隐式约定，D6 的教训就是不把这种约定写进契约（p5_s3_interface_spec §3）。
+    int32_t RowOf(int32_t seq_id) const;
     bool GetBlockTable(int32_t seq_id, std::vector<int32_t>* blocks) const;
     int32_t SequenceLength(int32_t seq_id) const;
 
@@ -99,15 +103,28 @@ class PagedKVCache {
     // 每个请求开始时调一次即可；decode 每步的推进在设备端完成。
     cudaError_t UploadMetadata(cudaStream_t stream);
 
-    // 把 prefill 引擎输出的 K/V（[batch, kv_heads, tokens, head_size]）写进 cache，
-    // 并把语境长度设为 tokens——host 与设备两侧一起更新。
+    // 把 prefill 引擎输出的 K/V（[row_count, kv_heads, tokens, head_size]）写进 cache，
+    // 并把**被映射行**的语境长度设为 tokens——host 与设备两侧一起更新。
     //
-    // 设备侧那一步不能省：decode 追加的位置就是设备端 context_lens[b]；
+    // rows[i] = 引擎第 i 行 → 缓存批内第 rows[i] 行；row_count 是**本次参与 prefill 的行数**
+    // （源缓冲里真正有效的行数，不是 cache 已登记的序列数）。
+    // **契约**：rows 必须非空、row_count > 0，且每个元素落在 [0, batch_size())。
+    // rows 是 host 数组；本函数把它拷进构造期备好的常驻设备缓冲，再交给 kernel
+    // （本函数只在 prefill 段被调用，不违反"解码循环内不得有 H2D"）。
+    //
+    // **为什么必须带映射**：S3 的活跃批下，本步要 prefill 的序列只是缓存已登记序列的一个子集
+    // （B_new < 活跃序列数），按"已登记序列数"逐行写就会拿源缓冲里上一轮的残留行去覆盖
+    // **别的序列自己的** prompt K/V（静默算错，p5_s3_interface_spec §3）。
+    // 静态批（S1/S2）批内顺序 == 请求顺序，调用方传恒等映射 rows[i] = i、row_count = batch，
+    // 行为与改动前逐位相同（AC5）。
+    //
+    // 设备侧那一步不能省：decode 追加的位置就是设备端 context_lens[row]；
     // 若只更新 host 镜像，后续追加会写回位置 0，**静默覆盖 prefill 的第一个 token**。
     // 因此由本函数负责把长度推上去，而不是要求调用方记得补一次 UploadMetadata。
     // （每个请求只发生一次，不违反"解码循环内不得有 H2D"。）
     cudaError_t WritePrefillKV(int32_t layer, const void* key, const void* value,
-                              int32_t tokens, cudaStream_t stream);
+                              int32_t tokens, const int32_t* rows, int32_t row_count,
+                              cudaStream_t stream);
 
     // 追加 decode 当前 token 的**某一层** K/V（[batch, kv_heads, 1, head_size]）。
     // 只负责写数据，**不推进语境长度**——长度是"每个 token 一个"的量，
@@ -151,6 +168,12 @@ class PagedKVCache {
     std::vector<int32_t> context_lens_host_;
     DeviceBuffer block_tables_device_;
     DeviceBuffer context_lens_device_;
+    // 写回行映射的设备暂存，按 max_batch 构造期备好（指针恒定，§不变量 5）。
+    // rows_device_：调用方给的映射在本次调用内拷进来（prefill 段，不在解码循环里）；
+    // identity_rows_device_：恒等表 [0, max_batch)，构造期推一次 —— decode 追加的行序就等于
+    // 批内顺序，用它就不必在解码循环里传/拷映射（AGENTS.md §3.A.3）。
+    DeviceBuffer rows_device_;
+    DeviceBuffer identity_rows_device_;
     DeviceBuffer key_cache_device_;
     DeviceBuffer value_cache_device_;
 

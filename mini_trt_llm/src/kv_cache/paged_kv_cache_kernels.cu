@@ -22,6 +22,7 @@ __global__ void WriteKVKernel(const SrcT* __restrict__ key, const SrcT* __restri
                               DstT* __restrict__ key_cache, DstT* __restrict__ value_cache,
                               const int32_t* __restrict__ block_tables,
                               const int32_t* __restrict__ context_lens,
+                              const int32_t* __restrict__ rows,
                               int32_t kv_heads, int32_t tokens, int32_t head_size,
                               int32_t block_size, int32_t max_blocks_per_seq,
                               bool append, int64_t elements) {
@@ -32,11 +33,14 @@ __global__ void WriteKVKernel(const SrcT* __restrict__ key, const SrcT* __restri
         const int32_t t = static_cast<int32_t>(rest % tokens);
         rest /= tokens;
         const int32_t h = static_cast<int32_t>(rest % kv_heads);
-        const int32_t b = static_cast<int32_t>(rest / kv_heads);
+        const int32_t engine_row = static_cast<int32_t>(rest / kv_heads);
 
+        // 引擎行 → 缓存批内行：源张量的行序与块表的行序不同源时（S3 的活跃批）必须按映射
+        // 寻址，否则会写进**别的序列**自己的块（静默算错，见 PagedKVWriteArgs::rows）。
+        const int32_t row = rows[engine_row];
         // prefill 从 0 开始覆盖写；decode 从当前语境长度处追加。
-        const int32_t position = (append ? context_lens[b] : 0) + t;
-        const int32_t physical_block = block_tables[b * max_blocks_per_seq +
+        const int32_t position = (append ? context_lens[row] : 0) + t;
+        const int32_t physical_block = block_tables[row * max_blocks_per_seq +
                                                    position / block_size];
         const int32_t slot = position % block_size;
         const int64_t cache_offset =
@@ -63,15 +67,17 @@ __global__ void AdvanceContextLensKernel(int32_t* __restrict__ context_lens, int
 cudaError_t LaunchWriteKV(const PagedKVWriteArgs& args, cudaStream_t stream) {
     if (args.key == nullptr || args.value == nullptr || args.key_cache == nullptr ||
         args.value_cache == nullptr || args.block_tables == nullptr ||
-        args.context_lens == nullptr) {
+        args.context_lens == nullptr || args.rows == nullptr) {
         return cudaErrorInvalidValue;
     }
-    if (args.batch_size <= 0 || args.tokens <= 0 || args.num_kv_heads <= 0 ||
+    if (args.row_count <= 0 || args.tokens <= 0 || args.num_kv_heads <= 0 ||
         args.head_size <= 0 || args.block_size <= 0 || args.max_blocks_per_seq <= 0) {
         return cudaErrorInvalidValue;
     }
 
-    const int64_t elements = static_cast<int64_t>(args.batch_size) * args.tokens *
+    // 元素总数按**本次参与的行数**算：源张量只有 row_count 行是本次算出来的，
+    // 用批内已登记序列数会多写那些残留行（见 PagedKVWriteArgs::rows）。
+    const int64_t elements = static_cast<int64_t>(args.row_count) * args.tokens *
                              args.num_kv_heads * args.head_size;
     const int64_t blocks = (elements + kThreadsPerBlock - 1) / kThreadsPerBlock;
     if (blocks > 0x7fffffffLL) {
@@ -91,7 +97,7 @@ cudaError_t LaunchWriteKV(const PagedKVWriteArgs& args, cudaStream_t stream) {
         WriteKVKernel<SrcT, DstT><<<grid, kThreadsPerBlock, 0, stream>>>(
             static_cast<const SrcT*>(args.key), static_cast<const SrcT*>(args.value),
             static_cast<DstT*>(args.key_cache), static_cast<DstT*>(args.value_cache),
-            args.block_tables, args.context_lens, args.num_kv_heads, args.tokens,
+            args.block_tables, args.context_lens, args.rows, args.num_kv_heads, args.tokens,
             args.head_size, args.block_size, args.max_blocks_per_seq, args.append, elements);
     };
     if (args.source_is_half && args.is_half) {

@@ -58,6 +58,22 @@ PagedKVCache::PagedKVCache(const Config& config)
         MINI_TRT_LOG_ERROR("PagedKVCache: failed to pre-allocate metadata buffers");
         return;
     }
+    // 写回行映射的暂存：同样按 max_batch 预分配（§不变量 5）。
+    // 恒等表在这里就推到设备——decode 每步都要用它，放到解码循环里拷会引入 H2D（§不变量 3）。
+    const size_t rows_bytes = static_cast<size_t>(config_.max_batch) * sizeof(int32_t);
+    if (!rows_device_.Allocate(rows_bytes) || !identity_rows_device_.Allocate(rows_bytes)) {
+        MINI_TRT_LOG_ERROR("PagedKVCache: failed to pre-allocate row-mapping buffers");
+        return;
+    }
+    std::vector<int32_t> identity_rows(static_cast<size_t>(config_.max_batch));
+    for (int32_t i = 0; i < config_.max_batch; ++i) {
+        identity_rows[static_cast<size_t>(i)] = i;
+    }
+    if (cudaMemcpy(identity_rows_device_.data(), identity_rows.data(), rows_bytes,
+                   cudaMemcpyHostToDevice) != cudaSuccess) {
+        MINI_TRT_LOG_ERROR("PagedKVCache: failed to upload the identity row mapping");
+        return;
+    }
     if (!key_cache_device_.Allocate(key_cache_bytes_) ||
         !value_cache_device_.Allocate(value_cache_bytes_)) {
         MINI_TRT_LOG_ERROR("PagedKVCache: failed to allocate cache buffers ("
@@ -152,6 +168,15 @@ void PagedKVCache::FreeSequence(int32_t seq_id) {
     }
 }
 
+int32_t PagedKVCache::RowOf(int32_t seq_id) const {
+    for (size_t b = 0; b < order_.size(); ++b) {
+        if (order_[b] == seq_id) {
+            return static_cast<int32_t>(b);
+        }
+    }
+    return -1;
+}
+
 bool PagedKVCache::GetBlockTable(int32_t seq_id, std::vector<int32_t>* blocks) const {
     const auto it = sequences_.find(seq_id);
     if (it == sequences_.end() || blocks == nullptr) {
@@ -194,8 +219,10 @@ cudaError_t PagedKVCache::UploadMetadata(cudaStream_t stream) {
 }
 
 cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const void* value,
-                                         int32_t tokens, cudaStream_t stream) {
-    if (!valid_ || key == nullptr || value == nullptr || tokens <= 0) {
+                                         int32_t tokens, const int32_t* rows,
+                                         int32_t row_count, cudaStream_t stream) {
+    if (!valid_ || key == nullptr || value == nullptr || tokens <= 0 || rows == nullptr ||
+        row_count <= 0) {
         return cudaErrorInvalidValue;
     }
     void* cache_key = key_cache(layer);
@@ -204,7 +231,11 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
         return cudaErrorInvalidValue;
     }
     const int32_t batch = batch_size();
-    if (batch <= 0) {
+    // row_count 是**本次参与写入的行数**，它只能小于等于批内已登记的行数：
+    // 反过来意味着调用方给的映射指向了不存在的行，写进去就是踩别的序列。
+    if (batch <= 0 || row_count > batch) {
+        MINI_TRT_LOG_ERROR("PagedKVCache: row_count " << row_count
+                           << " does not fit the registered batch " << batch);
         return cudaErrorInvalidValue;
     }
     const int32_t blocks_needed = BlocksForTokens(tokens, config_.block_size);
@@ -213,16 +244,31 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
                                                           << " exceeds reserved blocks");
         return cudaErrorInvalidValue;
     }
-    // 逐序列核对预留量：块表里没被预留的位置在 host 镜像里是 0，
+    // 逐行核对：① 行号必须落在已登记范围内（越界会寻址到墙外/别的行），
+    // ② 被映射行的预留量必须够——块表里没被预留的位置在 host 镜像里是 0，
     // 越界写入会**静默写进物理块 0**（通常是别的序列的数据），必须在入口拦住。
-    for (int32_t seq_id : order_) {
-        const Sequence& sequence = sequences_.at(seq_id);
+    // 只检查被映射的行：未参与本次写入的行一个字节都不该被碰。
+    for (int32_t i = 0; i < row_count; ++i) {
+        const int32_t row = rows[i];
+        if (row < 0 || row >= batch) {
+            MINI_TRT_LOG_ERROR("PagedKVCache: row mapping out of range at " << i << " (row "
+                               << row << ", registered batch " << batch << ")");
+            return cudaErrorInvalidValue;
+        }
+        const Sequence& sequence = sequences_.at(order_[static_cast<size_t>(row)]);
         if (tokens > sequence.reserved_tokens) {
             MINI_TRT_LOG_ERROR("PagedKVCache: prefill length "
                                << tokens << " exceeds reserved "
-                               << sequence.reserved_tokens << " tokens of seq " << seq_id);
+                               << sequence.reserved_tokens << " tokens of seq "
+                               << order_[static_cast<size_t>(row)]);
             return cudaErrorInvalidValue;
         }
+    }
+    // 映射必须落到设备侧：kernel 按 rows[b] 寻址。缓冲在构造期备好，这里只拷 row_count 个 int32。
+    if (cudaMemcpyAsync(rows_device_.data(), rows,
+                        static_cast<size_t>(row_count) * sizeof(int32_t),
+                        cudaMemcpyHostToDevice, stream) != cudaSuccess) {
+        return cudaErrorInvalidValue;
     }
 
     PagedKVWriteArgs args;
@@ -232,7 +278,8 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
     args.value_cache = cache_value;
     args.block_tables = block_tables();
     args.context_lens = const_cast<int32_t*>(context_lens());
-    args.batch_size = batch;
+    args.rows = static_cast<const int32_t*>(rows_device_.data());
+    args.row_count = row_count;
     args.tokens = tokens;
     args.num_kv_heads = config_.num_kv_heads;
     args.head_size = config_.head_size;
@@ -246,10 +293,13 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
     if (err != cudaSuccess) {
         return err;
     }
-    // host 侧记账与设备侧保持一致：写完之后每个序列的有效长度就是 tokens。
-    for (size_t b = 0; b < order_.size(); ++b) {
-        context_lens_host_[b] = tokens;
-        sequences_[order_[b]].length = tokens;
+    // host 侧记账与设备侧保持一致：写完之后**被映射行**的有效长度就是 tokens。
+    // 只记这几行：未参与本次写入的行长度不变，否则会被写上不属于它的长度，
+    // 后续 UploadMetadata 把错长度推回设备 —— 与"写回覆盖"是同一类静默错。
+    for (int32_t i = 0; i < row_count; ++i) {
+        const size_t row = static_cast<size_t>(rows[i]);
+        context_lens_host_[row] = tokens;
+        sequences_[order_[row]].length = tokens;
     }
     // 立刻把长度推到设备：decode 追加的位置取自设备端 context_lens，
     // 漏掉这一步的话追加会写回位置 0（静默覆盖第一个 token）。
@@ -281,7 +331,10 @@ cudaError_t PagedKVCache::AppendDecodeKV(int32_t layer, const void* key, const v
     args.value_cache = cache_value;
     args.block_tables = block_tables();
     args.context_lens = const_cast<int32_t*>(context_lens());
-    args.batch_size = batch;
+    // decode 的行序就等于批内顺序（= order_），所以用构造期备好的恒等表：
+    // 这里每步都会被调用，另拷一份映射会让解码循环里出现 H2D（AGENTS.md §3.A.3）。
+    args.rows = static_cast<const int32_t*>(identity_rows_device_.data());
+    args.row_count = batch;
     args.tokens = 1;
     args.num_kv_heads = config_.num_kv_heads;
     args.head_size = config_.head_size;

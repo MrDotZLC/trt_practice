@@ -141,7 +141,10 @@ TEST(PagedKVCacheTest, PrefillWritesThroughBlockTable) {
     // 一旦 kernel 越界写到第 1 层，读回来就是非 0 的 K 值。
     CUDA_CHECK(cudaMemset(cache.key_cache(1), 0, cache.bytes_per_layer()));
 
+    // 行映射：两条序列的批内顺序就是登记顺序（seq 7 第 0 行、seq 3 第 1 行）
+    const std::vector<int32_t> rows = {0, 1};
     ASSERT_EQ(cache.WritePrefillKV(/*layer=*/0, d_key.data(), d_value.data(), kTokens,
+                                   rows.data(), static_cast<int32_t>(rows.size()),
                                    /*stream=*/nullptr),
               cudaSuccess);
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -210,8 +213,10 @@ TEST(PagedKVCacheTest, AppendCrossesBlockBoundaryAndAdvancesContextLens) {
                           cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_prefill_value.data(), prefill_value.data(),
                           d_prefill_value.size(), cudaMemcpyHostToDevice));
+    const std::vector<int32_t> rows = {0};  // 单序列：批内第 0 行
     ASSERT_EQ(cache.WritePrefillKV(0, d_prefill_key.data(), d_prefill_value.data(),
-                                   kPrefillTokens, nullptr),
+                                   kPrefillTokens, rows.data(),
+                                   static_cast<int32_t>(rows.size()), nullptr),
               cudaSuccess);
     // WritePrefillKV 必须自己把长度推到设备：decode 追加的位置取自设备端
     // context_lens，漏掉这一步追加会写回位置 0、静默覆盖第一个 token。
@@ -332,10 +337,13 @@ TEST(PagedKVCacheTest, RejectsPrefillBeyondReservedTokens) {
     CUDA_CHECK(cudaMemcpy(buffer.data(), data.data(), buffer.size(), cudaMemcpyHostToDevice));
 
     // 预留 5 个 token（2 块），写 7 个 → 必须失败
-    EXPECT_NE(cache.WritePrefillKV(0, buffer.data(), buffer.data(), 7, nullptr),
+    const std::vector<int32_t> rows = {0};  // 单序列：批内第 0 行
+    EXPECT_NE(cache.WritePrefillKV(0, buffer.data(), buffer.data(), 7, rows.data(),
+                                   static_cast<int32_t>(rows.size()), nullptr),
               cudaSuccess);
     // 预留范围内的写入应当成功
-    EXPECT_EQ(cache.WritePrefillKV(0, buffer.data(), buffer.data(), 5, nullptr),
+    EXPECT_EQ(cache.WritePrefillKV(0, buffer.data(), buffer.data(), 5, rows.data(),
+                                   static_cast<int32_t>(rows.size()), nullptr),
               cudaSuccess);
 
 // S2 / 不变量 5：元数据缓冲在构造期按 max_batch 预分配，此后登记 / 释放都不得改变指针。

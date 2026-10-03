@@ -571,11 +571,18 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
     prefill_engine_->Synchronize(nullptr);  // 每个请求一次，代价可接受
 
     // ---- 4. 把 prompt 的 K/V 写进分页 cache ----
+    // 静态批的批内顺序 == 登记顺序 == 请求顺序（上面显式校过），所以这里传**恒等映射**；
+    // 但**仍然显式传**：WritePrefillKV 的契约要求带映射，S3 的活跃批下 B_new 小于已登记序列数，
+    // 少了映射就会拿源缓冲里上一轮的残留行去覆盖别的序列自己的 prompt K/V。
+    std::vector<int32_t> prefill_rows(static_cast<size_t>(batch));
+    for (int32_t b = 0; b < batch; ++b) {
+        prefill_rows[static_cast<size_t>(b)] = b;
+    }
     for (int32_t layer = 0; layer < config_.num_layers; ++layer) {
         if (kv_cache_->WritePrefillKV(
                 layer, d_prefill_kv_[static_cast<size_t>(layer) * 2]->data(),
                 d_prefill_kv_[static_cast<size_t>(layer) * 2 + 1]->data(), prompt_len,
-                nullptr) != cudaSuccess) {
+                prefill_rows.data(), batch, nullptr) != cudaSuccess) {
             MINI_TRT_LOG_ERROR("LLMRunner: failed to write prefill K/V for layer " << layer);
 
             return {};

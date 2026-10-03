@@ -181,10 +181,12 @@ TEST(Gpt2DecodeConsistencyTest, DecodeStepMatchesPrefillAtSamePosition) {
     prefill.Synchronize(nullptr);
 
     // 把每层的 K/V 写进分页 cache（这是 runner 里 prefill 之后的正常动作）
+    const std::vector<int32_t> rows = {0};  // 单序列：批内第 0 行
     for (int32_t layer = 0; layer < kLayers; ++layer) {
         const void* k = d_cache_kv[static_cast<size_t>(layer) * 2]->data();
         const void* v = d_cache_kv[static_cast<size_t>(layer) * 2 + 1]->data();
-        ASSERT_EQ(cache.WritePrefillKV(layer, k, v, kCachedTokens, nullptr),
+        ASSERT_EQ(cache.WritePrefillKV(layer, k, v, kCachedTokens, rows.data(),
+                                       static_cast<int32_t>(rows.size()), nullptr),
                   cudaSuccess);
     }
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -563,10 +565,12 @@ TEST(Gpt2DecodeConsistencyTest, TwoStepDecodeMatchesPrefillAfterAppend) {
     std::vector<float> ignored_logits;
     std::vector<std::vector<float>> prompt_kv;
     ASSERT_TRUE(run_prefill(static_cast<int32_t>(prompt.size()), &ignored_logits, &prompt_kv));
+    const std::vector<int32_t> rows = {0};  // 单序列：批内第 0 行
     for (int32_t layer = 0; layer < kLayers; ++layer) {
         ASSERT_EQ(cache.WritePrefillKV(layer, kv[static_cast<size_t>(layer) * 2]->data(),
                                       kv[static_cast<size_t>(layer) * 2 + 1]->data(),
-                                      static_cast<int32_t>(prompt.size()), nullptr),
+                                      static_cast<int32_t>(prompt.size()), rows.data(),
+                                      static_cast<int32_t>(rows.size()), nullptr),
                   cudaSuccess);
     }
     CUDA_CHECK(cudaDeviceSynchronize());
