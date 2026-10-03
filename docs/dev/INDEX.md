@@ -3,6 +3,8 @@
 > 本目录是技能 `trt-inference-engineering` 规定的开发 artifact 落点（流程见 `AGENTS.md` §5）。
 > **每个目录的 `STATE.md` 是该条目状态的唯一落点**；本文件只做一览，**不复制状态数字**
 > （基线 / 产物尺寸的唯一出处仍是 `PROGRESS.md`）。
+> **下表的两列（phase / status）是"最近一次同步的快照"**：改某条目的 `STATE.md` 时同步本表；
+> 两者不一致时一律以 `STATE.md` 为准。（2026-10-03 补：REQ-016 曾因走过 Gate-A 进 P5 未同步而漂移。）
 
 ## 0. 编号规则
 
@@ -41,7 +43,7 @@
 | `REQ-013` | `REQ-013-perf-profile` | 历史 | P9-Interview | completed | decode 性能画像与可复现测量方法 |
 | `REQ-014` | `REQ-014-attention-splitk` | 历史 | P9-Interview | completed | 长上下文 attention 的上下文维切分 |
 | `REQ-015` | `REQ-015-int8-perchannel` | 历史 | P9-Interview | completed | per-channel 整网退化根因 |
-| `REQ-016` | `REQ-016-continuous-batching` | 进行中 | P3-Review | waiting-human-gate | 批量 > 1 + 每序列 K/V 与最小调度 |
+| `REQ-016` | `REQ-016-continuous-batching` | 进行中 | P5-Implementation | in-progress | 批量 > 1 + 每序列 K/V 与最小调度（S1 代码已落，未编译） |
 | `REQ-017` | `REQ-017-llm-int8-quant` | 进行中 | P3-Review | waiting-human-gate | 语言模型权重量化；KV 缓存量化另立里程碑 |
 | `REQ-018` | `REQ-018-gpt2-fp16-nan` | 进行中（bugfix） | B2-MinimalFix | waiting-human-gate | 唯一的按设计红：FP16 端到端 NaN |
 | `REQ-019` | `REQ-019-onnx-subgraph` | 进行中 | P3-Review | waiting-human-gate | 外部图子图替换；前置 = 先跑跨构建对照 |
@@ -97,7 +99,8 @@
 | `REQ-008` | 同上 | `phase4_int8_plan` + `phase4-excerpts`（从 REQ-007 的两份原文**逐字摘出**的 INT8 条目） |
 | `REQ-009` | 同上 | `phase5_development_plan` |
 | `REQ-010`~`015` | 同上 | 无（来源是迭代计划与迭代测试计划，二者仍是活文档） |
-| `REQ-016`~`019` | STATE / requirement / analysis / design | 无（进行中，尚无归档原文） |
+| `REQ-016` | STATE / requirement / analysis / design / **review** / **benchmark_before** / **test_plan**（+ `p5_s1_interface_spec.md` 作为 P5 补充） | 无（进行中，尚无归档原文） |
+| `REQ-017`~`019` | STATE / requirement / analysis / design | 无（进行中，尚无归档原文） |
 
 **执行回填明细、逐条判据状态、原始测量表**都在上表的"归档原文"里（不再单独上浮）；
 活文档里只在 `test_plan.md` 的 `Actual Result` 保留结论摘要。
