@@ -138,6 +138,14 @@ struct SchedulerRequest {
 };
 
 std::vector<GenerateResult> RunScheduler(const std::vector<SchedulerRequest>& requests);
+
+// 只读观测口（2026-10-04 补，落码时发现两条判据在公开接口上不可观测）：
+//   steps         —— 本次调用走了多少轮循环：判"EOS 是否在下一步退出"
+//   context_rows  —— Σ B_new：判"context 段是否只装本步新入批的行"
+// 其余字段（max_active / prefill_calls / decode_calls）供用例与排查使用。
+// 注意：它反映"调度怎么走的"，不是性能指标。
+struct SchedulerStats { int32_t steps, max_active, context_rows, prefill_calls, decode_calls; };
+const SchedulerStats& scheduler_stats() const;
 ```
 
 不进流式 `Submit/Step`：那是服务层形态，项目定位不做服务层；将来要接，在外面包一层即可。
@@ -163,13 +171,20 @@ std::vector<GenerateResult> RunScheduler(const std::vector<SchedulerRequest>& re
 | `SequenceRetiresAndRowCompacts` | 一条跑完 → 释放块、活跃表移除、**其余序列行号前移**（S2 的压实路径） |
 | `UnequalPromptLengthsInFlight` | 批内 prompt 长度不同（AC2），逐行位置与语境长度正确 |
 | `EosRetiresImmediately` | 采到 EOS 的序列在**下一步**就退出（不是等 `max_new`） |
-| **`ContextPassDoesNotTouchInactiveSequences`** | 只对新入批的序列跑 context 段时，**其它序列的 K/V 逐位不变**（读回比对）——直接锁住"覆盖"那个静默错 |
+| **`ContextPassDoesNotTouchInactiveSequences`** | 只对新入批的序列跑 context 段时，**其它序列的 K/V 逐位不变**——直接锁住"覆盖"那个静默错。**落点**：cache 层（runner 不暴露 cache），逐字节比对 |
+| `ContextSegmentOnlyCoversNewRows`（2026-10-04 补） | 同一条判据的 **runner 层同伴**：晚到的请求入批那一步 `context_rows == 2 && prefill_calls == 2`（整批跑会变成 3）——靠只读观测口判 |
 | `WriteBackRowsMapCorrectly` | 行映射 `rows[i]` 与 `RowOf()` 一致；映射故意错位时结果会不同（证明它真的起作用） |
 | `DeterminismWithArrivalSteps` | 同一 `arrival_step` 序列重复跑，结果逐位相同 |
 | `BlocksReturnAtEnd` | 全部结束后空闲块回到初始水位（AC3） |
 | `BatchEqualsSequentialUnderScheduling` | **AC1 在动态批下仍成立**：同一请求同 seed，无论 `arrival_step` 怎么排，token 逐位相同 |
 
 最后一条是总闸；`ContextPassDoesNotTouchInactiveSequences` 是本次路线修正的守门用例，必须在实现前想清期望值。
+
+**两条判据要靠观测口才成立（2026-10-04 落码后补）**：`EosRetiresImmediately` 的"下一步退出"与
+`ContextSegmentOnlyCoversNewRows` 的"只装新入批的行"，单看 token 结果都判不出来
+（EOS 之后的 token 反正被截掉；runner 读不回 cache）。用例用 `SchedulerStats.steps` /
+`context_rows` 固定，其中 EOS 那条用"同组请求跑两遍（设 EOS / 不设 EOS）"的**相对判据**自校准，
+避免写死步数阈值被异步回读的正常延迟判成假红。
 
 ## 9. 风险
 
