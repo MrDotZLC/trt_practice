@@ -275,12 +275,13 @@ S1/S2/S3 的 padding 路线，S4 把执行形态从"每步两次调用"改成"�
 | B4 | 块预留口径 | 照抄 S3 的 stride 口径会白占块（并发度被 D9 预算卡住） | §5 写明 packed 下按真实长度预算；并在 `p5_s3` §3 标注"按 stride 只属于 padding 路径" |
 | B5 | 采样前聚集的实现方式 | 可能去新写 kernel 或把 logits 读回主机（后者破"循环内零同步"） | §6 写明复用 S3 的**逐行 async D2D**（host 算偏移） |
 
-**C. 第二遍复评新增的两条待作者定（P1）**
+**C. 第二遍复评新增的两条 —— 作者 2026-10-04 按推荐确认（已闭环）**
 
-1. **`SchedulerStats` 的口径**：S3 的 `prefill_calls` / `decode_calls` 是"两段式"的产物，S4 每步一次调用后失去原义
-   （S3 的用例 `ContextSegmentOnlyCoversNewRows` 正是靠 `prefill_calls == 2` 锁判据）。倾向**按路径分别定义**
-   （S4 只报 `steps` / `max_active` / `context_rows` / `generation_rows`），但这是接口口径，需作者点头。
-2. **packed 引擎 profile 的 `opt` 值**：倾向 **P4 实测后定** —— 现在拍板等于把它变成隐性契约。
+1. **`SchedulerStats` 的口径**：**按路径分别定义** —— 跨路径口径 = `steps` / `max_active` / `context_rows` /
+   `generation_rows`（两条路径的用例只依赖这四个）；`prefill_calls` / `decode_calls` **仅 S3** 的两段式
+   （S4 下不读、也不去凑语义）。S3 代码已补 `generation_rows`，头文件写明这条口径。
+2. **packed 引擎 profile 的 `opt` 值**：**P4 实测后定**；实现时先用显式标注"待实测"的保守值 ——
+   现在拍板等于把它变成隐性契约。
 
 **结论**：设计裁决不变（第一遍的 PASS 仍成立）；第二遍把"文档级不一致"与"实现级缺口"补齐，
 并在 §9 补了一条直接锁 B1 的用例。

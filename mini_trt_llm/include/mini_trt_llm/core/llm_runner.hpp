@@ -127,12 +127,19 @@ class LLMRunner {
     //   ② "context 段只装本步新入批的行"：runner 不暴露 KV cache，读不回 K/V 做逐位比对。
     // 有了 `steps` 与 `context_rows`，这两条都能在 runner 层用可观测的量固定（见 test_plan.md）。
     // 注意：这些量只反映"调度怎么走的"，**不是**性能指标——性能仍按 P4/P7 的协议测。
+    //
+    // **跨路径成立的量 vs 只属于某条路径的量（2026-10-04 作者确认）**：
+    // S4 走"每步一次调用、两相共享 packed 张量"，`prefill_calls` / `decode_calls` 在 S4 下**失去原义**。
+    // 因此约定：`steps` / `max_active` / `context_rows` / `generation_rows` 是**跨路径**口径
+    // （两条路径的用例都只能依赖这四个）；`prefill_calls` / `decode_calls` **只属于 S3 的两段式**
+    // （S4 下不要读，实现 S4 时也不要去凑它们的语义）。
     struct SchedulerStats {
-        int32_t steps = 0;          // 本次调用实际走了多少轮循环（空闲跳步只算一轮）
-        int32_t max_active = 0;     // 同时活跃的最大序列数
-        int32_t context_rows = 0;   // Σ B_new：本次调用一共写回了几行 prompt K/V
-        int32_t prefill_calls = 0;  // context 段（prefill 引擎）调用次数
-        int32_t decode_calls = 0;   // generation 段（decode 引擎）调用次数
+        int32_t steps = 0;           // 跨路径：本次调用实际走了多少轮循环（空闲跳步只算一轮）
+        int32_t max_active = 0;      // 跨路径：同时活跃的最大序列数
+        int32_t context_rows = 0;    // 跨路径：Σ context 行 —— 一共写回了几行 prompt K/V
+        int32_t generation_rows = 0; // 跨路径：Σ generation 行 —— 一共喂了几行 generation token
+        int32_t prefill_calls = 0;   // **仅 S3**：context 段（prefill 引擎）调用次数
+        int32_t decode_calls = 0;    // **仅 S3**：generation 段（decode 引擎）调用次数
     };
 
     // 上一次 RunScheduler 的统计；没跑过、或入口校验直接拒绝时全为 0（GenerateBatch 不写它）。

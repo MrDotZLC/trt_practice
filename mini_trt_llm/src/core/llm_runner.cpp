@@ -1059,6 +1059,9 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
         next_waiting += admit_count;
         scheduler_stats_.max_active =
             std::max(scheduler_stats_.max_active, static_cast<int32_t>(active.size()));
+        // 跨路径口径：本步"在跑"的行数（= 生成段的行数）。S3 两段式下它等于 decode_calls 的规模，
+        // 但 S4 每步只有一次调用，只有这个量还有意义 —— 见 hpp 里 SchedulerStats 的说明。
+        scheduler_stats_.generation_rows += generation_rows;
 
         // 块表 / 语境长度每步重建并上传：登记与退出都改了行号（不变量 4 的"同源"就靠这一步）。
         if (kv_cache_->UploadMetadata(nullptr) != cudaSuccess) {

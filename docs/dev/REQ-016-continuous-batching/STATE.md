@@ -31,10 +31,11 @@
   用 `SmallGpt2BuilderConfig()`（`max_prefill_batch = max_decode_batch = 1`）却声明 `max_batch = 2` ——
   真机首次跑 P6 时这批用例会因 profile 形状越界而红。已改成 `SmallGpt2BuilderConfig(max_batch)`
   （默认仍是 1/1/1，单序列用例不受影响）。
-- **S4/S5 已过 P3 增量复评（2026-10-04）**：S4 设计经作者确认 4 条（分路径前提、`p5_s3` §10 限定、
-  插件 **A1**、映射与不变量 4 口径）+ 段内下标纪律；**chunked prefill 立项为 S5**（requirement 的
-  Included/AC 与 Excluded 已同步改口径，design.md 新增 D15）。复评结论：P0 无、P1 两条
-  （性能类判据绑真机；S5 的 P2 待补）——见 review.md 的 S4/S5 复评节。
+- **S4/S5 已过 P3 增量复评 + 第二遍复评（2026-10-04）**：S4 设计经作者确认 4 条（分路径前提、
+  `p5_s3` §10 限定、插件 **A1**、映射与不变量 4 口径）+ 段内下标纪律；**chunked prefill 立项为 S5**
+  （requirement 的 Included/AC 与 Excluded 已同步改口径，design.md 新增 D15）；第二遍复评又补了
+  5 处实现级缺口，并把 `SchedulerStats` 口径与 profile 的 `opt` 两条按推荐定案。
+  复评结论：P0 无、P1 一条（性能类判据绑真机）+ S5 的 P2 待补 —— 见 review.md。
   **S4 可在真机窗口进入实现；S5 在它自己的 P2 补齐前不开工。**
 - **P4 / P7 搁置（2026-10-03）**：当前不在 GTX 1660 Ti 环境，无法取基线。按
   `phases/p4_baseline.md` 的 Dependency Missing 记 N/A；`benchmark_before.md` 写明环境恢复后
@@ -229,6 +230,10 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
   写回/追加的源基址与设备端 `cu_seqlens`；**块预留不再需要 stride**（S4 的收益）；
   采样聚集复用 S3 的逐行 async D2D），新增用例 `PackedMetadataFollowsPackedOrder` 与两条风险。
   另新增 2 条待作者定：`SchedulerStats` 口径在 S4 下失效、profile 的 `opt` 值（建议 P4 后定）
+- 2026-10-04: **第二遍复评的两条由作者按推荐确认**：① `SchedulerStats` **按路径分别定义** ——
+  跨路径口径 = `steps` / `max_active` / `context_rows` / `generation_rows`，`prefill_calls` /
+  `decode_calls` **仅 S3**；S3 代码已补 `generation_rows` 并在头文件写明该口径（**未编译验证**）。
+  ② packed 引擎 profile 的 `opt` **P4 实测后定**（实现时先取显式标注"待实测"的保守值）
 - 2026-10-03: 不变量 1 / 2 / 4 落地：D6 依据注释、D8 构造期 profile 校验、行号同源显式校验
 - 2026-10-03: **P5-S2 落码**（6 个文件）：元数据缓冲按 max_batch 预分配、`NumFreeBlocks()`、
   `FreeSequence` 补"压实行 + 重建镜像"（补掉一个被掩盖的洞）、调用内归还（RAII 守卫）、

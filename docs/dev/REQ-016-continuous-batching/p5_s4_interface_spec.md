@@ -143,11 +143,16 @@ S3 / S4 各自一套图（见 §7）。
 - **可选优化（P4 量过再定）**：图内 `Gather` 按 §4 的末位下标直接出 `[B_total, V]`，
   显存从 `T·V` 降到 `B·V`。
 
-**观测口的口径冲突（2026-10-04 第二遍复评发现，待作者定）**：S3 落码的 `SchedulerStats` 里
+**观测口的口径（2026-10-04 第二遍复评发现 + 作者按推荐确认）**：S3 落码的 `SchedulerStats` 里
 `prefill_calls` / `decode_calls` 是"两段式"的产物；S4 **每步只有一次调用**，这两个计数失去原义
 （S3 的用例 `ContextSegmentOnlyCoversNewRows` 正是靠 `prefill_calls == 2` 锁"context 段只装新入批的行"）。
-两种处置：① 按路径分别定义（S4 只报 `steps` / `max_active` / `context_rows` / `generation_rows`）；
-② 保留名字但注明"S4 下 = 该段非空的步数"。**倾向 ①**（名字不骗人），但这是接口口径，要作者点头。
+**决定（按路径分别定义）**：
+
+- **跨路径口径**（两条路径的用例都只能依赖这四个）：`steps` / `max_active` / `context_rows` / `generation_rows`；
+- **仅 S3**：`prefill_calls` / `decode_calls` —— S4 下**不读、也不去凑它们的语义**。
+
+S3 的代码已按此补上 `generation_rows`（Σ 本步在跑的行数）并在头文件写明这条口径；
+S4 实现时只填跨路径那四个。
 
 **显存账（AC7 的实现层解释）**：padding 路径的 prefill logits 是 `B · S_max · V`（短序列被最长序列拖着），
 packed 路径是 `T · V ≈ Σ L_i · V` —— 这正是"不等长批按真实长度计费"在显存上的体现。
@@ -171,8 +176,9 @@ packed 路径是 `T · V ≈ Σ L_i · V` —— 这正是"不等长批按真实
 
 **profile**：packed 引擎的"token 维" `T ∈ [1, max_batch × max_prefill_seq_len]`，
 `B_total ≤ max_batch`，单序列长度仍受 `n_positions` 约束；`graph_version` 必须 bump 并与 S3 的两套图区分。
-**`opt`（也是 min 之外唯一还能选的值）留待 P4 实测后定**：它是"典型批 × 典型长度"，
-直接影响显存占用与调度器的最优形状区间 —— 现在写一个拍脑袋的值等于把它变成隐性契约。
+**`opt`（min 之外唯一还能选的值）：作者 2026-10-04 按推荐确认「P4 实测后定」**（不写进本设计）。
+它是"典型批 × 典型长度"，直接影响显存占用与调度器的最优形状区间 ——
+现在写一个拍脑袋的值等于把它变成隐性契约；实现 S4 时先取一个**显式标注待实测**的保守值。
 
 ## 8. 路径开关与回退（AC8）
 
@@ -232,12 +238,12 @@ packed 路径是 `T · V ≈ Σ L_i · V` —— 这正是"不等长批按真实
 **口径提醒**：本文件 §0 的"刻意不做"表里，chunked prefill 那行已改标为"立项为 S5（作者改判）"，
 避免下一个人误以为是被排除项。
 
-**第二遍复评（2026-10-04）新增两条待作者定**：
+**第二遍复评（2026-10-04）新增的两条，作者已按推荐确认（同日）**：
 
-| # | 事项 | 备选 | 倾向 |
-|---|---|---|---|
-| 6 | `SchedulerStats` 的 `prefill_calls` / `decode_calls` 在"每步一次调用"下失去原义（见 §6） | ① 按路径分别定义；② 保留名字 + 注明新义 | ①（名字不骗人） |
-| 7 | packed 引擎 profile 的 `opt` 值 | 现在定 / P4 实测后定 | **P4 实测后定**（见 §7；现在拍板等于把它变成隐性契约） |
+| # | 事项 | 结论 |
+|---|---|---|
+| 6 | `SchedulerStats` 的 `prefill_calls` / `decode_calls` 在"每步一次调用"下失去原义（见 §6） | **按路径分别定义**：跨路径口径 = `steps` / `max_active` / `context_rows` / `generation_rows`；`prefill_calls` / `decode_calls` 仅 S3。S3 代码已补 `generation_rows` |
+| 7 | packed 引擎 profile 的 `opt` 值 | **P4 实测后定**；实现时先用显式标注"待实测"的保守值（见 §7） |
 
 另外三条已在第二遍复评里**直接补进正文**（属实现级缺口，不改变设计裁决）：
 ① S3 的"元数据镜像直传"在 S4 失效 → 每步按 packed 行序重建（§3）；
