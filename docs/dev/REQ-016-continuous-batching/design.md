@@ -97,31 +97,38 @@ N 条等长请求（batch B = N）
 请求结束：归还块 与 "从批内移除" 必须同一步完成（否则块池泄漏）
 ```
 
-### S3 最小连续批（步边界进出）
+### S3 请求级调度（槽位模型，简化版 TRT-LLM 路线）
 
-状态机（每序列）：
+**路线（D12）**：槽位表 + decode 段固定形状 + 上下文/生成两段式 + 设备侧 finish flag。
+**行号 = 槽位号、终身不变** —— 不变量 4（四处行号同源）在结构上天然成立。
 
-```text
-kWaiting ──准入（先检查后分配）──→ kRunning ──EOS / 达到 max_new──→ kFinished
-   ↑                                   │
-   └──── 批满 / 块不足，留在等待队列 ←──┘（本形态不做抢占与换出）
-```
-
-一步的流程（**一步之内成员不变**）：
+状态机（每槽）：
 
 ```text
-① 退出：把上一步采样结果为 EOS / 已达上限的序列标 kFinished
-         → 归还块 + 从批内移除 + 压实行（被移除行的块表/长度/参数槽位由末行顶上）
-② 进入：从等待队列按 FCFS 取请求，逐个"先检查空闲块是否够"（D9）
-         够则登记并加入批；不够则留在队列，不进入可能抛异常的路径
-③ 执行：若本步有新入批的序列 → 先对它们单独做一次 prefill（子批内要求等长，D2=A）
-         再对批内**所有**运行中的序列做一次 decode
-④ 采样：per-sequence 参数，结果写进各自的缓冲段
+empty ──准入（先检查后分配）──→ running(context) ──首次 prefill 完成──→ running(generation)
+  ↑                                        │                                    │
+  └── 归还块、槽位标记 empty（行原地不动） ←──┴── EOS（设备侧 flag）/ 达到 max_new ──┘
+                                              （本形态不做抢占与换出）
 ```
 
-**为什么 prefill 与 decode 分两次调用**：requirement 的 Excluded 明确排除了"prefill / decode 混批"，
-而两者的输入形状不同（`[B,S]` vs `[B,1]`），同一次引擎调用装不下。因此 S3 采取"两步式"：
-一步之内先跑新入批的 prefill 子批，再跑全体 decode。代价见 §Trade-off D10 与 §Risk。
+一步的流程：
+
+```text
+① 退出：读上一步**异步回读**的 finish flag → 命中者归还块、槽位标记 empty（不搬动别的行）
+② 进入：从等待队列取 arrival_step ≤ 当前步 的请求，放入空槽；无空槽 / 块不足则留在队列（D9）
+③ 上下文段：对本步新入槽的请求跑一次 prefill（形状 [max_batch, S_step]，padding mask 生效）
+④ 生成段：对**全部 max_batch 行**跑一次 decode（形状恒定 [max_batch, 1]）
+           空槽 / 已结束行也参与计算，输出丢弃
+⑤ 采样：per-sequence 参数；采样 kernel 顺带写设备侧 finish flag
+```
+
+**为什么 prefill 与 decode 分两段**：requirement 的 Excluded 排除了"prefill / decode 混批"，
+两者的输入形状不同（`[B,S]` 与 `[B,1]`），同一次引擎调用装不下。这也正是 TRT-LLM 的
+context / generation 两段式结构——本项目已有的双引擎与它对齐。代价见 D10 与 §Risk。
+
+**空槽的安全前提**（三条，必须先用例固定）：padding mask 屏蔽空槽行；空槽 `context_lens = 0`
+（需先确认 PagedAttention 在长度 0 时的行为）；空槽块表**保留该槽上次的块表**——全 0 会指向
+物理块 0，那是别的序列的数据。细节与用例见 `p5_s3_interface_spec.md` §3 / §8。
 
 ## Resource Lifecycle
 
@@ -303,6 +310,21 @@ kWaiting ──准入（先检查后分配）──→ kRunning ──EOS / 达�
 | 元素宽度 | 缓冲按**引擎实际声明的精度**分配，cache 的"源→目标"转换在写入内核里做 | 改成 INT8 只动"声明精度 → 缓冲尺寸"这一处映射，批量逻辑不变 |
 | 图与引擎 | 改图必须 bump `graph_version`；引擎指纹不含建图代码 | ONNX 路径接入时复用同一指纹与同一 profile 校验入口 |
 
+### D12 调度期的形状策略（槽位 vs 动态 B）
+
+| 方案 | 说明 | 取舍 |
+|---|---|---|
+| **A. 槽位 + 固定形状（采用）** | 行 = 槽位号、终身不变；decode 段恒为 `[max_batch, 1]`；空槽行以 `context_lens = 0` 参与计算、输出丢弃 | **行号稳定（不变量 4 结构性成立）**、形状恒定（TRT 挑 kernel 更稳，与 TRT-LLM 的 IFB 结构一致）；代价是空槽算力 |
+| B. 动态 B + 压实 | 批大小 = 活跃序列数；每步/每次成员变化重设形状；退出时压实行 | 无空槽浪费；但行号每步可能变（要靠不变量 4 的校验兜），形状每步变 |
+
+**决策：A（2026-10-03，作者）**。理由：① 行号终身稳定，把"行号错位"这类**静默错**从结构上消掉
+（S2 补的那个洞正是这一类）；② 固定形状对小卡（sm_75）的 kernel 选择更稳；③ 空槽浪费是可量化的，
+用 P4 的两种负载裁决——若实测空槽吃掉收益，退回 B（S2 已交付的压实逻辑正是为 B 准备的）。
+
+**与完整 TRT-LLM 的差距（有意保留）**：不做 `remove_input_padding`（打包 varlen）——sm_75 上没有
+现成的 packing attention kernel，而本项目的 prefill 注意力是显式子图（`MatMul → mask → Softmax → MatMul`）。
+要用打包就得自己写 varlen prefill 插件，超出本 feature 的范围。
+
 ## Requirement Coverage
 
 | 需求条目 | 设计落点（章节） | 交付里程碑 | 验证 Phase |
@@ -311,10 +333,10 @@ kWaiting ──准入（先检查后分配）──→ kRunning ──EOS / 达�
 | Included 2：每序列独立的长度记账、位置编码推进与结果收集 | §Data Structure + §Runtime Flow（S1） | S1 | P6 |
 | Included 3：每序列独立的采样参数 | §Data Structure（`top_k[B]` / `top_p[B]`）+ §Trade-off D3 | S1 | P6 |
 | Included 4：每序列独立的 K/V 分配与回收，跨请求不泄漏 | §Resource Lifecycle + §Runtime Flow（S2） | S2 | P6 |
-| Included 5：请求级调度（静态批 → 最小连续批） | §Runtime Flow（S3 状态机 + 四步流程）+ §Trade-off D10 | S1（静态批）+ S3（连续批） | P6 |
+| Included 5：请求级调度（静态批 → 最小连续批） | §Runtime Flow（S3 槽位模型 + 五步流程）+ D10 + D12 | S1（静态批）+ S3（连续批） | P6 |
 | Included 6：批量运行 == 逐条单独运行 | §验证策略（AC1 行） | S1 | P6 |
 | AC1 数值一致性 | §验证策略（AC1 行） | S1 | P6 |
-| AC2 长度不齐 | §Runtime Flow（S3）+ §验证策略（AC2 行） | S3 | P6 |
+| AC2 长度不齐 | §Runtime Flow（S3，padding mask）+ §验证策略（AC2 行） | S3 | P6 |
 | AC3 资源回收 | §Resource Lifecycle + §Runtime Flow（S2） | S2 | P6 |
 | AC4 不回归 | §验证策略（AC4 行） | S1/S2/S3 每步 | P6 |
 | AC5 单序列语义不变 | §验证策略（AC5 行） | S1 | P6 |

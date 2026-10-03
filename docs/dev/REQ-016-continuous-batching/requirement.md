@@ -3,7 +3,7 @@
 <!--
 只描述需求：禁止出现文件名 / 类名 / 函数名 / 实现方案（技能 P0 规则）。
 事实来源：`docs/future_iterations.md` §2.3（Continuous Batching / In-Flight Batching）、
-§11 缺口 G2-3（运行时只支持批量 = 1）与 G2-4（EOS 无法在循环内早停）；
+§11 缺口 G2-3（运行时只支持批量 = 1）与 G2-4（EOS 无法在循环内早停——本轮改由"异步回读 + 步边界检查"交付）；
 计数与优先级依据：`docs/dev/INDEX.md` §1、`docs/PROGRESS.md` §6.6。
 requirement 里的模糊名词一律以 `analysis.md` 的 Terminology 为准；未定义的不得进入设计。
 -->
@@ -40,7 +40,7 @@ requirement 里的模糊名词一律以 `analysis.md` 的 Terminology 为准；�
 - prefill 分块（chunked prefill）与 prefill/decode 混批的调度策略。
 - 多流并行、CUDA Graph 捕获。
 - 服务层（HTTP / gRPC）；beam search、重复惩罚等新采样语义；温度缩放。
-- EOS 在循环内早停（缺口 G2-4，语义正确、只是多算）。
+- **循环内同步等待** EOS（G2-4 的原始约束就是"不能在循环内同步等 EOS"；异步回读 + 步边界检查属于本轮范围）。
 - 跨引擎（多模型）调度与多卡。
 
 ## Acceptance Criteria
