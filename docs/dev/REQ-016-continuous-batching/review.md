@@ -286,6 +286,18 @@ S1/S2/S3 的 padding 路线，S4 把执行形态从"每步两次调用"改成"�
 **结论**：设计裁决不变（第一遍的 PASS 仍成立）；第二遍把"文档级不一致"与"实现级缺口"补齐，
 并在 §9 补了一条直接锁 B1 的用例。
 
+### Gate-A 确认记录（S4 / S5，2026-10-04）
+
+| 待确认项 | 作者结论 | 落点 |
+|---|---|---|
+| S4 设计 5 条待确认 | 全部确认（分路径前提 / `p5_s3` §10 限定 / 插件 A1 / 映射与不变量 4 口径 / 段内下标纪律） | `p5_s4_interface_spec.md` §11；design.md S4 小节与 D14 |
+| S5（chunked prefill）是否纳入范围 | **纳入，立项为里程碑 S5**（不阻塞 S4） | requirement Included 8 / AC9；design.md D15 |
+| 第二遍复评的两条 | `SchedulerStats` **按路径分别定义**（跨路径四个量）；profile 的 `opt` **P4 实测后定** | `p5_s4_interface_spec.md` §6/§7；`SchedulerStats` 的字段注释 |
+| S4 是否开工 / 范围 | **通过；全做（含新插件与图），实机测试先搁置** | STATE.md 的 P5-S4 节与 Phase History |
+
+**P0：无。P1：一条** —— 性能类判据（AC6 / AC7 / D10 的负载对照）仍绑真机，环境不可用；
+S4 的代码按"未编译验证"记账，真机窗口的第一件事是编译（P5 Exit Gate）。
+
 ## Decision
 
 PASS（无 P0；P1 已由作者于 2026-10-03 确认，Gate-A 通过）

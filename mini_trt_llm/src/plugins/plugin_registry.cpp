@@ -1,4 +1,5 @@
 #include "mini_trt_llm/plugins/plugin_registry.hpp"
+#include "mini_trt_llm/plugins/packed_attention_plugin.hpp"
 #include "mini_trt_llm/plugins/paged_attention_plugin.hpp"
 #include "mini_trt_llm/plugins/rmsnorm_plugin.hpp"
 #include "mini_trt_llm/plugins/rope_plugin.hpp"
@@ -41,6 +42,7 @@ void PluginRegistry::RegisterAllPlugins() {
     RegisterCreator(&GetRmsNormPluginCreator());
     RegisterCreator(&GetRoPEPluginCreator());
     RegisterCreator(&GetPagedAttentionPluginCreator());
+    RegisterCreator(&GetPackedAttentionPluginCreator());
 }
 
 }  // namespace mini_trt_llm
