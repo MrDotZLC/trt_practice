@@ -395,6 +395,24 @@ varlen 自注意力、之后的走分页注意力（含当前 token）——**�
 **与图的关系**：S4 需要一张**新图**（输入是 packed 张量 + cache 输入，输出是 packed K/V + logits），
 `graph_version` 必须 bump，并与 S3 的两套图共存（AC8 的可回退）。
 
+### D15 S5 里程碑：chunked prefill（长 prompt 跨步分批）
+
+| 方案 | 说明 | 取舍 |
+|---|---|---|
+| A. 不做（原 Excluded 口径） | 长 prompt 必须在一步内送完 | 一条长 prompt 独占一步 → decode 侧尾延迟抖动；主流框架（vLLM 的 chunked prefill、TRT-LLM 的 context chunking）都提供这条能力 |
+| **B. 立项为 S5（采用，作者 2026-10-04 改判）** | 一条序列的 prompt 跨多步分批推进；每步的 chunk 与**之前已写进缓存**的 K/V 一起参与注意力 | 压住尾延迟抖动；代价：多出第三种计算模式 + 每序列 prompt 进度状态 + 与 D9 预算 / 退出判据联动 |
+
+**决策：B。** requirement 的 Included 与 AC 已同步（Included 第 8 条、AC9"分块与不分块逐位相同"）。
+
+**依赖与边界**：
+
+- **依赖 S4**：S5 不需要 S4 才能开工，但两者共用同一套 packed 输入契约；S4 先做（打包 + 段分派）能让 S5
+  只增加"context 段的 chunk 可以 < prompt 长度"与"读缓存"两件事。
+- **仍然排除**：抢占 / 换出；调度层的混批 / 分块优先级策略（例如按分块重排准入）。
+- **S5 自己的设计要解的四件事**：① context 段读缓存（第三种计算模式：query 数 > 1 且 K/V 来自缓存）；
+  ② 活跃表的 prompt 进度字段与"何时算 prefill 完成"；③ 与 D9 块预算、退出判据的联动；
+  ④ 判据：AC9 + 分块不得影响同批其它序列。
+
 ## Requirement Coverage
 
 | 需求条目 | 设计落点（章节） | 交付里程碑 | 验证 Phase |

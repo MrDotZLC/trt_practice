@@ -178,6 +178,74 @@
 **Decision（复评）**：PASS——无 P0，无新增待确认 P1；上面四处发现已回填 spec 并落码，
 真机编译与 P6 用例仍是唯一未闭环项。
 
+## S4 / S5 设计的 P3 增量复评（2026-10-04）
+
+**触发与范围**：S4（packed 混合批：一个张量装两相、attention 按段分派）的 P2 设计草案出齐
+（`p5_s4_interface_spec.md`），S5（chunked prefill）同日本作者改判立项。10-03 那版评审对应的是
+S1/S2/S3 的 padding 路线，S4 把执行形态从"每步两次调用"改成"一次调用装两相"、S5 又引入第三种
+计算模式，因此按 P3 规则逐条回答**受影响的** [P0]/[P1] 项。
+
+**一个必须点明的口径变化**：10-03 版里多数 CUDA 条目答的是"不适用（本轮不改 kernel）"——
+**S4/S5 要改 kernel（新增插件）**，所以这些项从"不适用"转为"必须回答"，本表就是它们的新答案。
+
+### 表一（增量）：受影响的 checklists 条目
+
+| Item | Level | Result | Action |
+|---|---|---|---|
+| CUDA-Kernel 边界条件 | P0 | 通过（设计层） | §3 的下标纪律 + §4 的段内/段间映射写死；实现时逐条自检（段边界、`cu_seqlens` 单调、每段 token 区间） |
+| CUDA-越界访问 | P0 | 通过（设计层） | packed 的 `T` 边界 + block table 宽度；沿用"越界立即返回、不读不写"的既有纪律（paged 插件同款） |
+| CUDA-race condition | P0 | 通过 | 两段在**同一 kernel 内**按位置区间分派，不共享写目标；两段的 K/V 写回都在图外同 stream 串行 |
+| CUDA-Synchronization | P0 | 通过 | 图内无同步；沿用 S3 的"每步重建缓冲 + 同流有序"；不引入 Event |
+| CUDA-不同 shape 覆盖测试 | P1 | 通过 | profile 的三个极端（`T=1` / 纯 context / 纯 generation）进用例 `CuSeqlensBoundaryCases` |
+| CUDA-Async API 是否正确使用 | P1 | 通过 | 与 S3 同一纪律：循环内只用 async + 同 stream 串行 |
+| CUDA-Stream 生命周期 / Event 同步 | P0 | 通过 / 不适用 | 沿用默认流；不引入 Event |
+| TRT-Plugin creator 注册 / serialize / enqueue stream | P0 | 通过（设计层） | 新插件按 `IPluginV3` 三能力拆分；注册与序列化沿用现有插件的约定 |
+| TRT-Plugin workspace 管理 | P1 | 通过 | 走 `getWorkspaceSize()`，**禁止** enqueue 内 `cudaMalloc`（AGENTS.md §3.B.3） |
+| TRT-Binding 一致性 | P0 | 通过 | §3 列了全部输入/输出；`graph_version` 必须 bump，且与 S3 的两套图区分 |
+| TRT-Tensor shape 是否明确 | P0 | 通过 | §3 的契约表（`input_ids[T]` / `position_ids[T]` / 段边界标量 / 每段 `cu_seqlens` / cache 输入） |
+| TRT-Dynamic shape profile 覆盖范围 | P0 | 通过（待实现核对） | packed 的 `T ∈ [1, max_batch × max_prefill_seq_len]`；沿用 D8 的构造期校验 |
+| TRT-CUDA stream 传递正确 | P0 | 通过 | 沿用默认流 |
+| TRT-ICudaEngine / IExecutionContext 生命周期 | P0 | 通过 | 沿用 `shared_ptr<Engine>`；S4 多一张图，不新增所有权模型 |
+| C++-API 输入输出是否明确 | P0 | 通过 | §3 + §4 的**下标纪律**（段内下标独立、禁止跨段混用、按行输入按 packed 行序） |
+| C++-RAII / Ownership / 悬空引用 | P0 | 通过 | 映射数组由 runner 持有；引擎沿用 `shared_ptr`；S3 的"预分配 + 指针恒定"不变 |
+| C++-异常路径是否释放资源 | P1 | 通过 | S4/S5 不新增异常路径；沿用 `SequenceScope` 的"任何出口都归还" |
+| C++-接口是否容易扩展 | P1 | 通过 | `prefill_mode` 开关 + 不改调用方接口（AC8）；S5 在 packed 契约上是加法 |
+| C++-Debug/Release 可编译 | P0 | 待确认 | 真机（本环境无编译器） |
+| LLM-Batch 状态是否一致 | P0 | 通过（口径改写） | 不变量 4 从"下标天然相同"改为"**显式映射数组**是唯一依据"（packed 行序 ≠ 缓存行序） |
+| LLM-Sampling 结果是否正确 | P0 | 通过 | 三段行序（packed / cache / 结果）都走映射；末位定位按段各写一遍 |
+| LLM-Scheduler 状态是否一致 | P0 | 通过 | 调度**策略**不分叉（准入 / 退出 / 压实 / D9 预算） |
+| LLM-Dynamic request 加入 / 退出是否安全 | P0 | 通过（S4）；S5 另有待办 | S5 要在活跃表加"prompt 进度"字段 → 那条属于 S5 自己的设计 |
+| LLM-Long context 是否测试 | P1 | 待确认 | 这是 S5 的动机；判据 AC9 + 真机长 prompt 场景 |
+| LLM-Memory fragmentation | P1 | 待确认 | S4/S5 改变显存占用形态（logits 由 `B·S_max·V` 变 `T·V`）→ P4 量 |
+| LLM-Batch 调度策略是否合理 | P1 | 待确认 | D10 的两种负载对照 → P4/P7；S4 的目的就是消掉"每步第二次调用"的代价 |
+| CUDA-优化是否有 benchmark 证明 | P0 | 通过（口径） | AC6 不变：先声明判别下限再 A/B；"默认用 S4"已在 D13 写明是**设计决定**、落地后仍要 A/B |
+
+### 表二（增量）：需求落点
+
+| 需求条目 | 设计落点 | 结论 |
+|---|---|---|
+| Included 7：按真实长度计费 + 两条路径（打包为默认） | `p5_s4_interface_spec.md` §3–§8 + D13 / D14 | 已落点（S4） |
+| Included 8（**新增**）：长 prompt 分块推进（S5） | design.md D15（范围 / 代价 / 依赖 / 判据）+ requirement AC9 | 已落点（**里程碑级**）；S5 自己的接口细化（P2）待补 |
+| AC7 不浪费 | S4 的 packed 计费 + §6 的显存账（`T·V` vs `B·S_max·V`）+ 用例 `PackedShortSequenceNotPenalized` | 已落点 |
+| AC8 两条路径各自成立且可回退 | §8 的 `prefill_mode` 开关（不改调用方接口）+ §9 的用例 | 已落点 |
+| AC9（**新增**）：分块与不分块逐位相同 | D15；S5 的用例待其设计细化时补 | 已落点（里程碑级） |
+
+### 复评发现（按 P2 记录，但两条与实现阶段的 P0 检查挂钩）
+
+1. **段内下标混用**（作者指出）：把两段的序列下标当成同一个 `i` 会让分派与写回错位 —— 且是**静默**错。
+   已落成 §3 的下标纪律 + §4 的按段公式；实现时必须有入口校验 + 用例 `ContextTokensPrecedeGeneration`。
+2. **packed 行序 ≠ 缓存行序**：映射数组成为行号同源的唯一依据（不变量 4 口径改写）。
+3. **`T` 的 profile 上限**：`max_batch × max_prefill_seq_len`，与 `max_batch` 必须一起校验（D8 同款入口）。
+4. **单插件内两份 attention 实现（A1）**：插件复杂度上升 → S3 路径保留为对照，A2 留作退路。
+5. **S5 尚无自己的设计**：按"改代码前必须有对应设计 artifact"，S5 开工前必须先补 P2（接口细化）。
+
+### Decision（复评）
+
+- **P0：无**（S4 设计层面）；表一 Action 列出的实现期检查项作为实现阶段的 P0 自检清单。
+- **P1（两条，需要作者确认）**：① 性能类判据（AC6 / AC7 / D10 的负载对照）仍绑真机，环境不可用；
+  ② S5 的 P2 何时补（建议排在 S4 实现之后、S5 开工之前）。
+- **结论：PASS（设计层面）**。S4 可在真机窗口进入 P5 实现；S5 的代码在它自己的 P2 补齐前不开工。
+
 ## Decision
 
 PASS（无 P0；P1 已由作者于 2026-10-03 确认，Gate-A 通过）
