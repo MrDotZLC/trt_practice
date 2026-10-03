@@ -1,90 +1,106 @@
-# P5-S3 接口细化（简化版 TensorRT-LLM 路线）
+# P5-S3 接口细化（活跃批 + padding mask）
 
 <!--
-本文件只写"接口形态与改动点"，不含产品代码。三条决策由作者 2026-10-03 定：
-① 路线 = 简化版 TensorRT-LLM（槽位 + 固定形状 + 设备侧 finish flag + 两段式）；
-② 停止判据 = EOS 驱动退出（异步回读，不违反"循环内禁止同步拷贝"）；
-③ 与完整 TRT-LLM 的差距 = 不做 remove_input_padding（打包）。
-要求：写代码前先过一遍 §10 的待确认项。
+本文件只写"接口形态与改动点"，不含产品代码。2026-10-04 整篇重写：
+路线由"槽位 + 固定全批形状"改为"**活跃批 + 压实**"（design.md D12 已同步推翻重写），
+并补齐"写回行映射"这一关键改动。S4（打包路径）另见 design.md D13 与第 10 节。
 -->
 
 ## 0. 路线声明（以及刻意不做的部分）
 
-**采用**：槽位表（slot）+ decode 段固定形状 + 上下文/生成两段式 + 设备侧 finish flag + 右填充 + padding mask。
+**采用**：批 = **本步活跃的序列**（不保留空槽；退出即压实行号）+ 上下文/生成两段式 +
+右填充 `padding_bias` + 设备侧 finish flag。
 
-**刻意不做**（逐条写清，免得下一个人以为漏了）：
+**本 feature 内的两条路径**（见 D13）：S3 交付"填充 + 掩码"路径；S4 交付"打包"路径并作为**默认**。
 
-| 不做的事 | 完整 TRT-LLM 的做法 | 本项目的理由 |
+**刻意不做**：
+
+| 不做的事 | 谁在做 | 本 feature 的理由 |
 |---|---|---|
-| `remove_input_padding`（打包成一维 + 累积长度） | 招牌优化，注意力走 varlen/packing kernel | sm_75 上没有现成的 packing attention kernel；本项目的 prefill 注意力是显式子图（`MatMul → mask → Softmax → MatMul`），要做 packing 得自己写 varlen prefill 插件。**这是与完整实现最大的差距** |
-| prefill/decode 混批（chunked prefill） | 高负载下把两者混在一批以填满算力 | requirement 明确 Excluded；本项目按 TRT-LLM 的**两段式**（context 段 + generation 段）走 |
-| 抢占与换出 | 显存不足时换出到主存 / 丢弃重算 | requirement Excluded；块不足时请求留在队列（D9） |
-| 输入打包带来的"一个请求分多步 prefill" | chunked context | 同上，属 chunked prefill |
+| prefill 与 decode **同批计算**（chunked prefill 混批） | vLLM 的 chunked prefill | requirement 明确 Excluded；本 feature 走两段式（与 TRT-LLM 的 context / generation 分相对齐） |
+| 输入打包（`remove_input_padding`） | TRT-LLM 完整版 | **属 S4**（本 feature 的里程碑，默认路径） |
+| 抢占与换出 | 大显存服务 | requirement Excluded；块不足时请求留在队列（D9） |
 
 ## 1. 已核实的既有能力（决定改动面）
 
 | 事实 | 证据 | 对 S3 的意义 |
 |---|---|---|
-| 已有**两个独立引擎** | `llm_runner` 持 prefill / decode 两个 `Engine` | 与 TRT-LLM 的 context / generation 两段式天然对齐 —— D10=A **不是**降级实现 |
-| decode 的 profile 批范围是 1/1/4 | `core/builder.hpp` | 固定形状取 `max_batch`（≤4）落在 profile 内，不需要重建引擎的 profile |
-| PagedAttention 的 batch 取自 query 的 dim 0 | `paged_attention_plugin.cu` 的 `grid.y = batch` | **空槽行也会被算到** → 必须定义空槽的安全输入（§3） |
-| prefill 的因果 mask 是常量、**没有 mask 输入** | `gpt2_model_builder.cpp`（按 `S×S` 切片） | 不等长批必须**改图**加 padding mask（D2=B） |
-| 采样参数是 per-batch 指针（k / p / seed） | `sampler_common.hpp` | 逐行缓冲已具备；S3 只需每步重填 |
-| 元数据缓冲已按 `max_batch` 预分配、指针恒定 | S2（已提交） | 槽位方案的形状恒定依赖它 |
-| 采样 kernel 目前只输出 token | `sampler_kernels.cu` | 要加**可选的 finish flag 输出** + `eos_token_id` 入参 |
+| 已有**两个独立引擎** | `llm_runner.hpp` 持 `prefill_engine_` / `decode_engine_` | 与"上下文/生成分相"天然对齐 |
+| prefill 图**没有 cache 输入** | `gpt2_model_builder.cpp` 的 cache 输入只在 `if (is_decode)` 里声明 | 它按"图内算出的 K/V"工作；S3 不改 |
+| decode 的 profile 批范围 1/1/4 | `core/builder.hpp` | 两段的批大小都落在动态范围内 |
+| PagedAttention 的 batch 取自 query 的 dim 0 | `paged_attention_plugin.cu` 的 `grid.y = batch` | 活跃批下每行都是真实序列，不存在"空行"问题 |
+| 采样参数是 per-batch 指针（k / p / seed） | `sampler_common.hpp` | 逐行缓冲已具备；S3 每步重填 |
+| 元数据缓冲已按 `max_batch` 预分配、指针恒定 | S2（已提交） | 每步重建元数据**不会触发重新分配** |
+| 采样器已支持可选 `eos_hit` 输出 + `eos_token_id` | S3 已提交的一部分 | 停止判据的设备侧来源 |
 
-## 2. 槽位模型
+## 2. 活跃批模型
 
 ```text
-SlotTable（固定 max_batch 行，行号 = 槽位号，**终身不变**）
-  每槽: seq_id / state{empty, context, generation, finished} / prompt_len / generated / max_new
-        / top_k / top_p / seed / arrival_step / 结果缓冲段
+活跃表（行号 = 本步活跃序列的序号，**每步可能变**）
+  每条: seq_id / state{context, generation} / prompt_len / generated / max_new
+        / top_k / top_p / seed / arrival_step
 
 一步 = ① retire → ② admit → ③ context → ④ generation → ⑤ sample&flag
 
-① retire: 读上一步异步回读的 finish flag；命中者标 finished
-           → 释放其块 → 槽位改 empty（**行原地不动**，不压实）
-② admit:  从等待队列取 arrival_step ≤ 当前步 的请求，找空槽放入；
-           无空槽或块不够 → 留在队列（先检查后分配，D9）
-③ context: 对本步**新放入槽**的请求跑一次 prefill（形状 [max_batch, S_step]，padding mask）
-④ generation: 对**全部 max_batch 行**跑一次 decode（形状恒定 [max_batch, 1]）
-              空槽 / finished 行也参与计算，输出丢弃
+① retire: 读上一步异步回读的 finish flag（或 generated 达上限）
+           → 释放其块、从活跃表移除 → **压实行号**（S2 的 FreeSequence 已具备该能力）
+② admit:  从等待队列取 arrival_step ≤ 当前步 的请求 → 先检查空闲块（D9）→ 追加到活跃表尾部
+③ context: **只装本步新入批的序列**，形状 [B_new, S_step]，padding_bias 按每行真实长度填
+④ generation: **只装本步处于 generation 的序列**，形状 [B_active, 1]
 ⑤ 采样：写 token，并让设备侧计算并写 finish flag
 ```
 
-**行号终身不变**是这条路线的核心收益：不变量 4（块表第 i 行 / `context_lens[i]` / 采样参数第 i 项 / 结果第 i 段同源）在结构上天然成立，不需要靠"每步小心重排"维持。
+**核心：每次引擎调用只装一种相**。decode 行不进 context 那张图；context 段落进的序列也不会被
+generation 段再算一遍（它从下一步起才参与）。
 
-## 3. 固定形状与空槽约定（**三个必须先验证的点**）
+**行号每步可能变**（退出即压实），所以逐行缓冲必须**每步重建**；不变量 4（块表第 i 行 /
+`context_lens[i]` / 采样参数第 i 项 / 结果第 i 段同源）由"每步重建 + 显式校验"来保证。
+
+## 3. 形状与写回映射（**两个必须先验证的点**）
 
 **形状**：
 
-- decode 段：**恒定** `[max_batch, 1]` —— 热路径，这是固定形状收益最大的地方。
-- context 段：`[max_batch, S_step]`，`S_step` = 本步新入槽请求的最大 prompt 长度（≤ profile 的 `max_prefill_seq_len = 512`）。context 段每个请求只跑一次，且只有新请求入槽时才发生，因此不钉死 S 也不会污染热路径。
+- context 段：`[B_new, S_step]`，`B_new` = 本步新入批的序列数，`S_step` = 其中最大的 prompt 长度（≤ profile 的 `max_prefill_seq_len = 512`）；
+- generation 段：`[B_active, 1]`，`B_active` = 本步在跑的序列数；
+- 两者都落在引擎 profile 的动态范围内；**全程不引入"填充行"**。
 
-**空槽的安全输入**（这一节的三点都要先用例固定，见 §8）：
+**写回必须带行映射**（关键）：
 
-| 项 | 约定 | 为什么 |
-|---|---|---|
-| padding mask（prefill） | 空槽行与"填充位置"一起被 mask 掉，注意力不产生输出 | 图里原本没有 mask 输入，这正是 D2=B 要加的 |
-| `context_lens = 0`（decode） | 空槽行以 0 长度参与 | **必须先确认 PagedAttention 在 `len = 0` 时的行为**：它若是"按长度循环"则天然无输出；若假设 `len ≥ 1` 则要短路 |
-| 空槽的块表 | **保留该槽上一次用过的块表**（不改成全 0） | 全 0 会指向物理块 0——那是别的序列的数据；保留旧块表 + `len = 0` 才安全 |
-| 空槽的采样参数 | 填合法值（`top_k ≥ 1`、`top_p ∈ (0,1]`、任意 seed） | 采样器会对整批计算，参数非法会越界 / 写哨兵 `-1` |
+`WritePrefillKV` 现在的行数取自"缓存已登记序列数"（`args.batch_size = order_.size()`）。S1/S2 里它恒等于引擎的 B，所以一直没暴露；活跃批下 `B_new` **小于**活跃序列数，于是：
+
+```cpp
+// rows[i] = 引擎第 i 行 → 缓存批内第 rows[i] 行
+cudaError_t WritePrefillKV(int32_t layer, const void* key, const void* value, int32_t tokens,
+                           const int32_t* rows, int32_t row_count, cudaStream_t stream);
+```
+
+kernel 里把寻址从 `block_tables[b * W + …]` 换成 `block_tables[rows[b] * W + …]`。
+
+**不改它的后果**：写回会按 `order_.size()` 逐行写，而源缓冲里只有前 `B_new` 行是本次算出来的、其余是**上一轮的残留** —— 会覆盖别的序列自己的 prompt K/V（静默算错）。
+
+**映射从哪来**：给 `PagedKVCache` 加 `int32_t RowOf(int32_t seq_id)`（显式查询某序列当前在批内第几行）。
+备选是靠"`AllocateSequence` 一定追加在尾部"推出 `rows[i] = order_.size() - B_new + i` —— 那是**隐式约定**，按 D6 的教训不再引入。
+
+**必须先验证的两个点**：
+
+1. 行映射的边界——`WritePrefillKV` 需要映射；`AppendDecodeStep` **不需要**（它的行序就等于 `order_`，即活跃表顺序）；
+2. `padding_bias` 的每行真实长度——S1/S2 全 0 即对；S3 起必须按 `prompt_len` 填 0 / -1e4，否则填充位置参与注意力。
 
 ## 4. 停止判据（设备侧 finish flag + 异步回读）
 
 ```text
-采样 kernel（可选输出）: finish_flags[b] = (token == eos_token_id) || (generated + 1 >= max_new)
+采样 kernel（可选输出）: eos_hit[b] = (token == eos_token_id)
 主机每步: cudaMemcpyAsync(B 字节 → pinned) + cudaStreamQuery 轮询
           未落地 → 把退出判定延后一步；连续 N 步未落地则强制同步一次（兜底）
+退出条件: eos_hit[b] == 1  或  generated + 1 >= max_new（后者主机侧就能判，不需要回读）
 ```
 
-- **与硬约束的关系**：用的是**异步拷贝 + 步边界检查**，不是"循环内同步等待"——不违反 requirement 里"解码循环内禁止 H2D/D2H 同步拷贝"。
-- **代价**：每步 B 字节的拷贝 + 一次轮询；收益是真正的 EOS 驱动退出（短请求立刻让位）。
-- **兜底**：若回读长期不落地，退化为"按 `max_new` 退出"——即 S1 的行为，功能不受影响，只是少赚一点。
+- **与硬约束的关系**：用的是**异步拷贝 + 步边界检查**，不是"循环内同步等待" —— 不违反 requirement 里"解码循环内禁止 H2D/D2H 同步拷贝"。
+- **兜底**：回读长期不落地时退化为"按 `max_new` 退出"——功能不受影响，只是少赚一点。
 
 ## 5. 确定性
 
-调度结果必须**可复现**（AC1 的逐位对拍要求）：所有新请求由调用方给 `arrival_step`，调度严格按 (arrival_step, 请求下标) 的字典序取用，槽位分配取最小空槽号。同一输入 → 同一结果。
+调度必须可复现（AC1 的逐位对拍要求）：请求由调用方给 `arrival_step`，准入严格按 `(arrival_step, 请求下标)` 的字典序，**追加到活跃表尾部**。同一输入 → 同一结果。
 
 ## 6. 接口形态
 
@@ -94,56 +110,55 @@ struct SchedulerRequest {
     int32_t arrival_step = 0;     // 该请求在第几步进入等待队列
 };
 
-// 跑完整个请求集合（内部逐步调度），返回按 requests 顺序回填的结果。
-// 失败语义与 GenerateBatch 一致：任一不可恢复错误 → 整批拒绝（返回空 vector）。
 std::vector<GenerateResult> RunScheduler(const std::vector<SchedulerRequest>& requests);
 ```
 
-不进流式 `Submit/Step`：那是服务层形态，而项目定位不做服务层；将来真要接，在外面包一层即可，内核不用改。
+不进流式 `Submit/Step`：那是服务层形态，项目定位不做服务层；将来要接，在外面包一层即可。
 
 ## 7. 改动点（文件级）
 
 | 文件 | 改动 |
 |---|---|
-| `include/.../core/llm_runner.hpp` | `SlotTable` / `SchedulerRequest` / `RunScheduler`；逐步重填逐行缓冲；pinned finish 缓冲 |
-| `src/core/llm_runner.cpp` | 调度循环（§2 五步）；空槽行的输入构造；finish flag 回读与兜底 |
-| `src/core/gpt2_model_builder.cpp` | **prefill 加 padding mask 输入**（改 I/O 契约） |
-| `include/.../core/builder.hpp` + `engine_cache.hpp` | **`graph_version` +1**（改图必须 bump，否则静默复用旧图） |
-| `include/.../sampler/sampler_common.hpp` + `src/sampler/sampler_kernels.cu` | 采样器加可选 `finish_flags` 输出与 `eos_token_id` 入参 |
+| `include/.../kv_cache/paged_kv_cache.hpp` | `WritePrefillKV` 加 `rows` / `row_count`；新增 `RowOf(seq_id)`；契约注释更新 |
+| `src/kv_cache/paged_kv_cache.cpp` + `paged_kv_cache_kernels.cu` | 写回 kernel 用 `rows[b]` 寻址；`RowOf` 实现 |
+| `include/.../core/llm_runner.hpp` | 活跃表与 finish flag 的 pinned 暂存随实现落地（`RunScheduler` 接口已在） |
+| `src/core/llm_runner.cpp` | 五步调度循环；**每步重建逐行缓冲**；`padding_bias` 按真实长度填；finish flag 回读与兜底 |
 | `tests/test_llm_runner_scheduler.cpp`（新增） | §8 的用例 |
 
-规模 6~8 个文件，是三个里程碑里最大的一笔（远超技能软约束，提交说明要写明）。
+规模：6~7 个文件，是三个里程碑里最大的一笔（提交说明要写明）。
 
 ## 8. 判据与测试
 
 | 用例 | 判据 |
 |---|---|
-| `SlotRetiresAndReuses` | 一条跑完 → 槽位释放 → 新请求复用同一槽；其余序列**行号不变** |
+| `SequenceRetiresAndRowCompacts` | 一条跑完 → 释放块、活跃表移除、**其余序列行号前移**（S2 的压实路径） |
 | `UnequalPromptLengthsInFlight` | 批内 prompt 长度不同（AC2），逐行位置与语境长度正确 |
 | `EosRetiresImmediately` | 采到 EOS 的序列在**下一步**就退出（不是等 `max_new`） |
-| `EmptySlotsAreHarmless` | 空槽行的 `context_lens = 0` / padding mask 生效：结果与非空槽方案逐位相同 |
+| **`ContextPassDoesNotTouchInactiveSequences`** | 只对新入批的序列跑 context 段时，**其它序列的 K/V 逐位不变**（读回比对）——直接锁住"覆盖"那个静默错 |
+| `WriteBackRowsMapCorrectly` | 行映射 `rows[i]` 与 `RowOf()` 一致；映射故意错位时结果会不同（证明它真的起作用） |
 | `DeterminismWithArrivalSteps` | 同一 `arrival_step` 序列重复跑，结果逐位相同 |
 | `BlocksReturnAtEnd` | 全部结束后空闲块回到初始水位（AC3） |
 | `BatchEqualsSequentialUnderScheduling` | **AC1 在动态批下仍成立**：同一请求同 seed，无论 `arrival_step` 怎么排，token 逐位相同 |
 
-其中 `EmptySlotsAreHarmless` 是**空槽安全性**（§3 那三个点）的守门用例，必须在实现前先想清它的期望值。
+最后一条是总闸；`ContextPassDoesNotTouchInactiveSequences` 是本次路线修正的守门用例，必须在实现前想清期望值。
 
 ## 9. 风险
 
 | 风险 | 缓解 |
 |---|---|
-| **空槽算力**（`B_max − B_active` 行的 decode 白算） | P4 的两种负载对照裁决；真亏就退回动态 B + 压实（S2 的压实逻辑正是那条路） |
-| 改图未 bump `graph_version` | 同一个提交里 bump；引擎缓存指纹不含建图代码 |
-| PagedAttention 对 `len = 0` / 空槽行的行为未验证 | `EmptySlotsAreHarmless` 先固定；必要时给空槽专用占位块 |
-| finish flag 回读长期不落地 | 连续 N 步后强制同步一次（退化到按 `max_new` 退出，功能不受影响） |
-| 固定形状与 profile 上限不符 | `max_batch` 必须 ≤ 引擎 profile 的 batch 上限（构造期已有 D8 的 profile 校验） |
+| **写回映射漏传 / 传错** | 契约里写死"必须带 `rows`"；`RowOf()` + 不变量 4 的校验；守门用例覆盖 |
+| 行号每步变导致逐行缓冲错位 | 每步重建 + 显式校验（不变量 4）；用例 `WriteBackRowsMapCorrectly` |
+| finish flag 回读长期不落地 | 连续 N 步后强制同步一次（退化为按 `max_new` 退出） |
+| `padding_bias` 仍填 0（忘了按真实长度） | S3 的用例里必须有"长度不齐"这条（`UnequalPromptLengthsInFlight`） |
+| 两段的批大小超出 profile | 构造期已有 D8 的 profile 校验；`max_batch` 必须 ≤ profile 上限 |
 
-## 10. 待作者确认
+## 10. 与 S4（打包路径）的关系
 
-1. **requirement 的措辞改动**（这是范围变更，要你单独批）：
-   Excluded 里那条 `EOS 在循环内早停（缺口 G2-4，语义正确、只是多算）`
-   → 改成 **`循环内同步等待 EOS`**（异步拷贝 + 步边界检查属于本轮范围）。
-   同时 design.md 的 Excluded 与覆盖表要跟着改。
-2. **形状粒度**：decode 恒定 `[max_batch, 1]`；prefill 取 `[max_batch, S_step]`（`S_step` = 本步新请求最大长度），不把 S 钉成 512。是否认可？
-3. **空槽块表约定**：保留该槽上一次的块表 + `context_lens = 0`（而不是全 0 或专用占位块）。是否认可？
-4. **`FreeSequence` 的压实语义去留**（S2 已交付、已测）：保留为动态 B 备选路径，还是随槽位方案改造为槽位语义？按 §0.6，这归你判。
+- **共用契约**：prefill 的产出 =「每序列的 prompt K/V」+「每序列末位 logits」；下游（写回 / 采样 / 调度）不分叉 → S4 只替换"注意力 + 输入布局"，**不重写调度**。
+- **数值**：两条路径**不保证逐位相同**（kernel 不同、浮点累加顺序不同）。AC1 在**每条路径内部**成立；跨路径差异按 `AGENTS.md` §7 写清来源与容差出处。
+- **默认**：作者指定 **S4 为默认路径**（2026-10-04）；S4 落地后 S3 的填充路径转为对照 / 回退。这是**设计决定**，不是实测结论——S4 落地后仍应做 P4/P7 的 A/B 给默认值一个带判别下限的依据。
+
+## 11. 待作者确认
+
+**无阻塞项**——路线（活跃批）、写回接口（行映射数组）、两条路径的定位都已定。
+真机相关的两项（P4 baseline / P7 对照）按 `AGENTS.md` §5 属已授权范围，但需要环境（当前不在 GTX 1660 Ti 上）。

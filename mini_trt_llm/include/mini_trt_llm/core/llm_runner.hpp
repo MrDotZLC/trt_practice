@@ -101,6 +101,24 @@ class LLMRunner {
     // **任一条不满足入口约束、或任一步执行失败 → 整批拒绝，返回空 vector**（不做部分成功）。
     std::vector<GenerateResult> GenerateBatch(const std::vector<GenerateRequest>& requests);
 
+    // ---- S3：请求级调度（槽位模型，design.md D12）----
+    //
+    // 一条请求加上"第几步进入等待队列"。
+    // 到达时刻**由调用方给定**而不是看墙上时钟：调度必须可复现，否则 AC1 的"批量 == 逐条单跑"
+    // 逐位对拍就没法做（同一输入要给出同一结果）。
+    struct SchedulerRequest {
+        GenerateRequest request;
+        int32_t arrival_step = 0;
+    };
+
+    // 跑完整个请求集合（内部逐步调度），返回**按 requests 顺序**回填的结果。
+    // 失败语义与 GenerateBatch 一致：任一不可恢复错误 → 整批拒绝（返回空 vector）。
+    //
+    // 与 GenerateBatch 的区别：批次成员可以在**运行中**变化（某条结束 → 退还槽位 → 新请求入空槽），
+    // 而 GenerateBatch 是"一批同进同出"。两者共用同一套逐行缓冲与采样路径。
+    // 内部状态（活跃表、finish flag 与它的 pinned 暂存）随实现一起落地。
+    std::vector<GenerateResult> RunScheduler(const std::vector<SchedulerRequest>& requests);
+
  private:
     bool ReserveBuffers(int32_t prompt_len, int32_t max_new_tokens, int32_t batch);
     // 把整批 prompt 一次拷进设备并设形状；tokens 是 batch * seq_len 个 id 的扁平数组。
