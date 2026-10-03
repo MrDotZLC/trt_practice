@@ -139,6 +139,24 @@ padding mask 拦不住：它只作用在图内的 attention scores，而 K/V 是
 prefill）仍在 Excluded。**注**：这条对应关系是我的理解，未与 TRT-LLM 源码/文档核对过（2026-10-04），
 落地前作为待核实项；但"整批跑会覆盖 running 行的 K/V"是代码级可推的结论，不依赖它。packed 打包另立 S4（见 D13）。
 
+**前提是分路径的（2026-10-04 补）**：上面"每次引擎调用只装一种相"是 **S3 padding 路径**的前提，
+理由是"context 段按整批跑 + 按行号写回"会覆盖 running 行自己的 prompt K/V。
+S4 的 packed 路径**反过来**把两相装进同一次调用（见本节的 S4 小节与 D14）：那里的 context 段
+只含新入批的 token，D12 的覆盖隐患不成立，因此这条前提在 S4 路径下不要求成立。
+
+### S4 混合批（packed 输入 + 分段 attention 分派）
+
+**路线（作者 2026-10-04 口径）**：每一步装**一个** packed 张量 —— context 段的全部 token 在前、
+generation 段的 1 token/行在后、无填充；attention 在**同一次调用内按段分派**（context 走 varlen
+自注意力，generation 走分页注意力 + 当前 token 自包含）。**顺序约束是硬的**：context 段必须排在
+generation 段之前，kernel 才能用一个运行时边界标量切开两条路径。
+
+**与 S3 的差别**：S3 每步最多两次调用（两段式），S4 每步一次（两相混装）；调度**策略**（准入/退出/
+压实/D9 预算）不分叉，分叉只在输入打包、注意力实现、写回源寻址三处。
+
+接口级细节（输入契约、段边界张量、packed 与缓存行序的映射、写回与采样、profile、开关与用例）
+见 `p5_s4_interface_spec.md`。
+
 ## Resource Lifecycle
 
 | 资源 | 何时创建 | 何时释放 |
@@ -340,13 +358,37 @@ prefill）仍在 Excluded。**注**：这条对应关系是我的理解，未与
 | 路径 | 实现 | 定位 |
 |---|---|---|
 | **S3：padding + mask** | 右填充 `[B,S]` + 加性 `padding_bias`（显式子图注意力） | S3 落地后作为**生产路径**交付；S4 落地后转为**对照 / 回退路径** |
-| **S4：packed + 选择性批处理** | 一维 `[T]` + `cu_seqlens`，注意力换成 packed varlen 插件 | **作者指定为默认路径**（2026-10-04）；**是本 feature 的 S4 里程碑**，不另立条目 |
+| **S4：packed + 选择性批处理** | 一维 `[T]` + `cu_seqlens`；**同一次调用内**装两相、attention 按段分派（context → varlen；generation → 分页 + 自包含当前 token） | **作者指定为默认路径**（2026-10-04）；**是本 feature 的 S4 里程碑**，不另立条目 |
+
+**"选择性批处理"的准确定义（2026-10-04 作者补充，本设计的依据）**：不是"只有 prefill 走 packed"，
+而是**两相共享同一个 packed 输入张量、attention 计算各走各的 kernel**。硬约束：**所有 context token
+必须排在 generation token 之前**（例：S0 context、S1 generation、S2 context 的顺序必须是 S0 → S2 → S1），
+这样 kernel 才能按位置一次切分两条路径。
+这条口径的后果：**每步一次引擎调用**（而非 S3 的两段式），且 packed 行序与缓存行序**不同源**，
+必须靠显式映射数组对应起来 —— 不变量 4 的口径随之改写（见 `p5_s4_interface_spec.md` §4）。
 
 **两条路径共用的契约**：prefill 的产出 =「每序列的 prompt K/V」+「每序列末位 logits」；下游（写回 / 采样 / 调度）不分叉。
 **两条路径的数值不保证逐位相同**（kernel 不同、浮点累加顺序不同）：AC1 必须在**每条路径内部**成立（批跑 vs 单跑）；
 跨路径差异按 `AGENTS.md` §7 写清来源与容差出处。
 **"默认用 S4"是设计决定，不是实测结论**：S4 落地后仍应做 P4/P7 的 A/B，给这个默认值一个带判别下限的依据；
 若实测 packed 在本机反而更慢，默认值的取舍回到作者（采样器的 fast / legacy 就是这么处理的）。
+
+### D14 S4 的引擎形态（一个混合引擎 vs 两个 packed 引擎）
+
+| 方案 | 说明 | 取舍 |
+|---|---|---|
+| **A. 一个混合引擎（采用，待作者确认）** | 每步一次调用，context-only / generation-only / 混合三种步共用同一张图（`context_seq_count == 0` 即纯 generation） | 直接消掉 D10 说的"每步第二次调用"的收益损失；纯 generation 步与今天的 decode 用法等价；代价是**插件内部两份 attention 实现**，且缓存输入在纯 context 步也要绑定 |
+| B. 两个引擎各自 packed | context 引擎不带 cache 输入、generation 引擎带 | 两段仍不在同一次调用里 → "选择性批处理"退化成"各自 packed"，与作者口径不符 |
+
+**决策：A（待作者确认后生效）。** 段边界是**运行时标量**，TRT 图里没有数据相关的分支，
+所以"两段分派"只能落在插件内部：一个 attention 插件读 `context_seq_count`，对边界之前的 token 走
+varlen 自注意力、之后的走分页注意力（含当前 token）。两个插件 + 图内按运行时标量切片再合并（Select/Concat）
+作为对照方案 A2 保留。
+
+**它不替代 `PagedAttentionPlugin`**：S3 回退路径继续用它（该插件只支持 decode：query seq_len 必须为 1）。
+
+**与图的关系**：S4 需要一张**新图**（输入是 packed 张量 + cache 输入，输出是 packed K/V + logits），
+`graph_version` 必须 bump，并与 S3 的两套图共存（AC8 的可回退）。
 
 ## Requirement Coverage
 

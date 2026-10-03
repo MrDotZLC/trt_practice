@@ -7,7 +7,7 @@
 | phase | P5-Implementation |
 | phase_index | 5 |
 | status | in-progress |
-| updated | 2026-10-03 |
+| updated | 2026-10-04 |
 | owner | Codex |
 
 ---
@@ -27,10 +27,13 @@
 
 ## Current Blockers
 
-- **S1 批量用例的 profile 配置不足（2026-10-04 发现，未改）**：`tests/test_llm_runner_batch.cpp` 用
-  `SmallGpt2BuilderConfig()`（`max_prefill_batch = max_decode_batch = 1`）却声明 `max_batch = 2` ——
-  真机首次跑 P6 时这批用例会因 profile 形状越界而红。S3 的用例已自带抬到 4 的配置；
-  S1 那处怎么改（改 fixture / 把配置上提）待作者定夺。
+- **S1 批量用例的 profile 配置不足（2026-10-04 发现，已修 `ed52098`）**：`tests/test_llm_runner_batch.cpp`
+  用 `SmallGpt2BuilderConfig()`（`max_prefill_batch = max_decode_batch = 1`）却声明 `max_batch = 2` ——
+  真机首次跑 P6 时这批用例会因 profile 形状越界而红。已改成 `SmallGpt2BuilderConfig(max_batch)`
+  （默认仍是 1/1/1，单序列用例不受影响）。
+- **S4 设计待作者确认（2026-10-04）**：S4 的 P2 级设计草案已出（`p5_s4_interface_spec.md` §11），
+  其中 **requirement.md 的 Excluded 口径属需求变更**、D14 的引擎形态（一个混合引擎）与插件形态（A1/A2）
+  需要作者拍板；确认后才进 P3 复评，**在那之前不动 S4 的代码**（技能：改代码前必须有对应设计 artifact）。
 - **P4 / P7 搁置（2026-10-03）**：当前不在 GTX 1660 Ti 环境，无法取基线。按
   `phases/p4_baseline.md` 的 Dependency Missing 记 N/A；`benchmark_before.md` 写明环境恢复后
   必须补的四项测量。**批上限（`max_batch`）暂时只能取保守值并标注"待实测"**，不得写成实测结论。
@@ -42,15 +45,17 @@
 
 ## Next Action
 
+0. **S4（下一步主线）**：作者 2026-10-04 给出"选择性批处理"的口径（两相共享一个 packed 张量、
+   attention 按段分派、context token 必须在前），据此已出 **P2 级设计草案**：新建
+   `p5_s4_interface_spec.md`（§11 列了 5 条待确认）+ design.md 的 D13 扩充 / S4 小节 / D14。
+   **顺序**：作者确认 §11（其中 Excluded 口径属需求变更）→ S4 过 P3 复评 → 才动代码。
 1. **P5-S1（代码已落，待编译）**：改了 `llm_runner.hpp` / `llm_runner.cpp` /
    `sampler_common.hpp` / `sampler_kernels.cu`，新增 `tests/test_llm_runner_batch.cpp`。
    真机下一步：`cmake --build build -j` → 全量 `mini_trt_llm_tests` → 新增的
    `LlmRunnerBatchTest.*`（8 条）。编译错误与用例结果都要回填本文与 `test_plan.md`（P6）。
-2. **P5-S2 / S3**：S1 编译通过后再做，不并笔提交。**S3 已全部落码（写回行映射 → 逐行真长度 →
-   调度循环 → 8 条用例），全部未编译验证**。S3 真机收口要按序做：① 编译（P5 Exit Gate，
-   注意上面那条 S1 profile 的已知问题）；② 跑 `mini_trt_llm_tests` 全量 + `LlmRunnerSchedulerTest.*`
-   8 条；③ 结果回填 `test_plan.md`（P6）。
-   另有一条待办：`EosRetiresImmediately` 判不了退出的**时刻**，要判得加一个可观测的步数计数器。
+2. **P5-S2 / S3**：**S3 已全部落码（写回行映射 → 逐行真长度 → 调度循环 → 9 条用例 + 只读观测口），
+   全部未编译验证**。S3 真机收口按序做：① 编译（P5 Exit Gate）；② 跑 `mini_trt_llm_tests` 全量 +
+   `LlmRunnerSchedulerTest.*` 9 条；③ 结果回填 `test_plan.md`（P6）。
 3. 环境恢复后补 P4，再按 D10 的两种负载跑 P7。
 
 ---
@@ -201,6 +206,9 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
   ② `test_plan.md` 补 S3 行；③ 加只读观测口 `SchedulerStats`（`steps` / `context_rows` 把两条
   原本不可观测的判据固定进用例）；④ 公共 fixture `SmallGpt2BuilderConfig(max_batch)` 修掉
   S1 批量用例的 profile 越界。**全部未编译验证**
+- 2026-10-04: **S4 出 P2 级设计草案**：作者给出"选择性批处理"的口径（两相共享 packed 张量、
+  attention 按段分派、context token 在前）→ 新建 `p5_s4_interface_spec.md`，design.md 扩写
+  D13 / 新增 S4 小节与 D14（引擎形态）；§11 的 5 条待作者确认后才进 P3 复评
 - 2026-10-03: 不变量 1 / 2 / 4 落地：D6 依据注释、D8 构造期 profile 校验、行号同源显式校验
 - 2026-10-03: **P5-S2 落码**（6 个文件）：元数据缓冲按 max_batch 预分配、`NumFreeBlocks()`、
   `FreeSequence` 补"压实行 + 重建镜像"（补掉一个被掩盖的洞）、调用内归还（RAII 守卫）、
