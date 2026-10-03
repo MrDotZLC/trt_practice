@@ -120,20 +120,41 @@ class LLMRunner {
     std::vector<GenerateResult> RunScheduler(const std::vector<SchedulerRequest>& requests);
 
  private:
+    // ---- S3 调度的活跃表（行号 = 本步的引擎行号；退出即压实行号）----
+    struct ActiveSequence {
+        int32_t seq_id = -1;
+        int32_t result_slot = -1;  // 回填结果的槽位 = 请求下标（确定性顺序）
+        int32_t prompt_len = 0;
+        int32_t generated = 0;  // 已采出的 token 数
+        int32_t max_new = 0;
+        int32_t top_k = 1;
+        float top_p = 1.0f;
+        uint64_t seed = 0;
+        bool finished = false;  // EOS（设备侧 flag 回读）或到达 max_new
+    };
+
     bool ReserveBuffers(int32_t prompt_len, int32_t max_new_tokens, int32_t batch);
     // 把整批 prompt 一次拷进设备并设形状；tokens 是 batch * seq_len 个 id 的扁平数组。
-    bool BindPrefill(const std::vector<int32_t>& tokens, int32_t batch, int32_t seq_len);
+    // `row_lengths[i]` 是第 i 行的**真实**长度：它同时决定 padding_bias（≥ 真实长度的位置填
+    // 加性 -1e4，见 p5_s3_interface_spec §3）。静态批传"每行都等于 seq_len"即原行为（全 0）。
+    bool BindPrefill(const std::vector<int32_t>& tokens, int32_t batch, int32_t seq_len,
+                     const std::vector<int32_t>& row_lengths);
     // input_tokens 指向本步每行的当前 token（行步长 = batch_capacity_）。
     bool BindDecode(const int32_t* input_tokens, int32_t batch);
     // 取 logits 的某一行（设备指针）。两套缓冲形状不同，必须区分：
-    //   prefill: [B, S, V]，要的是第 batch_row 条的最后一个位置 (batch_row, S-1)；
+    //   prefill: [B, S, V]，要的是第 batch_row 条的**第 position 个位置**；padding 路径下它是
+    //            该行的真实末位 (L_i - 1)，不是 S-1（S-1 是填充位置，那里的 logits 无意义）；
     //   decode:  [B, V]，每行连续，直接取缓冲首地址即可（不需要逐行寻址）。
-    const void* PrefillLogitsRow(int32_t batch_row, int32_t seq_len) const;
+    const void* PrefillLogitsRow(int32_t batch_row, int32_t seq_len, int32_t position) const;
     // 采样一整批并写进 token_out（batch 个连续 int32）。
     // from_prefill=true 读"已收集的末行"缓冲，false 读 decode 缓冲。
     // S1 限制：三种策略各自是"整批一个分支"，因此要求批内同策略（见 GenerateBatch 的校验）。
+    // `row_offsets` / `eos_hit` 非空时：前者给每行自己的随机步号（调度下各行步号不同），
+    // 后者让采样器顺带写"该行采到 EOS"的设备侧标记（p5_s3_interface_spec §4）。
     bool SampleBatch(void* token_out, bool from_prefill, int32_t batch, uint64_t offset,
-                     cudaStream_t stream);
+                     const uint64_t* row_offsets, int8_t* eos_hit, cudaStream_t stream);
+    // 把 active[begin, begin+count) 的逐行采样参数（k / p / seed / 随机步号）上传到设备缓冲。
+    bool UploadRowParams(const std::vector<ActiveSequence>& active, int32_t begin, int32_t count);
 
     Config config_;
     bool valid_ = false;
@@ -158,6 +179,16 @@ class LLMRunner {
     // per-batch seed（[B]）：让随机流只由 (请求 seed, 步数) 决定，与批位置无关（AC1 的前提）。
     DeviceBuffer d_seeds_;
     DeviceBuffer d_sampler_workspace_;
+    // ---- S3 调度：每步重建的逐行缓冲（按 max_batch 备好，循环内不分配）----
+    // [max_batch] int32：采样器**按行**输出新 token 的暂存（采样器只认连续 [batch] 输出）。
+    // 之后会被搬进按序列聚集的结果缓冲 —— 行号每步都会变，token 不能按行号存放。
+    DeviceBuffer d_step_tokens_;
+    // [max_batch] int32：生成段的输入（每行自己的上一个 token），每步从结果缓冲里聚集一次。
+    DeviceBuffer d_decode_input_;
+    DeviceBuffer d_offsets_;        // [max_batch] uint64：per-row 随机步号（= 该行已生成计数）
+    DeviceBuffer d_eos_hit_;        // [max_batch] int8：设备侧 finish flag
+    DeviceBuffer d_result_tokens_;  // [请求数, max_new] int32：结果按序列聚集
+    PinnedBuffer host_eos_;         // finish flag 的 pinned 回读暂存
     // 每层的 K/V 输出缓冲（prefill/decode 各自的形状不同）
     std::vector<std::unique_ptr<DeviceBuffer>> d_prefill_kv_;
     std::vector<std::unique_ptr<DeviceBuffer>> d_decode_kv_;

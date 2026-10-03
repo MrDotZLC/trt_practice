@@ -19,6 +19,11 @@ namespace {
 
 size_t ElementSize(bool is_half) { return is_half ? 2u : 4u; }
 
+// 右填充位置的加性注意力偏置（p5_s3_interface_spec §3 的 0 / -1e4 口径）。
+// 为什么是 -1e4 而不是 -inf：exp(-1e4 - max) 直接下溢到 0，屏蔽效果与 -inf 等价，
+// 又不会在减法里产生 inf - inf = NaN。
+constexpr float kPaddingBias = -1e4f;
+
 // 本批已登记序列的作用域守卫：**任何出口都归还**（正常结束与各条失败路径共用一条路径）。
 // 为什么不手工归还：GenerateBatch 有多条失败出口，靠人记得在每个出口 FreeSequence 早晚会漏；
 // 而漏一个就是静默泄漏——AC3（跑 N 轮后空闲块回到初始水位）会直接不成立。
@@ -233,19 +238,22 @@ bool LLMRunner::ReserveBuffers(int32_t prompt_len, int32_t max_new_tokens, int32
     return true;
 }
 
-const void* LLMRunner::PrefillLogitsRow(int32_t batch_row, int32_t seq_len) const {
-    if (seq_len <= 0) {
+const void* LLMRunner::PrefillLogitsRow(int32_t batch_row, int32_t seq_len,
+                                        int32_t position) const {
+    if (seq_len <= 0 || position < 0 || position >= seq_len) {
         return nullptr;
     }
     const size_t elem = ElementSize(prefill_logits_half_);
-    // prefill logits 是 [B, S, V]：第 batch_row 条的最后一个位置是 (batch_row, S-1)。
+    // prefill logits 是 [B, S, V]：第 batch_row 条第 position 个位置就是 (batch_row, position)。
+    // padding 路径下必须传该行的真实末位 L-1 —— S-1 是填充位置，那里的 logits 不来自真实 token。
     const size_t index = (static_cast<size_t>(batch_row) * static_cast<size_t>(seq_len) +
-                          static_cast<size_t>(seq_len - 1)) *
+                          static_cast<size_t>(position)) *
                          static_cast<size_t>(config_.vocab_size);
     return static_cast<const char*>(d_prefill_logits_.data()) + index * elem;
 }
 
 bool LLMRunner::SampleBatch(void* token_out, bool from_prefill, int32_t batch, uint64_t offset,
+                            const uint64_t* row_offsets, int8_t* eos_hit,
                             cudaStream_t stream) {
     // S1 限制：批内同策略——三种采样 kernel 各自是"整批一个分支"（入口已校验）。
     const bool use_top_p = options_top_p_ < 1.0f;
@@ -254,6 +262,10 @@ bool LLMRunner::SampleBatch(void* token_out, bool from_prefill, int32_t batch, u
     // 采样器契约：logits 必须是连续的 [batch, vocab]。prefill 的末行已收集进专门缓冲；
     // decode 的 [B,1,V] 本身连续。
     const void* logits = from_prefill ? d_prefill_last_logits_.data() : d_decode_logits_.data();
+    // 随机流口径：seeds 一直给（行号不进哈希）；row_offsets 只有调度器给（各行的已生成计数不同）。
+    // eos_hit 非空时顺带写设备侧 finish flag —— 调度器只回读 batch_size 字节就能决定谁退出。
+    const uint64_t* seeds = static_cast<const uint64_t*>(d_seeds_.data());
+    const int32_t eos_token_id = (eos_hit != nullptr) ? config_.eos_token_id : -1;
 
     if (use_greedy) {
         SamplerArgs args;
@@ -264,7 +276,10 @@ bool LLMRunner::SampleBatch(void* token_out, bool from_prefill, int32_t batch, u
         args.is_half = logits_half;
         args.seed = options_seed_;
         args.offset = offset;
-        args.seeds = static_cast<const uint64_t*>(d_seeds_.data());
+        args.seeds = seeds;
+        args.offsets = row_offsets;
+        args.eos_hit = eos_hit;
+        args.eos_token_id = eos_token_id;
         return LaunchGreedySampler(args, stream) == cudaSuccess;
     }
     if (use_top_p) {
@@ -276,7 +291,10 @@ bool LLMRunner::SampleBatch(void* token_out, bool from_prefill, int32_t batch, u
         args.is_half = logits_half;
         args.seed = options_seed_;
         args.offset = offset;
-        args.seeds = static_cast<const uint64_t*>(d_seeds_.data());
+        args.seeds = seeds;
+        args.offsets = row_offsets;
+        args.eos_hit = eos_hit;
+        args.eos_token_id = eos_token_id;
         args.top_p = static_cast<const float*>(d_top_p_.data());
         return LaunchTopPSampler(args, stream, d_sampler_workspace_.data(),
                                  d_sampler_workspace_.size()) == cudaSuccess;
@@ -289,7 +307,10 @@ bool LLMRunner::SampleBatch(void* token_out, bool from_prefill, int32_t batch, u
     args.is_half = logits_half;
     args.seed = options_seed_;
     args.offset = offset;
-    args.seeds = static_cast<const uint64_t*>(d_seeds_.data());
+    args.seeds = seeds;
+    args.offsets = row_offsets;
+    args.eos_hit = eos_hit;
+    args.eos_token_id = eos_token_id;
     args.top_k = static_cast<const int32_t*>(d_top_k_.data());
     // **快速路径暂时不接生产路径**：真机实测它比旧路径慢 6~9 倍
     // （见 future_iterations_development_plan.md §10.5 的失败记录），根因是 occupancy 与 bank conflict。
@@ -297,7 +318,8 @@ bool LLMRunner::SampleBatch(void* token_out, bool from_prefill, int32_t batch, u
                              d_sampler_workspace_.size()) == cudaSuccess;
 }
 
-bool LLMRunner::BindPrefill(const std::vector<int32_t>& tokens, int32_t batch, int32_t seq_len) {
+bool LLMRunner::BindPrefill(const std::vector<int32_t>& tokens, int32_t batch, int32_t seq_len,
+                            const std::vector<int32_t>& row_lengths) {
     // 顺序要求：先选 profile 再设形状（反过来时 TRT 可能用 profile 的 opt 形状覆盖显式形状）。
     if (!prefill_engine_->SetOptimizationProfile(0, nullptr)) {
         return false;
@@ -315,8 +337,25 @@ bool LLMRunner::BindPrefill(const std::vector<int32_t>& tokens, int32_t batch, i
         }
     }
     // padding bias：S1/S2 的批内等长，全 0 即正确（每行都吃满 S）。
-    // S3 的调度器会按每行的真实长度填 0 / -1e4（design.md D12 / S3 方案 §3）。
+    // S3 的 padding 路径按每行的真实长度填 0 / -1e4（design.md D12 / S3 方案 §3）：
+    // 偏置是加在**注意力分数**上的（[B,1,1,S]，作用在 key 上），所以真实位置之后
+    // 那些填充位置对任何 query 都被屏蔽；填充位置自己的 logits 没人用（采样取真实末位）。
+    if (static_cast<int32_t>(row_lengths.size()) != batch) {
+        MINI_TRT_LOG_ERROR("LLMRunner: BindPrefill needs one row length per batch row");
+        return false;
+    }
     std::vector<float> padding(positions.size(), 0.0f);
+    for (int32_t b = 0; b < batch; ++b) {
+        const int32_t len = row_lengths[static_cast<size_t>(b)];
+        if (len <= 0 || len > seq_len) {
+            MINI_TRT_LOG_ERROR("LLMRunner: row length " << len << " out of (0, " << seq_len << "]");
+            return false;
+        }
+        for (int32_t i = len; i < seq_len; ++i) {
+            padding[static_cast<size_t>(b) * static_cast<size_t>(seq_len) +
+                    static_cast<size_t>(i)] = kPaddingBias;
+        }
+    }
     if (cudaMemcpyAsync(d_prompt_.data(), tokens.data(), tokens.size() * sizeof(int32_t),
                         cudaMemcpyHostToDevice, nullptr) != cudaSuccess ||
         cudaMemcpyAsync(d_position_.data(), positions.data(),
@@ -563,7 +602,8 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
             flat.push_back(static_cast<int32_t>(token));
         }
     }
-    if (!BindPrefill(flat, batch, prompt_len) || !prefill_engine_->Enqueue(nullptr)) {
+    if (!BindPrefill(flat, batch, prompt_len, prefill_lengths) ||
+        !prefill_engine_->Enqueue(nullptr)) {
         MINI_TRT_LOG_ERROR("LLMRunner: prefill failed");
 
         return {};
@@ -595,7 +635,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
     // 常驻诊断（D7：默认关闭；P4/P7 一律关闭）。批量下只报第 0 条——
     // 逐条全量扫描会把每请求的同步 D2H 放大 B 倍，正是 D7 要避免的。
     if (config_.enable_diagnostics) {
-        const void* row_ptr = PrefillLogitsRow(0, prompt_len);
+        const void* row_ptr = PrefillLogitsRow(0, prompt_len, prompt_len - 1);
         const size_t elem = ElementSize(prefill_logits_half_);
         std::vector<char> raw(static_cast<size_t>(config_.vocab_size) * elem);
         if (row_ptr != nullptr &&
@@ -631,7 +671,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
         const size_t elem = ElementSize(prefill_logits_half_);
         const size_t row_bytes = static_cast<size_t>(config_.vocab_size) * elem;
         for (int32_t b = 0; b < batch; ++b) {
-            const void* src = PrefillLogitsRow(b, prompt_len);
+            const void* src = PrefillLogitsRow(b, prompt_len, prompt_len - 1);
             void* dst = static_cast<char*>(d_prefill_last_logits_.data()) +
                         static_cast<size_t>(b) * row_bytes;
             if (src == nullptr ||
@@ -646,7 +686,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
     // 采样结果按"步"排列：[max_new, batch_capacity_]，第 i 步的 B 个 token 连续，
     // 采样器可以直接写；解码下一步的输入就是上一步的那 B 个元素。
     if (!SampleBatch(static_cast<char*>(d_tokens_.data()), /*from_prefill=*/true, batch,
-                     /*offset=*/0, nullptr)) {
+                     /*offset=*/0, /*row_offsets=*/nullptr, /*eos_hit=*/nullptr, nullptr)) {
         MINI_TRT_LOG_ERROR("LLMRunner: sampling after prefill failed");
 
         return {};
@@ -690,7 +730,8 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
         if (!SampleBatch(static_cast<char*>(d_tokens_.data()) +
                              static_cast<size_t>(i) * static_cast<size_t>(batch_capacity_) *
                                  sizeof(int32_t),
-                         /*from_prefill=*/false, batch, static_cast<uint64_t>(i), nullptr)) {
+                         /*from_prefill=*/false, batch, static_cast<uint64_t>(i),
+                         /*row_offsets=*/nullptr, /*eos_hit=*/nullptr, nullptr)) {
             MINI_TRT_LOG_ERROR("LLMRunner: sampling failed at step " << i);
 
             return {};
@@ -743,6 +784,519 @@ std::vector<int64_t> LLMRunner::Generate(const std::vector<int64_t>& input_ids,
         return {};
     }
     return results.front().tokens;
+}
+
+// S3：请求级调度（活跃批 + padding mask）。五步循环见 p5_s3_interface_spec.md §2：
+//   ① retire（读上一步异步回读的 finish flag / 到达 max_new → 释放块 + 压实行号）
+//   ② admit （按 (arrival_step, 请求下标) 准入，先查空闲块再分配，D9）
+//   ③ context 段（只装本步新入批的行，[B_new, S_step]，padding_bias 按真实长度填）
+//   ④ generation 段（只装本步在跑的活跃表前缀，[B_active, 1]）
+//   ⑤ 采样并交回 finish flag
+// **核心：每次引擎调用只装一种相** —— 让 context 段按整批跑会把正在 generation 的行也算一遍、
+// 写回时覆盖它们自己的 prompt K/V（D12 的静默错）。
+std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
+    const std::vector<SchedulerRequest>& requests) {
+    if (!valid_) {
+        MINI_TRT_LOG_ERROR("LLMRunner::RunScheduler called on an invalid runner");
+        return {};
+    }
+    const int32_t request_count = static_cast<int32_t>(requests.size());
+    if (request_count <= 0) {
+        MINI_TRT_LOG_ERROR("LLMRunner: empty scheduler request set");
+        return {};
+    }
+
+    // ---- 1. 入口校验：与 GenerateBatch 同一套契约，但**不要求 prompt 等长**（D2=B 的 padding 路径）----
+    const GenerateOptions& first = requests[0].request.options;
+    const bool first_top_p = first.top_p < 1.0f;
+    const bool first_topk = !first_top_p && first.top_k > 1;
+    int32_t max_prompt = 0;
+    int32_t max_new = 0;
+    int32_t max_arrival = 0;
+    for (int32_t i = 0; i < request_count; ++i) {
+        const GenerateRequest& r = requests[static_cast<size_t>(i)].request;
+        const int32_t len = static_cast<int32_t>(r.input_ids.size());
+        if (len <= 0 || r.options.max_new_tokens <= 0) {
+            MINI_TRT_LOG_ERROR("LLMRunner: request " << i
+                                                     << " has an empty prompt or max_new_tokens <= 0");
+            return {};
+        }
+        if (r.options.temperature != 1.0f) {
+            MINI_TRT_LOG_ERROR("LLMRunner: request " << i
+                                                     << " uses temperature != 1.0 (unsupported)");
+            return {};
+        }
+        if (r.options.top_k < 1 || r.options.top_p <= 0.0f || r.options.top_p > 1.0f) {
+            MINI_TRT_LOG_ERROR("LLMRunner: request " << i << " has invalid sampling parameters");
+            return {};
+        }
+        // 策略必须整批一致（同 GenerateBatch）：三种采样 kernel 各自是"整批一个分支"。
+        const bool row_top_p = r.options.top_p < 1.0f;
+        const bool row_topk = !row_top_p && r.options.top_k > 1;
+        if (row_top_p != first_top_p || row_topk != first_topk) {
+            MINI_TRT_LOG_ERROR("LLMRunner: request " << i
+                               << " uses a different sampling strategy than request 0"
+                                  " —— 调度同样要求同一种策略（D3 的逐行策略需要改采样器）");
+            return {};
+        }
+        if (first_topk && r.options.top_k > kTopKFastMaxK) {
+            MINI_TRT_LOG_ERROR("LLMRunner: request " << i << " top_k " << r.options.top_k
+                                                     << " exceeds kTopKFastMaxK "
+                                                     << kTopKFastMaxK);
+            return {};
+        }
+        if (requests[static_cast<size_t>(i)].arrival_step < 0) {
+            MINI_TRT_LOG_ERROR("LLMRunner: request " << i << " has a negative arrival_step");
+            return {};
+        }
+        max_prompt = std::max(max_prompt, len);
+        max_new = std::max(max_new, r.options.max_new_tokens);
+        max_arrival = std::max(max_arrival, requests[static_cast<size_t>(i)].arrival_step);
+    }
+
+    // seq_id：<0 → 请求下标；显式指定的必须唯一（回填按请求下标，seq_id 只用于块池与日志）。
+    std::vector<int32_t> seq_ids(static_cast<size_t>(request_count));
+    for (int32_t i = 0; i < request_count; ++i) {
+        const int32_t id =
+            requests[static_cast<size_t>(i)].request.seq_id < 0
+                ? i
+                : requests[static_cast<size_t>(i)].request.seq_id;
+        for (int32_t prev = 0; prev < i; ++prev) {
+            if (seq_ids[static_cast<size_t>(prev)] == id) {
+                MINI_TRT_LOG_ERROR("LLMRunner: duplicate seq_id " << id << " in scheduler set");
+                return {};
+            }
+        }
+        seq_ids[static_cast<size_t>(i)] = id;
+    }
+
+    // 池**任何时候**都装不下某条请求 → 永远服务不了：入口直接拒绝。
+    // 不拒的话调度循环会在"准入失败"上无限打转（块永远不够）。
+    for (int32_t i = 0; i < request_count; ++i) {
+        const int32_t len = static_cast<int32_t>(
+            requests[static_cast<size_t>(i)].request.input_ids.size());
+        const int32_t want = requests[static_cast<size_t>(i)].request.options.max_new_tokens;
+        // stride 的上界是 max_prompt（本步最长 prompt）；预留按 stride 算（填充位置也写进 cache）。
+        const int32_t need_tokens = std::max(max_prompt, len + want);
+        const int64_t need_blocks =
+            (need_tokens + config_.block_size - 1) / config_.block_size;
+        if (need_blocks > config_.max_blocks_per_seq ||
+            need_blocks * config_.block_size >
+                static_cast<int64_t>(config_.num_blocks) * config_.block_size) {
+            MINI_TRT_LOG_ERROR("LLMRunner: request " << i << " can never fit the KV pool (needs "
+                               << need_tokens << " tokens per sequence)");
+            return {};
+        }
+    }
+
+    // 准入顺序：(arrival_step, 请求下标) 的字典序 —— 确定性（p5_s3_interface_spec §5）。
+    std::vector<int32_t> waiting(static_cast<size_t>(request_count));
+    for (int32_t i = 0; i < request_count; ++i) {
+        waiting[static_cast<size_t>(i)] = i;
+    }
+    std::sort(waiting.begin(), waiting.end(), [&requests](int32_t a, int32_t b) {
+        const int32_t step_a = requests[static_cast<size_t>(a)].arrival_step;
+        const int32_t step_b = requests[static_cast<size_t>(b)].arrival_step;
+        if (step_a != step_b) {
+            return step_a < step_b;
+        }
+        return a < b;
+    });
+
+    // ---- 2. 缓冲与逐行状态：全部在循环外备好（循环内不分配、不同步）----
+    const int32_t active_capacity = std::min(request_count, config_.max_batch);
+    if (!ReserveBuffers(max_prompt, max_new, active_capacity)) {
+        return {};
+    }
+    const size_t capacity_sz = static_cast<size_t>(active_capacity);
+    if (!d_step_tokens_.Allocate(capacity_sz * sizeof(int32_t)) ||
+        !d_decode_input_.Allocate(capacity_sz * sizeof(int32_t)) ||
+        !d_offsets_.Allocate(capacity_sz * sizeof(uint64_t)) ||
+        !d_eos_hit_.Allocate(capacity_sz * sizeof(int8_t)) || !host_eos_.Allocate(capacity_sz) ||
+        !d_result_tokens_.Allocate(static_cast<size_t>(request_count) *
+                                   static_cast<size_t>(max_new) * sizeof(int32_t))) {
+        MINI_TRT_LOG_ERROR("LLMRunner: failed to allocate scheduler buffers");
+        return {};
+    }
+    // 采样策略整批一致（上面校验过），SampleBatch 靠这三个成员选分支。
+    options_top_k_ = first.top_k;
+    options_top_p_ = first.top_p;
+    options_seed_ = first.seed;
+
+    std::vector<GenerateResult> results(static_cast<size_t>(request_count));
+    std::vector<int32_t> token_counts(static_cast<size_t>(request_count), 0);
+    std::vector<ActiveSequence> active;
+    active.reserve(capacity_sz);
+    // 块归还的作用域守卫：任何出口都归还（正常路径由 retire 归还；失败路径靠它兜底）。
+    // 重复归还是安全的（FreeSequence 对未知 seq_id 直接返回）。
+    SequenceScope scope(kv_cache_.get());
+    std::vector<const void*> keys(static_cast<size_t>(config_.num_layers));
+    std::vector<const void*> values(static_cast<size_t>(config_.num_layers));
+    int32_t next_waiting = 0;
+    int32_t step = 0;
+    // finish flag 的异步回读：不在循环里等，连续 kMaxEosPendingSteps 步没落地才强制同步一次。
+    bool eos_pending = false;
+    std::vector<int32_t> eos_pending_seqs;
+    int32_t eos_pending_steps = 0;
+    constexpr int32_t kMaxEosPendingSteps = 4;
+    // 防呆上界：正常每步都至少推进一件事；超了说明有 bug，宁可报错也不要挂住。
+    const int64_t step_limit = static_cast<int64_t>(max_arrival) +
+                               static_cast<int64_t>(max_new) * request_count + request_count + 4;
+
+    while (!active.empty() || next_waiting < request_count) {
+        if (active.empty() && next_waiting < request_count) {
+            // 没有活跃序列：时钟跳到下一个到达步（步号只影响准入时刻，不影响结果）
+            step = std::max(step, requests[static_cast<size_t>(waiting[static_cast<size_t>(next_waiting)])]
+                                      .arrival_step);
+        }
+
+        // ---- ① retire ----
+        if (eos_pending) {
+            const cudaError_t query = cudaStreamQuery(nullptr);
+            bool landed = (query == cudaSuccess);
+            if (query != cudaSuccess && query != cudaErrorNotReady) {
+                MINI_TRT_LOG_ERROR("LLMRunner: finish-flag readback failed: "
+                                   << cudaGetErrorString(query));
+                return {};
+            }
+            if (!landed && ++eos_pending_steps >= kMaxEosPendingSteps) {
+                // 兜底：连续几步都没落地就强制同步一次（退化也只是"晚一步退出"，功能不受影响）
+                if (cudaStreamSynchronize(nullptr) == cudaSuccess) {
+                    landed = true;
+                }
+            }
+            if (landed) {
+                const int8_t* flags = static_cast<const int8_t*>(host_eos_.data());
+                for (size_t i = 0; i < eos_pending_seqs.size(); ++i) {
+                    if (flags[i] == 0) {
+                        continue;
+                    }
+                    for (ActiveSequence& row : active) {
+                        if (row.seq_id == eos_pending_seqs[i]) {
+                            row.finished = true;  // EOS：下一步不必再喂它
+                        }
+                    }
+                }
+                eos_pending = false;
+                eos_pending_steps = 0;
+                eos_pending_seqs.clear();
+            }
+        }
+        for (int32_t row = 0; row < static_cast<int32_t>(active.size());) {
+            const ActiveSequence& s = active[static_cast<size_t>(row)];
+            if (!s.finished && s.generated < s.max_new) {
+                ++row;
+                continue;
+            }
+            token_counts[static_cast<size_t>(s.result_slot)] = s.generated;
+            results[static_cast<size_t>(s.result_slot)].seq_id = s.seq_id;
+            kv_cache_->FreeSequence(s.seq_id);   // 释放块 + 压实行号（S2 的能力）
+            active.erase(active.begin() + row);  // 活跃表行号随之压实（不变量 4）
+        }
+        // 退出并压实之后剩下的行**全部**处于 generation 相：它们就是本步生成段的前缀。
+        // 必须在 admit 之前取，admit 会把新入批的行追加到它后面。
+        const int32_t generation_rows = static_cast<int32_t>(active.size());
+
+        // ---- ② admit：候选 → 用**最终 stride** 一次算清预算（D9）----
+        const int32_t free_slots =
+            active_capacity - static_cast<int32_t>(active.size());
+        int32_t admit_count = 0;
+        while (admit_count < free_slots && next_waiting + admit_count < request_count &&
+               requests[static_cast<size_t>(waiting[static_cast<size_t>(next_waiting + admit_count)])]
+                       .arrival_step <= step) {
+            ++admit_count;
+        }
+        const auto row_len = [&](int32_t j) {
+            return static_cast<int32_t>(
+                requests[static_cast<size_t>(waiting[static_cast<size_t>(next_waiting + j)])]
+                    .request.input_ids.size());
+        };
+        int32_t stride = 0;
+        // 预算不足就退回"到达最晚"的那条重算 —— stride 会随之变小，所以必须整体重算而不是逐条判。
+        while (admit_count > 0) {
+            stride = 0;
+            for (int32_t j = 0; j < admit_count; ++j) {
+                stride = std::max(stride, row_len(j));
+            }
+            int64_t need_blocks = 0;
+            for (int32_t j = 0; j < admit_count; ++j) {
+                const int32_t idx = waiting[static_cast<size_t>(next_waiting + j)];
+                const int32_t len = static_cast<int32_t>(
+                    requests[static_cast<size_t>(idx)].request.input_ids.size());
+                const int32_t want =
+                    requests[static_cast<size_t>(idx)].request.options.max_new_tokens;
+                const int32_t need_tokens = std::max(stride, len + want);
+                need_blocks += (need_tokens + config_.block_size - 1) / config_.block_size;
+            }
+            if (need_blocks <= kv_cache_->NumFreeBlocks()) {
+                break;
+            }
+            --admit_count;  // 块不够 → 留在等待队列（D9），本步少接一条
+        }
+        for (int32_t j = 0; j < admit_count; ++j) {
+            const int32_t idx = waiting[static_cast<size_t>(next_waiting + j)];
+            const GenerateRequest& r = requests[static_cast<size_t>(idx)].request;
+            const int32_t len = static_cast<int32_t>(r.input_ids.size());
+            // 预留按 stride 算：填充位置的 K/V 也会写进 cache（p5_s3_interface_spec §3）
+            const int32_t reserve_tokens = std::max(stride, len + r.options.max_new_tokens);
+            if (!kv_cache_->AllocateSequence(seq_ids[static_cast<size_t>(idx)], reserve_tokens)) {
+                MINI_TRT_LOG_ERROR("LLMRunner: failed to allocate KV blocks for request " << idx);
+                return {};
+            }
+            scope.Add(seq_ids[static_cast<size_t>(idx)]);
+            ActiveSequence s;
+            s.seq_id = seq_ids[static_cast<size_t>(idx)];
+            s.result_slot = idx;
+            s.prompt_len = len;
+            s.max_new = r.options.max_new_tokens;
+            s.top_k = r.options.top_k;
+            s.top_p = r.options.top_p;
+            s.seed = r.options.seed;
+            active.push_back(s);
+        }
+        next_waiting += admit_count;
+
+        // 块表 / 语境长度每步重建并上传：登记与退出都改了行号（不变量 4 的"同源"就靠这一步）。
+        if (kv_cache_->UploadMetadata(nullptr) != cudaSuccess) {
+            MINI_TRT_LOG_ERROR("LLMRunner: failed to upload KV metadata");
+            return {};
+        }
+
+        // ---- ③ context 段：只装本步新入批的行 ----
+        const int32_t new_rows = static_cast<int32_t>(active.size()) - generation_rows;
+        if (new_rows > 0) {
+            int32_t s_step = 0;
+            for (int32_t j = generation_rows; j < static_cast<int32_t>(active.size()); ++j) {
+                s_step = std::max(s_step, active[static_cast<size_t>(j)].prompt_len);
+            }
+            const size_t step_sz = static_cast<size_t>(s_step);
+            std::vector<int32_t> flat(static_cast<size_t>(new_rows) * step_sz);
+            std::vector<int32_t> lengths(static_cast<size_t>(new_rows));
+            std::vector<int32_t> rows(static_cast<size_t>(new_rows));
+            for (int32_t j = 0; j < new_rows; ++j) {
+                const ActiveSequence& s = active[static_cast<size_t>(generation_rows + j)];
+                const GenerateRequest& r = requests[static_cast<size_t>(s.result_slot)].request;
+                const int32_t row = kv_cache_->RowOf(s.seq_id);
+                // 不变量 4：引擎第 j 行必须就是缓存批的第 (generation_rows + j) 行。
+                // 不显式校的话，映射错位只会表现为"结果悄悄不对"，而不是报错。
+                if (row != generation_rows + j) {
+                    MINI_TRT_LOG_ERROR("LLMRunner: seq " << s.seq_id << " sits at KV row " << row
+                                                         << ", expected " << (generation_rows + j)
+                                                         << " —— 行号不同源");
+                    return {};
+                }
+                rows[static_cast<size_t>(j)] = row;
+                lengths[static_cast<size_t>(j)] = s.prompt_len;
+                for (int32_t t = 0; t < s_step; ++t) {
+                    // 右填充：真实 token 之后填 0。填充位置的 K/V 会被写进 cache，但它们
+                    // 不在语境长度内 → 从不参与注意力，且会被后续 decode 覆盖。
+                    flat[static_cast<size_t>(j) * step_sz + static_cast<size_t>(t)] =
+                        t < s.prompt_len
+                            ? static_cast<int32_t>(r.input_ids[static_cast<size_t>(t)])
+                            : 0;
+                }
+            }
+            if (!BindPrefill(flat, new_rows, s_step, lengths) ||
+                !prefill_engine_->Enqueue(nullptr)) {
+                MINI_TRT_LOG_ERROR("LLMRunner: context segment failed");
+                return {};
+            }
+            // 末位 logits 要取**每行自己的真实末位**（S_step-1 是填充位置，那里的 logits 无意义）
+            const size_t elem = ElementSize(prefill_logits_half_);
+            const size_t row_bytes = static_cast<size_t>(config_.vocab_size) * elem;
+            for (int32_t j = 0; j < new_rows; ++j) {
+                const void* src = PrefillLogitsRow(j, s_step,
+                                                   lengths[static_cast<size_t>(j)] - 1);
+                void* dst = static_cast<char*>(d_prefill_last_logits_.data()) +
+                            static_cast<size_t>(j) * row_bytes;
+                if (src == nullptr ||
+                    cudaMemcpyAsync(dst, src, row_bytes, cudaMemcpyDeviceToDevice, nullptr) !=
+                        cudaSuccess) {
+                    MINI_TRT_LOG_ERROR("LLMRunner: failed to gather context logits rows");
+                    return {};
+                }
+            }
+            // 写回 prompt 的 K/V：显式行映射 + 逐行真实长度（p5_s3_interface_spec §3）
+            for (int32_t layer = 0; layer < config_.num_layers; ++layer) {
+                if (kv_cache_->WritePrefillKV(
+                        layer, d_prefill_kv_[static_cast<size_t>(layer) * 2]->data(),
+                        d_prefill_kv_[static_cast<size_t>(layer) * 2 + 1]->data(), s_step,
+                        rows.data(), new_rows, lengths.data(), nullptr) != cudaSuccess) {
+                    MINI_TRT_LOG_ERROR("LLMRunner: failed to write context K/V for layer " << layer);
+                    return {};
+                }
+            }
+            // 采第 0 个 token：各行都刚入批，随机步号都是 0（照样走 per-row 数组）
+            if (!UploadRowParams(active, generation_rows, new_rows) ||
+                !SampleBatch(static_cast<char*>(d_step_tokens_.data()) +
+                                 static_cast<size_t>(generation_rows) * sizeof(int32_t),
+                             /*from_prefill=*/true, new_rows, /*offset=*/0,
+                             static_cast<const uint64_t*>(d_offsets_.data()) + generation_rows,
+                             static_cast<int8_t*>(d_eos_hit_.data()) + generation_rows, nullptr)) {
+                MINI_TRT_LOG_ERROR("LLMRunner: context sampling failed");
+                return {};
+            }
+        }
+
+        // ---- ④ generation 段：只装本步在跑的活跃表前缀 ----
+        if (generation_rows > 0) {
+            // 每行的输入 token = 它自己上一步采出的那个 token。token 按**序列**存在结果缓冲里
+            // （行号每步都可能变），所以每步按行聚集一次再喂给引擎。
+            for (int32_t row = 0; row < generation_rows; ++row) {
+                const ActiveSequence& s = active[static_cast<size_t>(row)];
+                const int64_t src_index =
+                    static_cast<int64_t>(s.result_slot) * max_new + s.generated - 1;
+                if (cudaMemcpyAsync(static_cast<int32_t*>(d_decode_input_.data()) + row,
+                                    static_cast<const int32_t*>(d_result_tokens_.data()) +
+                                        src_index,
+                                    sizeof(int32_t), cudaMemcpyDeviceToDevice, nullptr) !=
+                    cudaSuccess) {
+                    MINI_TRT_LOG_ERROR("LLMRunner: failed to gather generation input tokens");
+                    return {};
+                }
+            }
+            if (!BindDecode(static_cast<const int32_t*>(d_decode_input_.data()), generation_rows)) {
+                MINI_TRT_LOG_ERROR("LLMRunner: failed to bind generation inputs");
+                return {};
+            }
+            // position_ids 取自**推进前**的设备端语境长度，所以必须在 AppendDecodeStep 之前
+            if (LaunchFillPositionIds(kv_cache_->context_lens(),
+                                      static_cast<int32_t*>(d_position_.data()), generation_rows,
+                                      nullptr) != cudaSuccess ||
+                !decode_engine_->Enqueue(nullptr)) {
+                MINI_TRT_LOG_ERROR("LLMRunner: generation segment failed");
+                return {};
+            }
+            for (int32_t layer = 0; layer < config_.num_layers; ++layer) {
+                keys[static_cast<size_t>(layer)] =
+                    d_decode_kv_[static_cast<size_t>(layer) * 2]->data();
+                values[static_cast<size_t>(layer)] =
+                    d_decode_kv_[static_cast<size_t>(layer) * 2 + 1]->data();
+            }
+            // 只追加、只推进本步在跑的那几行：本步刚入批的 context 行还没算出 decode 的 K/V
+            if (kv_cache_->AppendDecodeStep(keys, values, generation_rows, nullptr) != cudaSuccess) {
+                MINI_TRT_LOG_ERROR("LLMRunner: failed to append generation K/V");
+                return {};
+            }
+            if (!UploadRowParams(active, 0, generation_rows) ||
+                !SampleBatch(d_step_tokens_.data(), /*from_prefill=*/false, generation_rows,
+                             /*offset=*/0, static_cast<const uint64_t*>(d_offsets_.data()),
+                             static_cast<int8_t*>(d_eos_hit_.data()), nullptr)) {
+                MINI_TRT_LOG_ERROR("LLMRunner: generation sampling failed");
+                return {};
+            }
+        }
+
+        // ---- ⑤ 结果落位 + 交回 finish flag ----
+        for (int32_t row = 0; row < static_cast<int32_t>(active.size()); ++row) {
+            ActiveSequence& s = active[static_cast<size_t>(row)];
+            const int64_t dst_index =
+                static_cast<int64_t>(s.result_slot) * max_new + s.generated;
+            // 每步每行一次 4 字节 D2D：结果按"序列"聚集，退出/压实都不会挪动它
+            if (cudaMemcpyAsync(static_cast<int32_t*>(d_result_tokens_.data()) + dst_index,
+                                static_cast<const int32_t*>(d_step_tokens_.data()) + row,
+                                sizeof(int32_t), cudaMemcpyDeviceToDevice, nullptr) !=
+                cudaSuccess) {
+                MINI_TRT_LOG_ERROR("LLMRunner: failed to record the sampled token");
+                return {};
+            }
+            s.generated += 1;
+            if (s.generated >= s.max_new) {
+                s.finished = true;  // 下一步的 retire 收口
+            }
+        }
+        // 读回 finish flag：**最多一个在飞**。上一步的还没落地就不再发新的 ——
+        // 否则两次 D2H 会同时往同一块 pinned 缓冲里写（数据竞争），而 eos_pending_seqs
+        // 也只对应当前这块内容。推迟期间退出判定只晚一步（兜底同步见 retire）。
+        if (!active.empty() && !eos_pending) {
+            eos_pending_seqs.clear();
+            for (const ActiveSequence& s : active) {
+                eos_pending_seqs.push_back(s.seq_id);
+            }
+            if (cudaMemcpyAsync(host_eos_.data(), d_eos_hit_.data(),
+                                static_cast<size_t>(active.size()) * sizeof(int8_t),
+                                cudaMemcpyDeviceToHost, nullptr) != cudaSuccess) {
+                MINI_TRT_LOG_ERROR("LLMRunner: failed to issue the finish-flag readback");
+                return {};
+            }
+            eos_pending = true;
+            eos_pending_steps = 0;
+        }
+        ++step;
+        if (static_cast<int64_t>(step) > step_limit) {
+            MINI_TRT_LOG_ERROR("LLMRunner: scheduler step limit (" << step_limit << ") exceeded");
+            return {};
+        }
+    }
+
+    // ---- 3. 一次性取回并切分（循环外）：与 S1 同一口径 —— 结果不含末尾的 EOS ----
+    const size_t total = static_cast<size_t>(request_count) * static_cast<size_t>(max_new);
+    std::vector<int32_t> raw(total, 0);
+    if (cudaMemcpyAsync(raw.data(), d_result_tokens_.data(), total * sizeof(int32_t),
+                        cudaMemcpyDeviceToHost, nullptr) != cudaSuccess ||
+        cudaStreamSynchronize(nullptr) != cudaSuccess) {
+        MINI_TRT_LOG_ERROR("LLMRunner: failed to fetch scheduled tokens");
+        return {};
+    }
+    for (int32_t i = 0; i < request_count; ++i) {
+        const int32_t want = token_counts[static_cast<size_t>(i)];
+        std::vector<int64_t> tokens;
+        for (int32_t k = 0; k < want; ++k) {
+            const int32_t token =
+                raw[static_cast<size_t>(i) * static_cast<size_t>(max_new) +
+                    static_cast<size_t>(k)];
+            if (config_.eos_token_id >= 0 && token == config_.eos_token_id) {
+                break;
+            }
+            tokens.push_back(static_cast<int64_t>(token));
+        }
+        results[static_cast<size_t>(i)].seq_id = seq_ids[static_cast<size_t>(i)];
+        results[static_cast<size_t>(i)].tokens = std::move(tokens);
+        results[static_cast<size_t>(i)].ok = !results[static_cast<size_t>(i)].tokens.empty();
+    }
+    return results;
+}
+
+bool LLMRunner::UploadRowParams(const std::vector<ActiveSequence>& active, int32_t begin,
+                                int32_t count) {
+    if (begin < 0 || count < 0 ||
+        begin + count > static_cast<int32_t>(active.size()) || begin + count > batch_capacity_) {
+        MINI_TRT_LOG_ERROR("LLMRunner: row params out of range");
+        return false;
+    }
+    if (count == 0) {
+        return true;
+    }
+    std::vector<int32_t> top_k(static_cast<size_t>(count));
+    std::vector<float> top_p(static_cast<size_t>(count));
+    std::vector<uint64_t> seeds(static_cast<size_t>(count));
+    std::vector<uint64_t> offsets(static_cast<size_t>(count));
+    for (int32_t i = 0; i < count; ++i) {
+        const ActiveSequence& row = active[static_cast<size_t>(begin + i)];
+        top_k[static_cast<size_t>(i)] = row.top_k;
+        top_p[static_cast<size_t>(i)] = row.top_p;
+        seeds[static_cast<size_t>(i)] = row.seed;
+        // 随机步号 = 该行**自己的**已生成计数：随机流只由 (该请求 seed, 该请求的步号) 决定，
+        // 与批组成、行号、arrival_step 都无关 —— AC1 的逐位对拍就靠这条（p5_s3_interface_spec §5）。
+        offsets[static_cast<size_t>(i)] = static_cast<uint64_t>(row.generated);
+    }
+    const size_t base = static_cast<size_t>(begin);
+    if (cudaMemcpyAsync(static_cast<int32_t*>(d_top_k_.data()) + base, top_k.data(),
+                        top_k.size() * sizeof(int32_t), cudaMemcpyHostToDevice, nullptr) !=
+            cudaSuccess ||
+        cudaMemcpyAsync(static_cast<float*>(d_top_p_.data()) + base, top_p.data(),
+                        top_p.size() * sizeof(float), cudaMemcpyHostToDevice, nullptr) !=
+            cudaSuccess ||
+        cudaMemcpyAsync(static_cast<uint64_t*>(d_seeds_.data()) + base, seeds.data(),
+                        seeds.size() * sizeof(uint64_t), cudaMemcpyHostToDevice, nullptr) !=
+            cudaSuccess ||
+        cudaMemcpyAsync(static_cast<uint64_t*>(d_offsets_.data()) + base, offsets.data(),
+                        offsets.size() * sizeof(uint64_t), cudaMemcpyHostToDevice, nullptr) !=
+            cudaSuccess) {
+        MINI_TRT_LOG_ERROR("LLMRunner: failed to upload per-row sampling params");
+        return false;
+    }
+    return true;
 }
 
 }  // namespace mini_trt_llm

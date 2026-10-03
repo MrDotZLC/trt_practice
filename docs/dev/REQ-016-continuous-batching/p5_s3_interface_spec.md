@@ -176,7 +176,9 @@ std::vector<GenerateResult> RunScheduler(const std::vector<SchedulerRequest>& re
 | 风险 | 缓解 |
 |---|---|
 | **写回映射漏传 / 传错** | 契约里写死"必须带 `rows`"；`RowOf()` + 不变量 4 的校验；守门用例覆盖 |
-| 行号每步变导致逐行缓冲错位 | 每步重建 + 显式校验（不变量 4）；用例 `WriteBackRowsMapCorrectly` |
+| 行号每步变导致逐行缓冲错位 | 每步重建 + 显式校验（不变量 4，落码时校的是 `RowOf(seq) == generation_rows + j`）；用例 `WriteBackRowsMapCorrectly` |
+| **token 若按行号存放，退出压实后就会喂错 token** | token 按**序列**存进结果缓冲（槽位 = 请求下标），生成段每步按行聚集一次输入、采样后按行散射回序列槽位 |
+| finish flag 回读与循环重叠 | 最多一个回读在飞（未消费就**不发新的**，两次 D2H 写同一 pinned 缓冲是数据竞争）；连续 4 步没落地强制同步一次 |
 | finish flag 回读长期不落地 | 连续 N 步后强制同步一次（退化为按 `max_new` 退出） |
 | `padding_bias` 仍填 0（忘了按真实长度） | S3 的用例里必须有"长度不齐"这条（`UnequalPromptLengthsInFlight`） |
 | 两段的批大小超出 profile | 构造期已有 D8 的 profile 校验；`max_batch` 必须 ≤ profile 上限 |
