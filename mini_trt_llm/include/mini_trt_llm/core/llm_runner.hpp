@@ -127,6 +127,9 @@ class LLMRunner {
     // 复用缓冲：每次请求按需扩容，**解码循环内不分配**。
     DeviceBuffer d_prompt_;       // 输入的 prompt token（[1, S0] INT32）
     DeviceBuffer d_position_;     // position_ids（[1, S0] 或 [1,1] INT32）
+    // prefill 的加性 padding bias [B, 1, 1, S] FP32：S1/S2 的批内等长 → 全 0；
+    // S3 的调度器会把每行的真实长度填进来（design.md D12 / S3 方案 §3）。
+    DeviceBuffer d_padding_bias_;
     DeviceBuffer d_tokens_;       // 生成结果；采样器直接写到对应位置
     DeviceBuffer d_prefill_logits_;
     // prefill 末行的收集缓冲 [B, V]：采样器要求 logits 连续，而 [B,S,V] 的末行是跨步的。

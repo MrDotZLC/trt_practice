@@ -371,6 +371,25 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
         return false;
     }
 
+    // prefill 专有输入：**padding bias**（`[B, 1, 1, S]` FP32，加性）。
+    //
+    // 为什么需要它：因果 mask 是常量，只能表达"能不能看后面"，表达不了"这一行到第几个
+    // token 为止"——而连续批里各请求的 prompt 长度天然不齐（同一批要右填充）。有效位置填 0、
+    // 填充位置填一个足够大的负数，softmax 之前加上即可。
+    //
+    // **两个输入的动态维不会自动绑定**：TRT 不会因为两处都写 `-1` 就认定它们相等，调用方必须把
+    // 本输入的最后一维设成与 `input_ids` 的 S 一致。设错这一个数不会报错，只会让 mask 与 token
+    // 错位——所以 runner 侧把两个形状一起设（见 BindPrefill）。
+    nvinfer1::ITensor* padding_bias = nullptr;
+    if (!is_decode) {
+        padding_bias = network->addInput("padding_bias", nvinfer1::DataType::kFLOAT,
+                                         Dims4(-1, 1, 1, -1));
+        if (padding_bias == nullptr) {
+            MINI_TRT_LOG_ERROR("GPT-2 build: failed to declare padding_bias");
+            return false;
+        }
+    }
+
     // decode 专有输入：分页 KV Cache 与它的元数据。
     // block table 的宽度必须与 PagedKVCache 的 max_blocks_per_seq 一致，
     // 两者都由 ceil(n_positions / block_size) 推出——这里只推导一次，另一处由调用方显式传入。
@@ -615,6 +634,17 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
             nvinfer1::ElementWiseOperation::kSUM, LayerName(scope + "masked_scores"));
         if (masked == nullptr) {
             return false;
+        }
+
+        // 再叠一次 padding bias（`[B,1,1,S]` 广播到 `[B,NH,S,S]`）：把**填充位置**也屏蔽掉。
+        // 因果 mask 是批无关的常量，只有它表达不了"这一行的真实长度"，两者缺一不可。
+        if (padding_bias != nullptr) {
+            masked = AddElementWise(network, masked, padding_bias,
+                                    nvinfer1::ElementWiseOperation::kSUM,
+                                    LayerName(scope + "masked_padding"));
+            if (masked == nullptr) {
+                return false;
+            }
         }
 
         nvinfer1::ISoftMaxLayer* softmax = network->addSoftMax(*masked);

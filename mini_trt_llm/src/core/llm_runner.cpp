@@ -211,6 +211,7 @@ bool LLMRunner::ReserveBuffers(int32_t prompt_len, int32_t max_new_tokens, int32
     // FP16 引擎里 logits/K/V 实测是 FP32，用一个假定的全局 elem 会直接越界写。
     if (!d_prompt_.Allocate(batch_sz * seq_sz * sizeof(int32_t)) ||
         !d_position_.Allocate(batch_sz * seq_sz * sizeof(int32_t)) ||
+        !d_padding_bias_.Allocate(batch_sz * seq_sz * sizeof(float)) ||
         !d_prefill_logits_.Allocate(batch_sz * seq_sz * vocab_sz * prefill_logits_elem) ||
         !d_prefill_last_logits_.Allocate(batch_sz * vocab_sz * prefill_logits_elem) ||
         !d_decode_logits_.Allocate(batch_sz * vocab_sz * decode_logits_elem)) {
@@ -313,15 +314,22 @@ bool LLMRunner::BindPrefill(const std::vector<int32_t>& tokens, int32_t batch, i
             positions[static_cast<size_t>(b) * static_cast<size_t>(seq_len) + i] = i;
         }
     }
+    // padding bias：S1/S2 的批内等长，全 0 即正确（每行都吃满 S）。
+    // S3 的调度器会按每行的真实长度填 0 / -1e4（design.md D12 / S3 方案 §3）。
+    std::vector<float> padding(positions.size(), 0.0f);
     if (cudaMemcpyAsync(d_prompt_.data(), tokens.data(), tokens.size() * sizeof(int32_t),
                         cudaMemcpyHostToDevice, nullptr) != cudaSuccess ||
         cudaMemcpyAsync(d_position_.data(), positions.data(),
                         positions.size() * sizeof(int32_t), cudaMemcpyHostToDevice,
+                        nullptr) != cudaSuccess ||
+        cudaMemcpyAsync(d_padding_bias_.data(), padding.data(),
+                        padding.size() * sizeof(float), cudaMemcpyHostToDevice,
                         nullptr) != cudaSuccess) {
         return false;
     }
     if (!prefill_engine_->SetTensorAddress("input_ids", d_prompt_.data()) ||
         !prefill_engine_->SetTensorAddress("position_ids", d_position_.data()) ||
+        !prefill_engine_->SetTensorAddress("padding_bias", d_padding_bias_.data()) ||
         !prefill_engine_->SetTensorAddress("logits", d_prefill_logits_.data())) {
         return false;
     }

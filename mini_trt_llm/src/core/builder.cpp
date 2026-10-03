@@ -34,7 +34,10 @@ namespace {
 // 旧引擎是在"这个插件不需要 workspace"的前提下建的，复用它会**往 0 字节缓冲里写**——
 // 而指纹默认看不见插件源码的变化（它只看模型/配置的 size+mtime），所以这里必须手工声明代次
 // （开发计划 §12.8 第 1 条）。副作用是下次真机第一次会重建全部引擎（分钟级），那是预期的。
-constexpr int32_t kEngineGraphVersion = 2;
+// 建图代码代次。任何改变图行为的改动都必须 +1，否则引擎缓存会判定"未过期"而沿用旧图
+// （指纹不含建图代码本身）。
+// 3: prefill 图新增 padding_bias 输入（REQ-016 S3，支持批内 prompt 长度不齐）
+constexpr int32_t kEngineGraphVersion = 3;
 
 const char* StageName(BuildStage stage) {
     switch (stage) {
