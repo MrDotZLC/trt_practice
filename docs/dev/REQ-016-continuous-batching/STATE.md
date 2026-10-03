@@ -84,6 +84,7 @@
 | `mini_trt_llm/src/kv_cache/paged_kv_cache_kernels.cu` | 寻址改 `block_tables[rows[b] * W + position / block_size]` 与 `context_lens[rows[b]]`；元素总数按 `row_count`；launch 同步传参 |
 | `mini_trt_llm/src/core/llm_runner.cpp` | `GenerateBatch` 的 prefill 写回显式传**恒等映射**（静态批行为逐位不变，AC5 不受影响） |
 | `mini_trt_llm/tests/test_paged_kv_cache.cpp`、`tests/test_gpt2_decode_consistency.cpp` | 6 处按旧签名调用的点改成恒等映射（签名变更的机械后果，断言未动） |
+| `docs/dev/REQ-016-continuous-batching/p5_s3_interface_spec.md` | §3 的写回签名补 `row_lengths` 与理由；§7 的文件级改动同步 |
 
 **为什么必须带映射**：S3 的活跃批下上下文段只装本步新入批的序列（B_new 行），而缓存批里还有正在
 generation 的行。按"缓存已登记序列数"整批写会拿源缓冲里上一轮的残留行去覆盖**别的序列自己的**
@@ -93,13 +94,19 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
 **测试方式**：本沙箱无编译器 → 只做静态自检（锚点唯一、花括号/圆括号/方括号平衡、最长行 < 200、
 关键符号成对、CRLF 无 BOM）。真机待跑：`mini_trt_llm_tests` 全量。
 
-**本步发现（不在本步范围内，未改）**：`tests/test_paged_kv_cache.cpp` 的
-`RejectsPrefillBeyondReservedTokens` 少一个收尾 `}` —— 由 P5-S2 提交 `182fff0` 引入，其后两个 TEST
-被嵌进它的函数体（括号深度 3，其余 TEST 都是 2），`mini_trt_llm_tests` 会编译不过。待作者定夺是否单独补一笔。
+**两处发现的收口（2026-10-04，作者授权后）**：
 
-**留给下一步的接口缺口（未改签名）**：padding 路径下每行真实 prompt 长度不同，而
-`WritePrefillKV` 只有全局 `tokens`，会把被映射行的 `context_lens` 统一推成 `tokens`；
-调度器步要按**逐行真实长度**写回，否则 decode 会从填充位置起算、并把填充位置纳入注意力。
+1. `tests/test_paged_kv_cache.cpp` 的 `RejectsPrefillBeyondReservedTokens` 的收尾 `}` 被 P5-S2 提交
+   `182fff0` 挪到了文件末尾（新用例插在旧用例的收尾大括号之前）→ 其后两个 TEST 被嵌进它的函数体
+   （逐行深度 3）。**已修**（`45ac102`）：大括号搬回原位、删掉末尾多出来的那个；改后 8 个 TEST 深度
+   全为 2、`final_depth = 0`。**注意**：那一笔的总量仍然平衡（末尾那个大括号顶了缺），所以只看总量的
+   括号检查抓不到这类错，必须看**逐行深度**。
+2. padding 路径下每行真实 prompt 长度不同，而 `WritePrefillKV` 只有全局 `tokens`，会把被映射行的
+   `context_lens` 统一推成 stride（decode 会从填充位置起算、并把填充位置纳入注意力）。**已修**（本笔）：
+   加 `row_lengths`（逐行真实长度，契约 `(0, tokens]`），写完后 `context_lens[rows[i]] = row_lengths[i]`；
+   `row_lengths[i] == tokens` 就是 S1/S2 的原行为。签名与理由已回填 `p5_s3_interface_spec.md` §3/§7。
+   **残留约束（调度器步要照做）**：填充位置的 K/V 仍按 stride 写进 cache，所以块预留要按
+   `ceil((S_step + max_new) / block_size)` 算，不是按真实长度。
 
 ---
 
@@ -118,6 +125,9 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
 - 2026-10-04: **S4 并入本 feature**（打包路径，默认；`REQ-020` 曾分配后同日撤销，编号作废不复用）
 - 2026-10-04: **P5-S3 第 3 步落码**（写回行映射：`WritePrefillKV` 带 `rows`/`row_count` + `RowOf` +
   kernel 按映射寻址 + 恒等表复用；7 个文件），**未编译验证**
+- 2026-10-04: 作者授权收口两处发现：修复 `tests/test_paged_kv_cache.cpp` 被错位的大括号（`45ac102`）；
+  `WritePrefillKV` 加逐行真实长度 `row_lengths`（padding 路径的 `context_lens`）；删掉交接用的
+  `next_session_prompt.md`
 - 2026-10-03: 不变量 1 / 2 / 4 落地：D6 依据注释、D8 构造期 profile 校验、行号同源显式校验
 - 2026-10-03: **P5-S2 落码**（6 个文件）：元数据缓冲按 max_batch 预分配、`NumFreeBlocks()`、
   `FreeSequence` 补"压实行 + 重建镜像"（补掉一个被掩盖的洞）、调用内归还（RAII 守卫）、

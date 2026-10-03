@@ -104,11 +104,12 @@ class PagedKVCache {
     cudaError_t UploadMetadata(cudaStream_t stream);
 
     // 把 prefill 引擎输出的 K/V（[row_count, kv_heads, tokens, head_size]）写进 cache，
-    // 并把**被映射行**的语境长度设为 tokens——host 与设备两侧一起更新。
+    // 并把**被映射行**的语境长度设为各自的 row_lengths[i]——host 与设备两侧一起更新。
     //
     // rows[i] = 引擎第 i 行 → 缓存批内第 rows[i] 行；row_count 是**本次参与 prefill 的行数**
     // （源缓冲里真正有效的行数，不是 cache 已登记的序列数）。
-    // **契约**：rows 必须非空、row_count > 0，且每个元素落在 [0, batch_size())。
+    // **契约**：rows / row_lengths 必须非空、row_count > 0，rows[i] 落在 [0, batch_size())，
+    // row_lengths[i] 落在 (0, tokens]。
     // rows 是 host 数组；本函数把它拷进构造期备好的常驻设备缓冲，再交给 kernel
     // （本函数只在 prefill 段被调用，不违反"解码循环内不得有 H2D"）。
     //
@@ -118,13 +119,20 @@ class PagedKVCache {
     // 静态批（S1/S2）批内顺序 == 请求顺序，调用方传恒等映射 rows[i] = i、row_count = batch，
     // 行为与改动前逐位相同（AC5）。
     //
-    // 设备侧那一步不能省：decode 追加的位置就是设备端 context_lens[row]；
+    // **为什么 `tokens` 之外还要 row_lengths**（p5_s3_interface_spec §3）：`tokens` 是源张量的
+    // token 轴长度，也就是每行写入的**位置数**（padding 路径下 = 本步最大 prompt 长度 S_step）；
+    // 而语境长度必须停在每行**真实**长度上，否则 decode 会从填充位置起算、并把填充位置纳入注意力
+    // （AC2 不成立）。S1/S2 批内等长 → row_lengths[i] == tokens，与原行为逐位相同。
+    // 注意填充位置的 K/V 仍会被写进 cache（写入按 stride 走）：它们不在语境长度内，因此从不参与
+    // 注意力、且会被后续 decode 覆盖；代价是块预留必须按 `tokens` 算而不是按真实长度。
+    //
+    // 设备侧那一步不能省：decode 追加的位置就是设备端 context_lens[rows[i]]；
     // 若只更新 host 镜像，后续追加会写回位置 0，**静默覆盖 prefill 的第一个 token**。
     // 因此由本函数负责把长度推上去，而不是要求调用方记得补一次 UploadMetadata。
     // （每个请求只发生一次，不违反"解码循环内不得有 H2D"。）
     cudaError_t WritePrefillKV(int32_t layer, const void* key, const void* value,
                               int32_t tokens, const int32_t* rows, int32_t row_count,
-                              cudaStream_t stream);
+                              const int32_t* row_lengths, cudaStream_t stream);
 
     // 追加 decode 当前 token 的**某一层** K/V（[batch, kv_heads, 1, head_size]）。
     // 只负责写数据，**不推进语境长度**——长度是"每个 token 一个"的量，

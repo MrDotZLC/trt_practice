@@ -70,11 +70,26 @@ generation 段再算一遍（它从下一步起才参与）。
 
 ```cpp
 // rows[i] = 引擎第 i 行 → 缓存批内第 rows[i] 行
+// row_lengths[i] = 引擎第 i 行的**真实** token 数（<= tokens）
 cudaError_t WritePrefillKV(int32_t layer, const void* key, const void* value, int32_t tokens,
-                           const int32_t* rows, int32_t row_count, cudaStream_t stream);
+                           const int32_t* rows, int32_t row_count,
+                           const int32_t* row_lengths, cudaStream_t stream);
 ```
 
 kernel 里把寻址从 `block_tables[b * W + …]` 换成 `block_tables[rows[b] * W + …]`。
+
+**`tokens` 与 `row_lengths` 必须分开（2026-10-04 补，落码时发现）**：`tokens` 是源张量的 token 轴长度，
+也就是**每行写入的位置数**（padding 路径下 = 本步的 `S_step`）；而 `context_lens` 必须停在各行的
+**真实** prompt 长度上，否则 decode 会从填充位置起算、并把填充位置纳入注意力（AC2 直接不成立）。
+S1/S2 的批内等长让两者恒等，所以过去一个 `tokens` 就够。
+
+- 写完后 `context_lens[rows[i]] = row_lengths[i]`（**不是** `tokens`）。
+- 契约：`row_lengths[i] ∈ (0, tokens]`；全等于 `tokens` 就是静态批的原行为。
+- 填充位置的 K/V **仍会**被写进 cache（写入按 stride 走，才能保持一次 launch 与合并访存）；
+  它们不在 `context_lens` 内 → 从不参与注意力，且会被后续 decode 逐步覆盖。
+  代价是**块预留要按 `tokens`（stride）算**，不是按真实长度：`ceil((S_step + max_new) / block_size)`。
+  若实测出池压力（D9 的准入被预算卡住），再考虑"按 `row_lengths[i]` 逐行截断写入"
+  （那需要把 lengths 也搬上设备）——**本步不做**。
 
 **不改它的后果**：写回会按 `order_.size()` 逐行写，而源缓冲里只有前 `B_new` 行是本次算出来的、其余是**上一轮的残留** —— 会覆盖别的序列自己的 prompt K/V（静默算错）。
 
@@ -119,7 +134,7 @@ std::vector<GenerateResult> RunScheduler(const std::vector<SchedulerRequest>& re
 
 | 文件 | 改动 |
 |---|---|
-| `include/.../kv_cache/paged_kv_cache.hpp` | `WritePrefillKV` 加 `rows` / `row_count`；新增 `RowOf(seq_id)`；契约注释更新 |
+| `include/.../kv_cache/paged_kv_cache.hpp` | `WritePrefillKV` 加 `rows` / `row_count` / `row_lengths`（逐行真实长度，见 §3）；新增 `RowOf(seq_id)`；契约注释更新 |
 | `src/kv_cache/paged_kv_cache.cpp` + `paged_kv_cache_kernels.cu` | 写回 kernel 用 `rows[b]` 寻址；`RowOf` 实现 |
 | `include/.../core/llm_runner.hpp` | 活跃表与 finish flag 的 pinned 暂存随实现落地（`RunScheduler` 接口已在） |
 | `src/core/llm_runner.cpp` | 五步调度循环；**每步重建逐行缓冲**；`padding_bias` 按真实长度填；finish flag 回读与兜底 |

@@ -220,9 +220,10 @@ cudaError_t PagedKVCache::UploadMetadata(cudaStream_t stream) {
 
 cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const void* value,
                                          int32_t tokens, const int32_t* rows,
-                                         int32_t row_count, cudaStream_t stream) {
+                                         int32_t row_count, const int32_t* row_lengths,
+                                         cudaStream_t stream) {
     if (!valid_ || key == nullptr || value == nullptr || tokens <= 0 || rows == nullptr ||
-        row_count <= 0) {
+        row_count <= 0 || row_lengths == nullptr) {
         return cudaErrorInvalidValue;
     }
     void* cache_key = key_cache(layer);
@@ -245,14 +246,21 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
         return cudaErrorInvalidValue;
     }
     // 逐行核对：① 行号必须落在已登记范围内（越界会寻址到墙外/别的行），
-    // ② 被映射行的预留量必须够——块表里没被预留的位置在 host 镜像里是 0，
+    // ② 真实长度必须落在 (0, tokens]（越界会把语境长度写成未来位置/0），
+    // ③ 被映射行的预留量必须够——块表里没被预留的位置在 host 镜像里是 0，
     // 越界写入会**静默写进物理块 0**（通常是别的序列的数据），必须在入口拦住。
+    // 预留量按 `tokens`（写入的 stride）比，不是按真实长度：填充位置也会被写进 cache。
     // 只检查被映射的行：未参与本次写入的行一个字节都不该被碰。
     for (int32_t i = 0; i < row_count; ++i) {
         const int32_t row = rows[i];
         if (row < 0 || row >= batch) {
             MINI_TRT_LOG_ERROR("PagedKVCache: row mapping out of range at " << i << " (row "
                                << row << ", registered batch " << batch << ")");
+            return cudaErrorInvalidValue;
+        }
+        if (row_lengths[i] <= 0 || row_lengths[i] > tokens) {
+            MINI_TRT_LOG_ERROR("PagedKVCache: row length " << row_lengths[i] << " at " << i
+                               << " is out of (0, " << tokens << "]");
             return cudaErrorInvalidValue;
         }
         const Sequence& sequence = sequences_.at(order_[static_cast<size_t>(row)]);
@@ -293,13 +301,15 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
     if (err != cudaSuccess) {
         return err;
     }
-    // host 侧记账与设备侧保持一致：写完之后**被映射行**的有效长度就是 tokens。
+    // host 侧记账与设备侧保持一致：写完之后**被映射行**的有效长度是它自己的真实长度。
+    // 为什么不是 `tokens`：`tokens` 是写入的 stride，padding 路径下它会大于短行的真实长度，
+    // 把语境长度写成 stride 会让 decode 从填充位置起算、并把填充位置纳入注意力。
     // 只记这几行：未参与本次写入的行长度不变，否则会被写上不属于它的长度，
     // 后续 UploadMetadata 把错长度推回设备 —— 与"写回覆盖"是同一类静默错。
     for (int32_t i = 0; i < row_count; ++i) {
         const size_t row = static_cast<size_t>(rows[i]);
-        context_lens_host_[row] = tokens;
-        sequences_[order_[row]].length = tokens;
+        context_lens_host_[row] = row_lengths[i];
+        sequences_[order_[row]].length = row_lengths[i];
     }
     // 立刻把长度推到设备：decode 追加的位置取自设备端 context_lens，
     // 漏掉这一步的话追加会写回位置 0（静默覆盖第一个 token）。

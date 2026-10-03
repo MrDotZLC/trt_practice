@@ -143,8 +143,10 @@ TEST(PagedKVCacheTest, PrefillWritesThroughBlockTable) {
 
     // 行映射：两条序列的批内顺序就是登记顺序（seq 7 第 0 行、seq 3 第 1 行）
     const std::vector<int32_t> rows = {0, 1};
+    const std::vector<int32_t> lengths = {kTokens, kTokens};  // 两条都是本次写入的全部 token
     ASSERT_EQ(cache.WritePrefillKV(/*layer=*/0, d_key.data(), d_value.data(), kTokens,
                                    rows.data(), static_cast<int32_t>(rows.size()),
+                                   lengths.data(),
                                    /*stream=*/nullptr),
               cudaSuccess);
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -214,9 +216,10 @@ TEST(PagedKVCacheTest, AppendCrossesBlockBoundaryAndAdvancesContextLens) {
     CUDA_CHECK(cudaMemcpy(d_prefill_value.data(), prefill_value.data(),
                           d_prefill_value.size(), cudaMemcpyHostToDevice));
     const std::vector<int32_t> rows = {0};  // 单序列：批内第 0 行
+    const std::vector<int32_t> lengths = {kPrefillTokens};
     ASSERT_EQ(cache.WritePrefillKV(0, d_prefill_key.data(), d_prefill_value.data(),
                                    kPrefillTokens, rows.data(),
-                                   static_cast<int32_t>(rows.size()), nullptr),
+                                   static_cast<int32_t>(rows.size()), lengths.data(), nullptr),
               cudaSuccess);
     // WritePrefillKV 必须自己把长度推到设备：decode 追加的位置取自设备端
     // context_lens，漏掉这一步追加会写回位置 0、静默覆盖第一个 token。
@@ -338,12 +341,14 @@ TEST(PagedKVCacheTest, RejectsPrefillBeyondReservedTokens) {
 
     // 预留 5 个 token（2 块），写 7 个 → 必须失败
     const std::vector<int32_t> rows = {0};  // 单序列：批内第 0 行
+    const std::vector<int32_t> lengths_7 = {7};
     EXPECT_NE(cache.WritePrefillKV(0, buffer.data(), buffer.data(), 7, rows.data(),
-                                   static_cast<int32_t>(rows.size()), nullptr),
+                                   static_cast<int32_t>(rows.size()), lengths_7.data(), nullptr),
               cudaSuccess);
     // 预留范围内的写入应当成功
+    const std::vector<int32_t> lengths_5 = {5};
     EXPECT_EQ(cache.WritePrefillKV(0, buffer.data(), buffer.data(), 5, rows.data(),
-                                   static_cast<int32_t>(rows.size()), nullptr),
+                                   static_cast<int32_t>(rows.size()), lengths_5.data(), nullptr),
               cudaSuccess);
 }
 
