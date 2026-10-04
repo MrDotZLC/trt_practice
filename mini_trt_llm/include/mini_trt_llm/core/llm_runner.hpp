@@ -47,6 +47,15 @@ class LLMRunner {
         // 生成到这个 id 就截断（-1 表示不截断）。
         // 注意截断发生在**循环之后**：循环内不能同步，所以做不到"一见 EOS 就停"。
         int32_t eos_token_id = -1;
+
+        // **prefill 路径选择（S4，2026-10-04）**。
+        //   kPaddedTwoPhase —— S3 的 padding + 两段式（**默认**，既有的两条引擎）；
+        //   kPackedMixed    —— S4 的 packed 混合批：一个张量装两相、每步一次调用。
+        // packed 模式下**只用 `prefill_engine_`**（调用方把那个 packed 引擎放在这个槽位，
+        // `decode_engine_` 仍需非空以满足构造期校验，但不会被调用）—— 这样切换不改调用方签名（AC8）。
+        // **默认值保持 padding**：翻转要等 P6 把两条路径都跑绿（未编译/未验证的路径不当默认）。
+        enum class PrefillMode { kPaddedTwoPhase = 0, kPackedMixed = 1 };
+        PrefillMode prefill_mode = PrefillMode::kPaddedTwoPhase;
     };
 
     struct GenerateOptions {
@@ -181,6 +190,14 @@ class LLMRunner {
                      const uint64_t* row_offsets, int8_t* eos_hit, cudaStream_t stream);
     // 把 active[begin, begin+count) 的逐行采样参数（k / p / seed / 随机步号）上传到设备缓冲。
     bool UploadRowParams(const std::vector<ActiveSequence>& active, int32_t begin, int32_t count);
+    // 同上，但按**显式顺序**（S4 的 packed 行序：context 行在前、generation 行在后）上传。
+    bool UploadRowParamsByOrder(const std::vector<ActiveSequence>& active,
+                                const std::vector<int32_t>& active_indices);
+    // **S4 的一步**：打包 → 一次 packed 调用 → context 写回 / generation 追加 → 采样。
+    // active 的行序 = 活跃表序（generation 行是前缀）；packed 行序 = context 行在前。
+    bool RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
+                            const std::vector<ActiveSequence>& active, int32_t generation_rows,
+                            int32_t new_rows, int32_t max_new);
 
     Config config_;
     bool valid_ = false;
@@ -217,6 +234,13 @@ class LLMRunner {
     PinnedBuffer host_eos_;         // finish flag 的 pinned 回读暂存
     // 上一次 RunScheduler 的观测统计（只读出口是 scheduler_stats()）。
     SchedulerStats scheduler_stats_;
+    // ---- S4 packed 混合批的逐行缓冲（同样按容量备好，循环内只填不分配）----
+    DeviceBuffer d_packed_tokens_;         // [T_max] int32：input_ids[T]
+    DeviceBuffer d_packed_positions_;      // [T_max] int32：position_ids[T]
+    DeviceBuffer d_cu_seqlens_ctx_;        // [max_batch+1] int32：**段内**前缀和（context 段）
+    DeviceBuffer d_context_seq_count_;     // [1] int32：段边界 B_ctx
+    DeviceBuffer d_packed_block_tables_;   // [max_batch, max_blocks_per_seq] int32（**按 packed 行序**）
+    DeviceBuffer d_packed_context_lens_;   // [max_batch] int32（同上，**推进前**的值）
     // 每层的 K/V 输出缓冲（prefill/decode 各自的形状不同）
     std::vector<std::unique_ptr<DeviceBuffer>> d_prefill_kv_;
     std::vector<std::unique_ptr<DeviceBuffer>> d_decode_kv_;

@@ -49,6 +49,21 @@ struct PagedKVWriteArgs {
     //        把 context_lens[b] 增加 tokens——每步都回 host 改一次会让
     //        自回归循环里出现 H2D 拷贝（AGENTS.md §3.A.3）。
     bool append = false;
+    // **S4 的 packed 源寻址（2026-10-04 加；默认 null/0 = 既有行为）**。
+    //
+    // 为什么需要它：S4 的源张量是**一个 packed 张量**（context 段的全部 token 在前、
+    // generation 段的 1 token/行在后），所以"引擎第 b 行的 token 从源缓冲的哪里开始"不再等于
+    // `b * tokens`：
+    //   * prefill（`append == false`）：源行基址 = `cu_seqlens_ctx[b]`（**段内下标**，从 0 起）；
+    //   * decode （`append == true`）：源行基址 = `cu_seqlens_ctx[context_seq_count] + b`
+    //     （generation 段每行恰好 1 个 token，所以是连续的）。
+    //
+    // 两个量都是**设备值**（`cu_seqlens_ctx` 是设备数组），所以只能由 kernel 自己读 ——
+    // 调用方拿不到、也不该拿（那会引入 D2H 同步）。nullptr 时维持 `b * tokens` 的既有语义
+    // （S1/S2/S3 与既有用例都这么用）。
+    const int32_t* cu_seqlens_ctx = nullptr;  // [context_seq_count + 1]
+    int32_t context_seq_count = 0;            // S4 的段边界（context 段的序列数）
+    // 目标缓存行的映射仍由 `rows`（+`row_count`）给出，与上面两个量正交。
 };
 
 // 按分页布局写入 K/V。

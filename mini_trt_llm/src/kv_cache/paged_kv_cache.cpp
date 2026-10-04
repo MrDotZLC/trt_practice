@@ -221,7 +221,9 @@ cudaError_t PagedKVCache::UploadMetadata(cudaStream_t stream) {
 cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const void* value,
                                          int32_t tokens, const int32_t* rows,
                                          int32_t row_count, const int32_t* row_lengths,
-                                         cudaStream_t stream) {
+                                         cudaStream_t stream,
+                                         const int32_t* cu_seqlens_ctx,
+                                         int32_t context_seq_count) {
     if (!valid_ || key == nullptr || value == nullptr || tokens <= 0 || rows == nullptr ||
         row_count <= 0 || row_lengths == nullptr) {
         return cudaErrorInvalidValue;
@@ -239,11 +241,17 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
                            << " does not fit the registered batch " << batch);
         return cudaErrorInvalidValue;
     }
-    const int32_t blocks_needed = BlocksForTokens(tokens, config_.block_size);
-    if (blocks_needed > config_.max_blocks_per_seq) {
-        MINI_TRT_LOG_ERROR("PagedKVCache: prefill length " << tokens
-                                                          << " exceeds reserved blocks");
-        return cudaErrorInvalidValue;
+    // S4：源是 packed 张量时，每行的长度各不相同（由 `row_lengths` 给出、`cu_seqlens_ctx` 同源），
+    // 所以"统一 stride"的块数检查不适用；下面的逐行检查改用 `row_lengths[i]`。
+    // `tokens` 在这条路径上只是一个形状占位（调用方传**最大行长**），不参与校验。
+    const bool packed_source = (cu_seqlens_ctx != nullptr);
+    if (!packed_source) {
+        const int32_t blocks_needed = BlocksForTokens(tokens, config_.block_size);
+        if (blocks_needed > config_.max_blocks_per_seq) {
+            MINI_TRT_LOG_ERROR("PagedKVCache: prefill length " << tokens
+                                                              << " exceeds reserved blocks");
+            return cudaErrorInvalidValue;
+        }
     }
     // 逐行核对：① 行号必须落在已登记范围内（越界会寻址到墙外/别的行），
     // ② 真实长度必须落在 (0, tokens]（越界会把语境长度写成未来位置/0），
@@ -264,9 +272,10 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
             return cudaErrorInvalidValue;
         }
         const Sequence& sequence = sequences_.at(order_[static_cast<size_t>(row)]);
-        if (tokens > sequence.reserved_tokens) {
+        const int32_t length = packed_source ? row_lengths[i] : tokens;
+        if (length > sequence.reserved_tokens) {
             MINI_TRT_LOG_ERROR("PagedKVCache: prefill length "
-                               << tokens << " exceeds reserved "
+                               << length << " exceeds reserved "
                                << sequence.reserved_tokens << " tokens of seq "
                                << order_[static_cast<size_t>(row)]);
             return cudaErrorInvalidValue;
@@ -296,6 +305,9 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
     args.is_half = config_.is_half;
     args.source_is_half = config_.source_is_half;
     args.append = false;
+    // S4：源是 packed 张量时，源行基址由 kernel 从设备端读（见 PagedKVWriteArgs 的说明）
+    args.cu_seqlens_ctx = cu_seqlens_ctx;
+    args.context_seq_count = context_seq_count;
 
     const cudaError_t err = LaunchWriteKV(args, stream);
     if (err != cudaSuccess) {
@@ -320,7 +332,9 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
 }
 
 cudaError_t PagedKVCache::AppendDecodeKV(int32_t layer, const void* key, const void* value,
-                                         int32_t row_count, cudaStream_t stream) {
+                                         int32_t row_count, cudaStream_t stream,
+                                         const int32_t* cu_seqlens_ctx,
+                                         int32_t context_seq_count) {
     if (!valid_ || key == nullptr || value == nullptr) {
         return cudaErrorInvalidValue;
     }
@@ -355,6 +369,9 @@ cudaError_t PagedKVCache::AppendDecodeKV(int32_t layer, const void* key, const v
     args.is_half = config_.is_half;
     args.source_is_half = config_.source_is_half;
     args.append = true;
+    // S4：generation 段的源在 packed 张量里从 `cu_seqlens_ctx[B_ctx]` 起（每行 1 个 token、连续）
+    args.cu_seqlens_ctx = cu_seqlens_ctx;
+    args.context_seq_count = context_seq_count;
 
     return LaunchWriteKV(args, stream);
 }
@@ -362,7 +379,9 @@ cudaError_t PagedKVCache::AppendDecodeKV(int32_t layer, const void* key, const v
 cudaError_t PagedKVCache::AppendDecodeStep(const std::vector<const void*>& keys,
                                            const std::vector<const void*>& values,
                                            int32_t row_count,
-                                           cudaStream_t stream) {
+                                           cudaStream_t stream,
+                                           const int32_t* cu_seqlens_ctx,
+                                           int32_t context_seq_count) {
     if (keys.size() != values.size() ||
         keys.size() != static_cast<size_t>(config_.num_layers)) {
         MINI_TRT_LOG_ERROR("PagedKVCache: AppendDecodeStep expects one K/V pair per layer");
@@ -371,7 +390,7 @@ cudaError_t PagedKVCache::AppendDecodeStep(const std::vector<const void*>& keys,
     for (int32_t layer = 0; layer < config_.num_layers; ++layer) {
         const cudaError_t err = AppendDecodeKV(layer, keys[static_cast<size_t>(layer)],
                                               values[static_cast<size_t>(layer)], row_count,
-                                              stream);
+                                              stream, cu_seqlens_ctx, context_seq_count);
         if (err != cudaSuccess) {
             return err;
         }

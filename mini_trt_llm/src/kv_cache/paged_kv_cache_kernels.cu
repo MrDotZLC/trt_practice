@@ -25,7 +25,9 @@ __global__ void WriteKVKernel(const SrcT* __restrict__ key, const SrcT* __restri
                               const int32_t* __restrict__ rows,
                               int32_t kv_heads, int32_t tokens, int32_t head_size,
                               int32_t block_size, int32_t max_blocks_per_seq,
-                              bool append, int64_t elements) {
+                              bool append, int64_t elements,
+                              const int32_t* __restrict__ cu_seqlens_ctx,
+                              int32_t context_seq_count) {
     for (int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
          i < elements; i += static_cast<int64_t>(gridDim.x) * blockDim.x) {
         const int32_t d = static_cast<int32_t>(i % head_size);
@@ -38,6 +40,16 @@ __global__ void WriteKVKernel(const SrcT* __restrict__ key, const SrcT* __restri
         // 引擎行 → 缓存批内行：源张量的行序与块表的行序不同源时（S3 的活跃批）必须按映射
         // 寻址，否则会写进**别的序列**自己的块（静默算错，见 PagedKVWriteArgs::rows）。
         const int32_t row = rows[engine_row];
+        // S4：源张量是 packed 的（context 段在前、generation 段在后），源行基址因此不是
+        // `engine_row * tokens`。两个分支的公式见 PagedKVWriteArgs::cu_seqlens_ctx 的说明；
+        // `cu_seqlens_ctx` 为空时保持既有语义（每行等长）。
+        const int32_t source_row =
+            (cu_seqlens_ctx == nullptr)
+                ? engine_row
+                : (append ? (cu_seqlens_ctx[context_seq_count] + engine_row)
+                          : cu_seqlens_ctx[engine_row]);
+        const int64_t source_index =
+            ((static_cast<int64_t>(source_row) * kv_heads + h) * tokens + t) * head_size + d;
         // prefill 从 0 开始覆盖写；decode 从当前语境长度处追加。
         const int32_t position = (append ? context_lens[row] : 0) + t;
         const int32_t physical_block = block_tables[row * max_blocks_per_seq +
@@ -49,8 +61,50 @@ __global__ void WriteKVKernel(const SrcT* __restrict__ key, const SrcT* __restri
             d;
         // 源与目标精度可能不同（见头文件说明）：统一经 float 中转，避免直接
         // static_cast 在半精度/单精度之间踩隐式取整规则的坑。
-        key_cache[cache_offset] = cuda::FromFloat<DstT>(cuda::ToFloat(key[i]));
-        value_cache[cache_offset] = cuda::FromFloat<DstT>(cuda::ToFloat(value[i]));
+        key_cache[cache_offset] = cuda::FromFloat<DstT>(cuda::ToFloat(key[source_index]));
+        value_cache[cache_offset] = cuda::FromFloat<DstT>(cuda::ToFloat(value[source_index]));
+    }
+}
+
+// **S4 的 packed 写回**：源是打包张量（context 段的全部 token 在前），**每行的长度不同**，
+// 所以不能用"统一 stride × 行号"去分解线性下标（那正是上面那个通用 kernel 的做法）。
+// 这里改成"**一个 block 负责一行**"：行的区间由 `cu_seqlens_ctx` 给出（段内下标），
+// 目标缓存行由 `rows` 给出，块内位置从 0 覆盖写（prefill 语义）。
+//
+// 越界保护：`cu_seqlens_ctx` 是调用方（runner）与自己构造的 `row_lengths` 同源给出的，
+// 预留量的校验在 host 侧（`WritePrefillKV` 的逐行检查）已经做过 —— kernel 里不再重复查，
+// 但因此**必须**保证两者同源（这也是为什么它只由 PagedKVCache 自己调用）。
+template <typename SrcT, typename DstT>
+__global__ void WriteKVPackedPrefillKernel(const SrcT* __restrict__ key,
+                                           const SrcT* __restrict__ value,
+                                           DstT* __restrict__ key_cache,
+                                           DstT* __restrict__ value_cache,
+                                           const int32_t* __restrict__ block_tables,
+                                           const int32_t* __restrict__ rows,
+                                           const int32_t* __restrict__ cu_seqlens_ctx,
+                                           int32_t kv_heads, int32_t head_size,
+                                           int32_t block_size, int32_t max_blocks_per_seq) {
+    const int32_t engine_row = blockIdx.x;
+    const int32_t begin = cu_seqlens_ctx[engine_row];
+    const int32_t len = cu_seqlens_ctx[engine_row + 1] - begin;
+    const int32_t row = rows[engine_row];
+    const int64_t elements = static_cast<int64_t>(len) * kv_heads * head_size;
+    for (int64_t i = threadIdx.x; i < elements; i += blockDim.x) {
+        const int32_t d = static_cast<int32_t>(i % head_size);
+        int64_t rest = i / head_size;
+        const int32_t h = static_cast<int32_t>(rest % kv_heads);
+        const int32_t t = static_cast<int32_t>(rest / kv_heads);
+        const int64_t source_index =
+            ((static_cast<int64_t>(begin + t) * kv_heads + h) * head_size) + d;
+        const int32_t physical_block =
+            block_tables[static_cast<size_t>(row) * max_blocks_per_seq + t / block_size];
+        const int32_t slot = t % block_size;
+        const int64_t cache_offset =
+            ((static_cast<int64_t>(physical_block) * block_size + slot) * kv_heads + h) *
+                head_size +
+            d;
+        key_cache[cache_offset] = cuda::FromFloat<DstT>(cuda::ToFloat(key[source_index]));
+        value_cache[cache_offset] = cuda::FromFloat<DstT>(cuda::ToFloat(value[source_index]));
     }
 }
 
@@ -88,6 +142,32 @@ cudaError_t LaunchWriteKV(const PagedKVWriteArgs& args, cudaStream_t stream) {
     // 后面 cudaGetLastError() 的结果才只反映本次 launch（见 TROUBLESHOOTING + TS-013）。
     (void)cudaGetLastError();
 
+    // **S4 的 packed prefill**：行长不等，走"一个 block 一行"的专用 kernel
+    // （通用 kernel 按 `tokens` 统一 stride 分解，packed 下不成立）。
+    // 启动的 grid 是行数，因此这里不按元素数算块数。
+    if (args.cu_seqlens_ctx != nullptr && !args.append && args.rows != nullptr) {
+        const dim3 packed_grid(static_cast<unsigned int>(args.row_count));
+        const auto launch_packed = [&](auto src_tag, auto dst_tag) {
+            using SrcT = decltype(src_tag);
+            using DstT = decltype(dst_tag);
+            WriteKVPackedPrefillKernel<SrcT, DstT><<<packed_grid, kThreadsPerBlock, 0, stream>>>(
+                static_cast<const SrcT*>(args.key), static_cast<const SrcT*>(args.value),
+                static_cast<DstT*>(args.key_cache), static_cast<DstT*>(args.value_cache),
+                args.block_tables, args.rows, args.cu_seqlens_ctx, args.num_kv_heads,
+                args.head_size, args.block_size, args.max_blocks_per_seq);
+        };
+        if (args.source_is_half && args.is_half) {
+            launch_packed(__half{}, __half{});
+        } else if (args.source_is_half && !args.is_half) {
+            launch_packed(__half{}, float{});
+        } else if (!args.source_is_half && args.is_half) {
+            launch_packed(float{}, __half{});
+        } else {
+            launch_packed(float{}, float{});
+        }
+        return cudaGetLastError();
+    }
+
     // 四种组合（FP32/FP16 × FP32/FP16）：源由引擎决定、目标由 cache 决定，
     // 两者独立，所以必须显式分发而不是假定一致。
     const dim3 grid(static_cast<unsigned int>(blocks));
@@ -98,7 +178,8 @@ cudaError_t LaunchWriteKV(const PagedKVWriteArgs& args, cudaStream_t stream) {
             static_cast<const SrcT*>(args.key), static_cast<const SrcT*>(args.value),
             static_cast<DstT*>(args.key_cache), static_cast<DstT*>(args.value_cache),
             args.block_tables, args.context_lens, args.rows, args.num_kv_heads, args.tokens,
-            args.head_size, args.block_size, args.max_blocks_per_seq, args.append, elements);
+            args.head_size, args.block_size, args.max_blocks_per_seq, args.append, elements,
+            args.cu_seqlens_ctx, args.context_seq_count);
     };
     if (args.source_is_half && args.is_half) {
         launch(__half{}, __half{});

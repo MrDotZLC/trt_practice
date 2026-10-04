@@ -126,13 +126,21 @@ class PagedKVCache {
     // 注意填充位置的 K/V 仍会被写进 cache（写入按 stride 走）：它们不在语境长度内，因此从不参与
     // 注意力、且会被后续 decode 覆盖；代价是块预留必须按 `tokens` 算而不是按真实长度。
     //
+    // **S4 的 packed 源（2026-10-04 加）**：`cu_seqlens_ctx` 非空时，源张量的行是**打包**的
+    // （context 段的全部 token 在前、generation 段在后），源行基址 = `cu_seqlens_ctx[引擎行]`
+    // （**段内下标**）——由 kernel 自己从设备读，调用方拿不到也不该拿（那会引入 D2H 同步）。
+    // 它是默认值（nullptr / 0）时保持"每行等长、源行基址 = 行号 × tokens"的既有语义，
+    // S1/S2/S3 与既有用例都这么用。
+    //
     // 设备侧那一步不能省：decode 追加的位置就是设备端 context_lens[rows[i]]；
     // 若只更新 host 镜像，后续追加会写回位置 0，**静默覆盖 prefill 的第一个 token**。
     // 因此由本函数负责把长度推上去，而不是要求调用方记得补一次 UploadMetadata。
     // （每个请求只发生一次，不违反"解码循环内不得有 H2D"。）
     cudaError_t WritePrefillKV(int32_t layer, const void* key, const void* value,
                               int32_t tokens, const int32_t* rows, int32_t row_count,
-                              const int32_t* row_lengths, cudaStream_t stream);
+                              const int32_t* row_lengths, cudaStream_t stream,
+                              const int32_t* cu_seqlens_ctx = nullptr,
+                              int32_t context_seq_count = 0);
 
     // 追加 decode 当前 token 的**某一层** K/V（[batch, kv_heads, 1, head_size]）。
     // 只负责写数据，**不推进语境长度**——长度是"每个 token 一个"的量，
@@ -140,7 +148,9 @@ class PagedKVCache {
     // 因为第 1、2 个 token 只用到 prefill 写好的长度）。
     // `row_count`：本次只写前几行（引擎行 = 批内行）；S3 的生成段只有活跃表前缀有本步的 K/V。
     cudaError_t AppendDecodeKV(int32_t layer, const void* key, const void* value,
-                               int32_t row_count, cudaStream_t stream);
+                               int32_t row_count, cudaStream_t stream,
+                               const int32_t* cu_seqlens_ctx = nullptr,
+                               int32_t context_seq_count = 0);
 
     // 追加一步 decode 的**所有层**，只追加**前 row_count 行**，写完后只推进这一批的语境长度。
     // runner 应当用这个入口：把"必须恰好推进一次"这件事收进 API，
@@ -150,7 +160,9 @@ class PagedKVCache {
     // 长度多推一格（静默算错，p5_s3_interface_spec §3）。静态批传 batch_size() 即原行为。
     cudaError_t AppendDecodeStep(const std::vector<const void*>& keys,
                                  const std::vector<const void*>& values, int32_t row_count,
-                                 cudaStream_t stream);
+                                 cudaStream_t stream,
+                                 const int32_t* cu_seqlens_ctx = nullptr,
+                                 int32_t context_seq_count = 0);
 
     // 整块缓冲（含所有层）与单层的字节数。单层尺寸才是使用方需要的：
     // 引擎的 K/V 输入是"每层一段"的 4-D 张量。

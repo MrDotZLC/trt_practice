@@ -430,6 +430,14 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::GenerateBatch(
         MINI_TRT_LOG_ERROR("LLMRunner::GenerateBatch called on an invalid runner");
         return {};
     }
+    // S4：packed 路径下**没有**"静态批 prefill 写回"这回事（引擎的 I/O 契约是 packed 张量），
+    // 拿它去跑 padding 路径只会绑错张量。所以这里明确拒绝，并指向正确的入口。
+    if (config_.prefill_mode == Config::PrefillMode::kPackedMixed) {
+        MINI_TRT_LOG_ERROR("LLMRunner: prefill_mode = kPackedMixed 时请用 RunScheduler ——"
+                           " GenerateBatch 是 padding 路径（S3）的入口；"
+                           " packed 路径的\"逐条单跑\"参考实现 = 单请求的 RunScheduler");
+        return {};
+    }
     const int32_t batch = static_cast<int32_t>(requests.size());
     if (batch <= 0) {
         MINI_TRT_LOG_ERROR("LLMRunner: empty batch");
@@ -802,6 +810,11 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
         MINI_TRT_LOG_ERROR("LLMRunner::RunScheduler called on an invalid runner");
         return {};
     }
+    // S4：packed 模式下只用 `prefill_engine_`（调用方把那个 packed 引擎放在这个槽位）。
+    // 显式记一条，免得有人以为"两条引擎都在跑"。
+    if (config_.prefill_mode == Config::PrefillMode::kPackedMixed) {
+        MINI_TRT_LOG_INFO("LLMRunner: packed mixed prefill（每步一次调用，只用 prefill_engine_）");
+    }
     const int32_t request_count = static_cast<int32_t>(requests.size());
     if (request_count <= 0) {
         MINI_TRT_LOG_ERROR("LLMRunner: empty scheduler request set");
@@ -911,6 +924,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
         return {};
     }
     const size_t capacity_sz = static_cast<size_t>(active_capacity);
+    const bool packed_mode = config_.prefill_mode == Config::PrefillMode::kPackedMixed;
     if (!d_step_tokens_.Allocate(capacity_sz * sizeof(int32_t)) ||
         !d_decode_input_.Allocate(capacity_sz * sizeof(int32_t)) ||
         !d_offsets_.Allocate(capacity_sz * sizeof(uint64_t)) ||
@@ -919,6 +933,21 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
                                    static_cast<size_t>(max_new) * sizeof(int32_t))) {
         MINI_TRT_LOG_ERROR("LLMRunner: failed to allocate scheduler buffers");
         return {};
+    }
+    // S4 的 packed 缓冲：T 的上界 = batch_capacity_ × prompt_capacity_（与 d_prompt_ 同一个界）
+    if (packed_mode) {
+        const size_t packed_tokens = capacity_sz * static_cast<size_t>(prompt_capacity_);
+        if (!d_packed_tokens_.Allocate(packed_tokens * sizeof(int32_t)) ||
+            !d_packed_positions_.Allocate(packed_tokens * sizeof(int32_t)) ||
+            !d_cu_seqlens_ctx_.Allocate((capacity_sz + 1) * sizeof(int32_t)) ||
+            !d_context_seq_count_.Allocate(sizeof(int32_t)) ||
+            !d_packed_block_tables_.Allocate(capacity_sz *
+                                             static_cast<size_t>(config_.max_blocks_per_seq) *
+                                             sizeof(int32_t)) ||
+            !d_packed_context_lens_.Allocate(capacity_sz * sizeof(int32_t))) {
+            MINI_TRT_LOG_ERROR("LLMRunner: failed to allocate packed buffers");
+            return {};
+        }
     }
     // 采样策略整批一致（上面校验过），SampleBatch 靠这三个成员选分支。
     options_top_k_ = first.top_k;
@@ -1069,6 +1098,17 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
             return {};
         }
 
+        if (packed_mode) {
+            // **S4**：两相装进一个 packed 张量、每步一次调用（见 RunPackedMixedStep）。
+            // 统计只填**跨路径**的两个量（`prefill_calls` / `decode_calls` 是 S3 两段式专有，
+            // S4 下不读也不去凑语义 —— 见 SchedulerStats 的字段说明）。
+            if (!RunPackedMixedStep(requests, active, generation_rows, new_rows, max_new)) {
+                MINI_TRT_LOG_ERROR("LLMRunner: packed mixed step failed");
+                return {};
+            }
+            scheduler_stats_.context_rows += new_rows;
+            scheduler_stats_.generation_rows += generation_rows;
+        } else {
         // ---- ③ context 段：只装本步新入批的行 ----
         const int32_t new_rows = static_cast<int32_t>(active.size()) - generation_rows;
         if (new_rows > 0) {
@@ -1199,14 +1239,25 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
             }
         }
 
+        }  // else：S3 的两段式（packed_mode 分支在上面）
         // ---- ⑤ 结果落位 + 交回 finish flag ----
+        // S4：采样结果是**按 packed 行序**写进 `d_step_tokens_` 的（context 行在前），
+        // 所以"活跃表第 row 行的 token"落在哪个槽位要显式换算；S3 是恒等。
+        const auto token_slot_of_active = [&](int32_t row_index) -> int32_t {
+            if (!packed_mode) {
+                return row_index;
+            }
+            return row_index < generation_rows ? (new_rows + row_index)
+                                               : (row_index - generation_rows);
+        };
         for (int32_t row = 0; row < static_cast<int32_t>(active.size()); ++row) {
             ActiveSequence& s = active[static_cast<size_t>(row)];
             const int64_t dst_index =
                 static_cast<int64_t>(s.result_slot) * max_new + s.generated;
             // 每步每行一次 4 字节 D2D：结果按"序列"聚集，退出/压实都不会挪动它
             if (cudaMemcpyAsync(static_cast<int32_t*>(d_result_tokens_.data()) + dst_index,
-                                static_cast<const int32_t*>(d_step_tokens_.data()) + row,
+                                static_cast<const int32_t*>(d_step_tokens_.data()) +
+                                    token_slot_of_active(row),
                                 sizeof(int32_t), cudaMemcpyDeviceToDevice, nullptr) !=
                 cudaSuccess) {
                 MINI_TRT_LOG_ERROR("LLMRunner: failed to record the sampled token");
@@ -1222,8 +1273,20 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
         // 也只对应当前这块内容。推迟期间退出判定只晚一步（兜底同步见 retire）。
         if (!active.empty() && !eos_pending) {
             eos_pending_seqs.clear();
-            for (const ActiveSequence& s : active) {
-                eos_pending_seqs.push_back(s.seq_id);
+            if (packed_mode) {
+                // 与 token_slot_of_active 同一套行序：packed 行序 = context 行在前、generation 行在后，
+                // 而 `d_eos_hit_` 就是按这个顺序写的（采样器按段续写）。
+                for (int32_t j = 0; j < new_rows; ++j) {
+                    eos_pending_seqs.push_back(
+                        active[static_cast<size_t>(generation_rows + j)].seq_id);
+                }
+                for (int32_t j = 0; j < generation_rows; ++j) {
+                    eos_pending_seqs.push_back(active[static_cast<size_t>(j)].seq_id);
+                }
+            } else {
+                for (const ActiveSequence& s : active) {
+                    eos_pending_seqs.push_back(s.seq_id);
+                }
             }
             if (cudaMemcpyAsync(host_eos_.data(), d_eos_hit_.data(),
                                 static_cast<size_t>(active.size()) * sizeof(int8_t),
@@ -1268,6 +1331,289 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
         results[static_cast<size_t>(i)].ok = !results[static_cast<size_t>(i)].tokens.empty();
     }
     return results;
+}
+
+bool LLMRunner::UploadRowParamsByOrder(const std::vector<ActiveSequence>& active,
+                                       const std::vector<int32_t>& active_indices) {
+    const int32_t count = static_cast<int32_t>(active_indices.size());
+    if (count < 0 || count > batch_capacity_) {
+        MINI_TRT_LOG_ERROR("LLMRunner: row params out of range");
+        return false;
+    }
+    if (count == 0) {
+        return true;
+    }
+    std::vector<int32_t> top_k(static_cast<size_t>(count));
+    std::vector<float> top_p(static_cast<size_t>(count));
+    std::vector<uint64_t> seeds(static_cast<size_t>(count));
+    std::vector<uint64_t> offsets(static_cast<size_t>(count));
+    for (int32_t i = 0; i < count; ++i) {
+        const int32_t index = active_indices[static_cast<size_t>(i)];
+        if (index < 0 || index >= static_cast<int32_t>(active.size())) {
+            MINI_TRT_LOG_ERROR("LLMRunner: row param order out of range");
+            return false;
+        }
+        const ActiveSequence& row = active[static_cast<size_t>(index)];
+        top_k[static_cast<size_t>(i)] = row.top_k;
+        top_p[static_cast<size_t>(i)] = row.top_p;
+        seeds[static_cast<size_t>(i)] = row.seed;
+        // 随机步号 = 该行自己的已生成计数（与 S3 同一口径，见 SchedulerStats 与 §5 的说明）
+        offsets[static_cast<size_t>(i)] = static_cast<uint64_t>(row.generated);
+    }
+    if (cudaMemcpyAsync(d_top_k_.data(), top_k.data(), top_k.size() * sizeof(int32_t),
+                        cudaMemcpyHostToDevice, nullptr) != cudaSuccess ||
+        cudaMemcpyAsync(d_top_p_.data(), top_p.data(), top_p.size() * sizeof(float),
+                        cudaMemcpyHostToDevice, nullptr) != cudaSuccess ||
+        cudaMemcpyAsync(d_seeds_.data(), seeds.data(), seeds.size() * sizeof(uint64_t),
+                        cudaMemcpyHostToDevice, nullptr) != cudaSuccess ||
+        cudaMemcpyAsync(d_offsets_.data(), offsets.data(), offsets.size() * sizeof(uint64_t),
+                        cudaMemcpyHostToDevice, nullptr) != cudaSuccess) {
+        MINI_TRT_LOG_ERROR("LLMRunner: failed to upload per-row sampling params (packed order)");
+        return false;
+    }
+    return true;
+}
+
+// **S4 的一步**：打包 → 一次 packed 调用 → context 写回 / generation 追加 → 采样。
+//
+// 两套下标必须分清（p5_s4_interface_spec.md §3 的下标纪律）：
+//   * **活跃表序**：generation 行 = 前缀 `[0, generation_rows)`，本步新入批的 context 行 = 尾部
+//     `[generation_rows, generation_rows + new_rows)`（它们的缓存行号 = 活跃表下标，S2 的压实保证同源）；
+//   * **packed 行序**：**context 行在前**（作者的硬约束），generation 行在后。
+//   两者之间的换算在这里显式写出（`packed_order_active` 与 ⑤ 处的逆映射）。
+bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
+                                   const std::vector<ActiveSequence>& active,
+                                   int32_t generation_rows, int32_t new_rows, int32_t max_new) {
+    const int32_t b_total = generation_rows + new_rows;
+    if (b_total <= 0) {
+        return true;
+    }
+    const size_t width = static_cast<size_t>(config_.max_blocks_per_seq);
+
+    // ---- ① 打包（host 侧算偏移；逐行重建）----
+    int32_t t_ctx = 0;
+    for (int32_t j = 0; j < new_rows; ++j) {
+        t_ctx += active[static_cast<size_t>(generation_rows + j)].prompt_len;
+    }
+    const int32_t t_total = t_ctx + generation_rows;
+    const size_t packed_capacity =
+        static_cast<size_t>(batch_capacity_) * static_cast<size_t>(prompt_capacity_);
+    if (static_cast<size_t>(t_total) > packed_capacity) {
+        MINI_TRT_LOG_ERROR("LLMRunner: packed token count " << t_total << " exceeds capacity "
+                                                            << packed_capacity);
+        return false;
+    }
+
+    std::vector<int32_t> host_tokens(static_cast<size_t>(t_ctx), 0);
+    std::vector<int32_t> host_positions(static_cast<size_t>(t_total), 0);
+    std::vector<int32_t> host_cu_seqlens(static_cast<size_t>(new_rows) + 1, 0);
+    std::vector<int32_t> host_row_lengths(static_cast<size_t>(new_rows), 0);
+    std::vector<int32_t> host_block_tables(static_cast<size_t>(b_total) * width, 0);
+    std::vector<int32_t> host_context_lens(static_cast<size_t>(b_total), 0);
+    std::vector<int32_t> packed_order_active(static_cast<size_t>(b_total), 0);
+
+    int32_t offset = 0;
+    int32_t max_row_len = 0;
+    for (int32_t j = 0; j < new_rows; ++j) {
+        const int32_t active_index = generation_rows + j;
+        const ActiveSequence& s = active[static_cast<size_t>(active_index)];
+        const GenerateRequest& r = requests[static_cast<size_t>(s.result_slot)];
+        host_row_lengths[static_cast<size_t>(j)] = s.prompt_len;
+        max_row_len = std::max(max_row_len, s.prompt_len);
+        for (int32_t i = 0; i < s.prompt_len; ++i) {
+            host_tokens[static_cast<size_t>(offset + i)] =
+                static_cast<int32_t>(r.input_ids[static_cast<size_t>(i)]);
+            host_positions[static_cast<size_t>(offset + i)] = i;  // 段内位置从 0 起
+        }
+        offset += s.prompt_len;
+        // 段内前缀和：context 段在 packed 张量的**最前面**，所以段内值就是绝对偏移
+        host_cu_seqlens[static_cast<size_t>(j) + 1] = offset;
+        packed_order_active[static_cast<size_t>(j)] = active_index;
+    }
+    for (int32_t j = 0; j < generation_rows; ++j) {
+        const ActiveSequence& s = active[static_cast<size_t>(j)];
+        // 位置取**推进前**的语境长度（host 镜像在 S3 已被维护成准确的：WritePrefillKV 设定、
+        // AppendDecodeStep 逐行 +1、FreeSequence 重建）
+        const int32_t len = kv_cache_->SequenceLength(s.seq_id);
+        if (len < 0) {
+            MINI_TRT_LOG_ERROR("LLMRunner: seq " << s.seq_id << " is not in the KV batch");
+            return false;
+        }
+        host_positions[static_cast<size_t>(t_ctx + j)] = len;
+        packed_order_active[static_cast<size_t>(new_rows + j)] = j;
+    }
+    // 按 packed 行序重建按行输入：**S3 的"缓存镜像直传"在这里失效**（引擎行序 ≠ 缓存行序），
+    // 所以 block_tables / context_lens 必须每步重排一遍再传（见 spec §3）。
+    for (int32_t j = 0; j < b_total; ++j) {
+        const int32_t active_index = packed_order_active[static_cast<size_t>(j)];
+        const ActiveSequence& s = active[static_cast<size_t>(active_index)];
+        std::vector<int32_t> blocks;
+        if (!kv_cache_->GetBlockTable(s.seq_id, &blocks)) {
+            MINI_TRT_LOG_ERROR("LLMRunner: missing block table for seq " << s.seq_id);
+            return false;
+        }
+        for (size_t i = 0; i < blocks.size() && i < width; ++i) {
+            host_block_tables[static_cast<size_t>(j) * width + i] = blocks[i];
+        }
+        host_context_lens[static_cast<size_t>(j)] = kv_cache_->SequenceLength(s.seq_id);
+    }
+
+    // ---- ② 上传（每步重建；H2D/D2D 都是 async，循环内不做同步拷贝）----
+    const int32_t context_seq_count = new_rows;
+    if ((!host_tokens.empty() &&
+         cudaMemcpyAsync(d_packed_tokens_.data(), host_tokens.data(),
+                         host_tokens.size() * sizeof(int32_t), cudaMemcpyHostToDevice,
+                         nullptr) != cudaSuccess) ||
+        cudaMemcpyAsync(d_packed_positions_.data(), host_positions.data(),
+                        host_positions.size() * sizeof(int32_t), cudaMemcpyHostToDevice,
+                        nullptr) != cudaSuccess ||
+        cudaMemcpyAsync(d_cu_seqlens_ctx_.data(), host_cu_seqlens.data(),
+                        host_cu_seqlens.size() * sizeof(int32_t), cudaMemcpyHostToDevice,
+                        nullptr) != cudaSuccess ||
+        cudaMemcpyAsync(d_context_seq_count_.data(), &context_seq_count, sizeof(int32_t),
+                        cudaMemcpyHostToDevice, nullptr) != cudaSuccess ||
+        cudaMemcpyAsync(d_packed_block_tables_.data(), host_block_tables.data(),
+                        host_block_tables.size() * sizeof(int32_t), cudaMemcpyHostToDevice,
+                        nullptr) != cudaSuccess ||
+        cudaMemcpyAsync(d_packed_context_lens_.data(), host_context_lens.data(),
+                        host_context_lens.size() * sizeof(int32_t), cudaMemcpyHostToDevice,
+                        nullptr) != cudaSuccess) {
+        MINI_TRT_LOG_ERROR("LLMRunner: failed to upload packed metadata");
+        return false;
+    }
+    // generation 段的 token 在设备上（按序列聚集的历史），逐行搬进 packed 的尾部
+    for (int32_t j = 0; j < generation_rows; ++j) {
+        const ActiveSequence& s = active[static_cast<size_t>(j)];
+        const int64_t src_index =
+            static_cast<int64_t>(s.result_slot) * max_new + s.generated - 1;
+        if (cudaMemcpyAsync(static_cast<int32_t*>(d_packed_tokens_.data()) + t_ctx + j,
+                            static_cast<const int32_t*>(d_result_tokens_.data()) + src_index,
+                            sizeof(int32_t), cudaMemcpyDeviceToDevice, nullptr) != cudaSuccess) {
+            MINI_TRT_LOG_ERROR("LLMRunner: failed to gather packed generation tokens");
+            return false;
+        }
+    }
+
+    // ---- ③ 绑定 + 一次 packed 调用 ----
+    Engine* engine = prefill_engine_.get();
+    if (engine == nullptr || !engine->SetOptimizationProfile(0, nullptr)) {
+        return false;
+    }
+    if (!engine->SetInputShape("input_ids", nvinfer1::Dims{2, {1, t_total}}) ||
+        !engine->SetInputShape("position_ids", nvinfer1::Dims{2, {1, t_total}}) ||
+        !engine->SetInputShape("block_tables",
+                               nvinfer1::Dims{2, {b_total, config_.max_blocks_per_seq}}) ||
+        !engine->SetInputShape("context_lens", nvinfer1::Dims{1, {b_total}}) ||
+        !engine->SetInputShape("cu_seqlens_ctx", nvinfer1::Dims{1, {new_rows + 1}}) ||
+        !engine->SetInputShape("context_seq_count", nvinfer1::Dims{1, {1}})) {
+        MINI_TRT_LOG_ERROR("LLMRunner: failed to set packed input shapes");
+        return false;
+    }
+    if (!engine->SetTensorAddress("input_ids", d_packed_tokens_.data()) ||
+        !engine->SetTensorAddress("position_ids", d_packed_positions_.data()) ||
+        !engine->SetTensorAddress("block_tables", d_packed_block_tables_.data()) ||
+        !engine->SetTensorAddress("context_lens", d_packed_context_lens_.data()) ||
+        !engine->SetTensorAddress("cu_seqlens_ctx", d_cu_seqlens_ctx_.data()) ||
+        !engine->SetTensorAddress("context_seq_count", d_context_seq_count_.data()) ||
+        !engine->SetTensorAddress("logits", d_prefill_logits_.data())) {
+        MINI_TRT_LOG_ERROR("LLMRunner: failed to bind packed inputs");
+        return false;
+    }
+    for (int32_t layer = 0; layer < config_.num_layers; ++layer) {
+        const std::string index = std::to_string(layer);
+        if (!engine->SetTensorAddress(("key_cache_" + index).c_str(),
+                                      kv_cache_->key_cache(layer)) ||
+            !engine->SetTensorAddress(("value_cache_" + index).c_str(),
+                                      kv_cache_->value_cache(layer)) ||
+            !engine->SetTensorAddress(
+                ("k_layer" + index).c_str(),
+                d_prefill_kv_[static_cast<size_t>(layer) * 2]->data()) ||
+            !engine->SetTensorAddress(
+                ("v_layer" + index).c_str(),
+                d_prefill_kv_[static_cast<size_t>(layer) * 2 + 1]->data())) {
+            MINI_TRT_LOG_ERROR("LLMRunner: failed to bind packed cache/KV at layer " << layer);
+            return false;
+        }
+    }
+    if (!engine->Enqueue(nullptr)) {
+        MINI_TRT_LOG_ERROR("LLMRunner: packed call failed");
+        return false;
+    }
+
+    // ---- ④ 图外两块 K/V 工作（都吃 packed 张量里的对应行）----
+    if (new_rows > 0) {
+        // 缓存行号显式查询（不靠"追加在尾部"的隐式约定）；S3 的同一套映射机制
+        std::vector<int32_t> cache_rows(static_cast<size_t>(new_rows), -1);
+        for (int32_t j = 0; j < new_rows; ++j) {
+            const int32_t active_index = generation_rows + j;
+            const int32_t row = kv_cache_->RowOf(active[static_cast<size_t>(active_index)].seq_id);
+            if (row != active_index) {
+                MINI_TRT_LOG_ERROR("LLMRunner: seq "
+                                   << active[static_cast<size_t>(active_index)].seq_id
+                                   << " sits at KV row " << row << ", expected " << active_index
+                                   << " —— 行号不同源");
+                return false;
+            }
+            cache_rows[static_cast<size_t>(j)] = row;
+        }
+        for (int32_t layer = 0; layer < config_.num_layers; ++layer) {
+            if (kv_cache_->WritePrefillKV(
+                    layer, d_prefill_kv_[static_cast<size_t>(layer) * 2]->data(),
+                    d_prefill_kv_[static_cast<size_t>(layer) * 2 + 1]->data(), max_row_len,
+                    cache_rows.data(), new_rows, host_row_lengths.data(), nullptr,
+                    static_cast<const int32_t*>(d_cu_seqlens_ctx_.data()),
+                    context_seq_count) != cudaSuccess) {
+                MINI_TRT_LOG_ERROR("LLMRunner: failed to write packed context K/V at layer "
+                                   << layer);
+                return false;
+            }
+        }
+    }
+    if (generation_rows > 0) {
+        std::vector<const void*> keys(static_cast<size_t>(config_.num_layers));
+        std::vector<const void*> values(static_cast<size_t>(config_.num_layers));
+        for (int32_t layer = 0; layer < config_.num_layers; ++layer) {
+            keys[static_cast<size_t>(layer)] =
+                d_prefill_kv_[static_cast<size_t>(layer) * 2]->data();
+            values[static_cast<size_t>(layer)] =
+                d_prefill_kv_[static_cast<size_t>(layer) * 2 + 1]->data();
+        }
+        // 源基址 = `cu_seqlens_ctx[B_ctx]`（= t_ctx），由 kernel 自己从设备读；
+        // 目标行集 = 活跃表前缀（= 缓存前缀，走恒等映射）。
+        if (kv_cache_->AppendDecodeStep(
+                keys, values, generation_rows, nullptr,
+                static_cast<const int32_t*>(d_cu_seqlens_ctx_.data()),
+                context_seq_count) != cudaSuccess) {
+            MINI_TRT_LOG_ERROR("LLMRunner: failed to append packed generation K/V");
+            return false;
+        }
+    }
+
+    // ---- ⑤ 采样前聚集：末位按**两段各自的公式**（§4）----
+    const size_t elem = ElementSize(prefill_logits_half_);
+    const size_t row_bytes = static_cast<size_t>(config_.vocab_size) * elem;
+    for (int32_t j = 0; j < b_total; ++j) {
+        const int32_t last = (j < new_rows)
+                                 ? (host_cu_seqlens[static_cast<size_t>(j) + 1] - 1)
+                                 : (t_ctx + (j - new_rows));
+        const void* src = static_cast<const char*>(d_prefill_logits_.data()) +
+                          static_cast<size_t>(last) * row_bytes;
+        void* dst = static_cast<char*>(d_prefill_last_logits_.data()) +
+                    static_cast<size_t>(j) * row_bytes;
+        if (cudaMemcpyAsync(dst, src, row_bytes, cudaMemcpyDeviceToDevice, nullptr) !=
+            cudaSuccess) {
+            MINI_TRT_LOG_ERROR("LLMRunner: failed to gather packed logits rows");
+            return false;
+        }
+    }
+    if (!UploadRowParamsByOrder(active, packed_order_active) ||
+        !SampleBatch(static_cast<char*>(d_step_tokens_.data()), /*from_prefill=*/true, b_total,
+                     /*offset=*/0, static_cast<const uint64_t*>(d_offsets_.data()),
+                     static_cast<int8_t*>(d_eos_hit_.data()), nullptr)) {
+        MINI_TRT_LOG_ERROR("LLMRunner: packed sampling failed");
+        return false;
+    }
+    return true;
 }
 
 bool LLMRunner::UploadRowParams(const std::vector<ActiveSequence>& active, int32_t begin,
