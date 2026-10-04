@@ -497,11 +497,133 @@ S4 的代码按"未编译验证"记账，真机窗口的第一件事是编译（
   属未编译验证项）与真机窗口的编译 / 用例，按 §0.7 等作者点名。
 - 本记录只覆盖 S5 增量，**不追溯修改** 2026-10-03 对整体设计的 Gate-A 记录（见 `## Decision`）。
 
+## S5 设计的第三遍复评：`chunk_limit` 改由显式配置派生（2026-10-05，作者点名"review 该方案"）
+
+**触发与范围**：作者采纳"显式配置 + 交叉校验"方向（取代 2026-10-04 的"由 profile 推导、不暴露给
+调用方"）并提出四点修订（非 packed 语义 / `1024` 的来源 / "单一来源"的准确口径 / `policy < cap`
+的触发条件）。本节按同一套判据（四个 checklists 的 [P0] / [P1] 逐条回答 + 需求落点表 + 术语表）复核
+**这一处修订**；核对对象 = 修订后的 `p5_s5_interface_spec.md` §2/§4/§5/§6 与**代码现状**
+（`llm_runner.cpp` 的构造期、`builder.cpp` 的 packed profile 公式、`packed_attention_plugin.cu` 的
+共享内存常量）。
+
+### 核对通过的关键事实（本次修订成立的证据）
+
+| 说法 | 代码证据 | 结论 |
+|---|---|---|
+| 校验 ③ 正好补上"两侧声明不一致"的有害方向 | `builder.cpp:311-313` 里 `T_max = max_prefill_batch × max_prefill_seq_len`、`block_tables` dim0 的 `kMAX = max_prefill_batch` ⇒ ③ 等价于 `runner 声明的 L ≤ builder 声明的 L` | 成立：不需要"从 shape 反推 per-row 上界"，一条不等式即可（见 P1-1 的取舍） |
+| 分块是否触发变成**调用方的声明意图** | `chunk_len = min(prompt_len - written, chunk_limit)`，而 `chunk_limit = 声明的 L` | 成立：`L < n_positions` 且 `prompt_len > L` 时分块；声明 `L ≥ n_positions` 即"不分块"，是合法配置 |
+| `TS-052` 发现 2 的两条后果被消除 | ① 死代码：旧口径下 `prompt_len ≤ L_max` 永不切块；② 越界：旧口径下 Σ chunk 可超 `T_max` | 成立：① 由"显式策略量"解决；② 由校验 ③（充分条件）解决 |
+| `1024` 的来源可追 | `packed_attention_plugin.cu:67` 的 `__shared__ float s_scores[kPackedAttentionMaxContextSeqLen]`（1024 × 4 B = 4 KB；sm_75 每 block 静态共享内存 48 KB） | 成立：是 **kernel 实现常量**，不是模型属性；spec §2 已把同步修订条件写清 |
+
+### 表一（增量）：受影响的 checklists 条目
+
+标注口径同上一节：未列出的条目在本轮**不受影响**（沿用 2026-10-04 的结论）。
+
+| Item | Level | Result | Action |
+|---|---|---|---|
+| C++-API 输入输出是否明确 | P0 | **不通过 → 已修** | 字段语义（packed-only、非 packed 必须留 0）、`chunk_limit` 的来源、五条交叉校验、错误信息含实际值与上界 —— 已落 spec §2 / §4 |
+| C++-错误处理方式是否统一 | P0 | 通过 | 与 `max_positions` 同款：构造期拒绝 + 打印实际值与上界 |
+| C++-接口是否容易扩展（P1） | P1 | 通过 | `policy < cap` 的表达形式与触发条件已落 design D16 的 Trade-off |
+| C++-是否引入额外依赖（P1） | P1 | 不适用 | 纯 host 校验，不动构建 |
+| CUDA-优化是否有 benchmark 证明 | P0 | **待确认** | 本次修订让分块**真的启用**（此前几乎不触发）→ 默认路径行为画像改变；P4/P7 搁置 ⇒ 实现后必须标"性能未验证、不声称收益"（已登记到 STATE 的 P7 行） |
+| CUDA-边界条件 | P0 | 通过（有条件） | 校验 ③ 是"Σ 每行 chunk ≤ 引擎 T 上界"的充分条件；位置上界由 `max_positions` 管 |
+| CUDA-越界访问 / 同步 / race / Stream / Event | P0 | 不适用 | 本次不动 kernel 与 stream 语义 |
+| TRT-Tensor shape 是否明确 | P0 | 通过 | `t_total ≤ T_max` 由校验 ③ 保证 |
+| TRT-Dynamic shape profile 是否覆盖 | P0 | **通过（口径改判）** | profile 区间**不变**（`graph_version` 保持 6，不 bump）；"覆盖"的判据从"由 profile 推导"改为"用 profile 校验声明值"（③/⑤） |
+| TRT-Plugin creator / serialize / workspace / Binding | P0 / P1 | 不适用 | 不动插件与 I/O |
+| LLM-Prefill / Decode 是否区分 | P0 | 通过 | 分段逻辑不变，只改 chunk 上限的来源 |
+| LLM-Batch / Scheduler 状态是否一致 | P0 | 通过 | 与行号、活跃表无关 |
+| LLM-Long context 是否测试 | P1 | 待确认（真机） | S5-3 用例 + 真机长 prompt 场景（环境搁置） |
+| TRT-Async execution（P1） | P1 | 不适用 | 不涉执行路径 |
+
+### 表二（增量）：需求落点
+
+| 需求条目 | 设计落点 | 结论 |
+|---|---|---|
+| Included 8：长 prompt 的分块推进 | spec §2（重写：显式声明 + 五条校验）+ D15/D16 | 已落点（本轮修订；分块从"形状副产品"改成**显式策略量**） |
+| AC9 分块与不分块等价 | spec §6 + D16 | 已落点；本轮修订是它**能成立的前提**（旧口径下 `prompt_len ≤ L_max` 时永不切块） |
+| AC8 两条路径各自成立且可回退（"切换不改调用方接口"） | spec §4 + D13/D14 | **已按 P1-1 选 (a) 收口**：`requirement.md` 的 AC8 加一句限定（packed 路径自身多一个**声明式必需参数**，未声明则构造期显式拒绝；切换本身不改调用形状） |
+| Included 7 / AC7 / AC1 / AC2 / AC3 | 沿用 2026-10-03/04 的落点 | 本轮修订不涉及（未改判） |
+| Included 1–6 | 沿用 | 不涉及 |
+
+### 表三（增量）：术语定义
+
+| 模糊名词 | 定义所在 | 结论 |
+|---|---|---|
+| `max_prefill_seq_len` | spec §2（含"非 packed 必须留 0"与五条校验） | **已定义 + 指针式登记**（`analysis.md` Terminology，定义不复制正文） |
+| `max_positions` / `n_positions` | spec §2 末 + design D16 | 同上（指针式登记） |
+| "交叉校验"（意图由调用方声明、上界由引擎裁决） | spec §2 | 同上（指针式登记） |
+| "下游单一 / 声明侧单一" | spec §2 + design D16 Trade-off | 同上（指针式登记） |
+| `policy < cap` | design D16 Trade-off（含触发条件） | 同上（指针式登记） |
+
+> 本轮补登了这 5 条（作者 2026-10-05 "落"）。此前它们是"有定义、未登记"：技能的字面规则
+> （requirement 的模糊名词未定义即 P0）针对 requirement 层；这 5 个是设计层引入的，按项目对"分块"
+> 的既有处理（指针式登记）落，不是 P0。
+
+### P0 Blockers
+
+**无。** 修订后的落点齐全（字段语义 / 非 packed 语义 / 五条校验 / `1024` 来源 / 单一来源口径 /
+`policy < cap` 触发条件），且与代码现状对得上（见开头"核对通过的关键事实"）；
+`TS-052` 发现 2 的两条后果（死代码 / 越界）均被消除。
+
+### P1 Risks
+
+1. **AC8 的张力（packed 模式必填字段 ⇄"切换不改调用方接口"）** —— **作者 2026-10-05 选 (a)**：
+   保持**必填**（"单一来源"最强）；代价是对现有 packed 调用方是一次接口收紧（仓库内只有 2 个 packed
+   夹具，已在实现计划内；仓库外调用方按 `AGENTS.md` §0.6 归作者判断）。**处置**：`requirement.md` 的
+   AC8 加一句限定，使文档自洽；**不做** (b)（`0` = 未声明时按 per-row 上界回退推导 —— 那会把
+   "从 shape 反推"留在兜底路径里）。
+2. **"分块真的启用"改变默认路径的行为画像** —— P4/P7 已搁置 ⇒ 实现后一律标"**性能未验证 / 不声称
+   收益**"，AC6 不能凭空结。**处置**：已登记到 `STATE.md` 的 Next Action 第 5 条（P7 行）。
+3. **`SetChunkLimitOverride` 退役** —— 删掉后没有"运行期改 chunk 上限"的口子；P4/P7 若要做 A/B，
+   应另立**明确**接口（与 `SetPagedAttentionNumSplitsOverride` 性质不同：那个只改策略、这个会改
+   语义/行为）。**已定（作者 2026-10-05）：退役** —— 删除 `SetChunkLimitOverride` /
+   `ChunkLimitOverride`；P4/P7 若确实需要运行期 A/B，另立**明确**接口，不复用这个钩子。
+
+### P2 Quality
+
+| 项 | 说明 |
+|---|---|
+| 字段命名 | 取 `max_prefill_seq_len`（与建图同名，优先"同源"）而不是 `chunk_limit`（策略语义） |
+| 错误信息 | 统一"实际值 + 上界 + 建议范围"；与 `max_positions` 的两条检查同款 |
+| 两条上界检查重叠 | `≤ max_positions` 与 `≤ 1024` 在 `n_positions ≤ 1024` 时重叠；保留是为分开表达两个来源（位置表 vs kernel 常量） |
+| 表一是增量口径 | 沿用 S3/S4/S5 复评的先例；技能 Exit Gate 的严格口径是"全量 52 项"，若作者要可另出一版全量表 |
+
+### 作者确认记录（2026-10-05）
+
+| # | 事项 | 作者决定 | 落到哪 |
+|---|---|---|---|
+| 1 | `chunk_limit` 的来源 | **采纳"显式配置 + 交叉校验"**：`Config::max_prefill_seq_len`（与建图侧同名同值）+ 五条校验；profile 查询降级为校验 | `p5_s5_interface_spec.md` §2/§4/§5/§6/§8；`design.md` D16 |
+| 2 | 非 packed 路径的语义 | **必须留 0**（不读不校验） | spec §2；`llm_runner.hpp` 的字段注释（实现时） |
+| 3 | `1024` 的来源 | 记为**外部约束**（kernel 静态共享内存数组），**内核改此值需同步修订** | spec §2；design D16 Trade-off |
+| 4 | "单一事实来源"的口径 | **下游单一、声明侧两处**；不新增"从 profile 反推 per-row 上界"的校验 | spec §2；design D16 Trade-off |
+| 5 | `policy < cap` 第二旋钮 | 本轮不做，写触发条件 | design D16 Trade-off |
+| 6 | 本节 P1-1（AC8 张力） | **选 (a)**：保持 packed 模式必填；AC8 加限定 | `requirement.md` AC8 |
+| 7 | 本节 P1-2（性能未验证） | 接受登记（P7 行） | `STATE.md` Next Action |
+| 8 | 本节 P1-3（钩子退役） | **退役**（2026-10-05 确认）：删除 `SetChunkLimitOverride` / `ChunkLimitOverride`；P4/P7 若要做 A/B 另立明确接口 | `p5_s5_interface_spec.md` §4（已记退役）；`STATE.md` 的实现计划 |
+| 9 | 术语登记 | **落**：5 条指针式登记 | `analysis.md` Terminology |
+
+### Decision（第三遍复评）
+
+- **P0：无。**
+- **P1：3 条** —— 第 1 条由作者选 **(a)** 并同步 `requirement.md` 的 AC8 限定；第 2 条登记进 STATE 的
+  P7 行；第 3 条（钩子退役）由作者 2026-10-05 确认为**退役**。**三条均已收口。**
+- **Gate-A（S5 增量）**：**PASS（设计层）** —— 修订后的落点齐全、与代码现状对得上。
+  **代码实现**（字段 + 五条校验 + 钩子退役 + 两个夹具 + `ChunkLimitRejectedConfigs` 扩四组）
+  按 §0.7 **等作者"文档锁定"后的点名**；真机验证仍受环境限制。
+- 本记录只覆盖 S5 这次修订，**不追溯修改** 2026-10-03 的整体 Gate-A 与 2026-10-04 的第二遍复评记录。
+
+---
+
 ## Decision
 
 PASS（无 P0；P1 已由作者于 2026-10-03 确认，Gate-A 通过）
 
 **范围注**：上面这行是 2026-10-03 对"本 feature 整体设计"的 Gate-A 记录，保持不动。
-**S5 这一增量的 Gate-A 在 2026-10-04 的第二遍复评里被改判为 BLOCK**（见上一节：P0 三条已补落点，
-P1 三条已收口 —— `graph_version` 由作者确认为 bump 4 → 5，术语按指针式登记，另两条落成文档）。
-作者确认这轮修订文档后，在这里记一次复评结论、Gate-A 重开。
+
+- **S5 这一增量**：2026-10-04 的第二遍复评曾把它改判为 BLOCK（3 条 P0 + 3 条 P1），随后 P0 补齐落点、
+  P1 收口（`graph_version` 由作者确认为 bump 4 → 5；术语指针式登记；另两条落成文档）。
+- **2026-10-05 的第三遍复评**（`chunk_limit` 改由显式配置派生）结论：**P0 无、设计层 PASS**；
+  P1-1（AC8 张力）由作者选 (a) 并同步限定 `requirement.md` 的 AC8，P1-2（性能未验证）登记进 STATE 的
+  P7 行，P1-3（`SetChunkLimitOverride` 退役）由作者确认为**退役**。**三条均已收口**，代码实现待点名。
+  记录见上一节；本行不追溯修改更早的记录。

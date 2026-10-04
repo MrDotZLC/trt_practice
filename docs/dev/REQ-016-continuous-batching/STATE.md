@@ -41,9 +41,11 @@
      `input_ids` dim1 的 kMAX 查得）而不是 spec §2 / design D16 写的"单序列上限" → ① 真实配置下
      `prompt_len ≤ n_positions ≈ max_prefill_seq_len`，切块条件几乎不可能成立（S5 变死代码）；
      ② 真触发时多行同批的 Σ chunk 会超过 profile 的 T 上界 → `setInputShape` 响亮失败。
-     修法 A（推荐）：`chunk_limit = input_ids.dim1.max ÷ block_tables.dim0.max`；修法 B：现状 + 加
-     "t_total ≤ 引擎 T 上界"的拒绝（不解决 ①）。
-  **两条都不在"静态自检"的授权范围内 → 未动任何代码**，等作者定夺（1 是一行；2 需先定 A/B）。
+     **2026-10-05 作者采纳方向**：不取 A/B 的任一"反推"写法，而是把 **`max_prefill_seq_len` 提成显式
+     配置**（`Config` 新字段，与建图侧同名同值）+ **五条交叉校验**（`p5_s5_interface_spec.md` §2 ①～⑤）；
+     **P2 文档已按此修订**（见 `## Implementation Plan` 的"P5-S5 修订"节），**代码待做**。
+  **发现 1 已修**（见上条）；**发现 2：方向已定 → P2 文档 + P3 复评（设计层 PASS）已落，代码等作者点名**
+  （`review.md` 的 P1-1/2/3 三条 P1 均已收口：AC8 限定、P7 口径登记、**钩子退役**）。
 - **`TS-051` 的 1 处编译错误 + 5 处缺陷：已修（2026-10-04，作者点名"一并修掉"，提交 `a4dee90`；
   未编译验证）** —— 发现路径见 `docs/TROUBLESHOOTING.md` 的 `TS-051`。逐条（括号里是修法）：
   1. **编译错误（P0）**：`llm_runner.cpp` 的 packed 分支引用 `new_rows`，而声明在 `else` 分支内；
@@ -131,7 +133,9 @@
 4. **P5-S2 / S3**：**S3 已全部落码（写回行映射 → 逐行真长度 → 调度循环 → 9 条用例 + 只读观测口），
    全部未编译验证**。S3 真机收口按序做：① 编译（P5 Exit Gate）；② 跑 `mini_trt_llm_tests` 全量 +
    `LlmRunnerSchedulerTest.*` 9 条；③ 结果回填 `test_plan.md`（P6）。
-5. 环境恢复后补 P4，再按 D10 的两种负载跑 P7。
+5. 环境恢复后补 P4，再按 D10 的两种负载跑 P7。**注意（2026-10-05）**：`TS-052` 发现 2 的修订
+   （`chunk_limit` 改由显式声明派生）会让**分块真的启用**（此前几乎不触发）→ 默认路径的行为画像变了，
+   P7 结果必须按"**性能未验证 / 不声称收益**"的口径呈现，AC6 不得凭空结。
 6. **待决策（设计，走决策流程）**：`n_positions` 的来源 —— "调用方声明（`Config::max_positions`，
    当前实现）"vs"建图侧注入（引擎 / 图属性）"。见 `## Recovery Notes` 的"待决策"条：判据是语义
    （`n_positions` 是图属性），**不是**"是否撞 spec §2"；选项 B 的可行性（TRT 能否读回插件属性）
@@ -339,6 +343,29 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
 
 **测试方式**：同 S5-3 —— 本环境只做静态自检（括号逐行深度、符号成对、最长行、CRLF 无 BOM）；
 真机窗口 `cmake --build` + 跑 S4/S5 用例。**新增真机前提**：packed 引擎按 `graph_version = 6` 重建。
+
+### P5-S5 修订：`max_prefill_seq_len` 显式配置（**P2 文档已落；代码待做**，2026-10-05）
+
+**背景**：`TS-052` 发现 2 —— `chunk_limit` 原本从 profile 的**总 token 上界**反推（`input_ids` dim1
+kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配置下几乎不触发，又会在真触发时
+让多行同批越出 profile。作者采纳"显式配置 + 交叉校验"方向并提出四点修订（字段的非 packed 语义、
+1024 的来源、"单一来源"的准确口径、"policy < cap"的触发条件）。
+
+**当前修改模块**：packed 的 chunk 策略与构造期校验（`LLMRunner`）+ 两个 packed 测试夹具。
+
+| 文件 | 计划改动 |
+|---|---|
+| `include/.../core/llm_runner.hpp` | 新增 `Config::max_prefill_seq_len`（契约：**只在 packed 模式有语义、非 packed 必须留 0**；`chunk_limit` 的唯一来源）；**退役** `SetChunkLimitOverride` / `ChunkLimitOverride` |
+| `src/core/llm_runner.cpp` | 构造期五条交叉校验（§2 ①～⑤，拒绝时打印实际值与上界）；`chunk_limit_ = config_.max_prefill_seq_len`（删掉 override 全局量与"从 profile dim1 推导"的旧写法） |
+| `tests/test_llm_runner_chunked.cpp` | 夹具改按字段传三种切法（删 `ScopedChunkLimitOverride`）；`ChunkLimitRejectedConfigs` 扩为"未声明 / 超 `max_positions` / 违反交叉校验 ③ / 超 1024"四组 |
+| `tests/test_llm_runner_packed.cpp` | 夹具补 `max_prefill_seq_len = kPositions`（与 `max_positions` 同源） |
+
+**测试方式**：同 S5-3（静态自检 + 真机窗口）。**不动建图 / profile 区间 → 保持 `graph_version = 6`，
+不需要再 bump**。**前置**：本节的 P2 文档修订（spec §2/§4/§5/§6/§8/§9、design D16、test_plan 的 S5
+注记）与 **P3 式增量复评**（`review.md` 的第三遍复评，**设计层 PASS**）**都已落**；`requirement.md`
+的 AC8 按作者选的 (a) 加了限定；`analysis.md` 补了 5 条术语指针。**代码待作者"文档锁定"后的点名**；
+`review.md` 的 P1-3 已由作者确认为**退役**（删 `SetChunkLimitOverride` / `ChunkLimitOverride`）——
+即本节的四个文件改动里那一项不再是待定项。
 
 ---
 
