@@ -3135,6 +3135,10 @@ grep '^file=' /tmp/mini_trt_llm_resnet18_onnx_fp32.engine.fingerprint   # 应变
   4. 新增 **`Config::max_positions`**（位置表长度）：引擎侧查不到，只能由调用方声明；packed 模式必填
      + 两条上界检查（≤ 池/块表容量、≤ 插件上限 1024）+ 入口按 `prompt_len + max_new - 1` 拒绝。
      这是 spec §2"不新增 `Config` 字段"的**唯一例外**（已记入 spec §2 末 / §4 / §8 表 3 与 design D16）。
+     **2026-10-05 更新**：该字段已被 **B1+A1** 取代并**删除** —— 真值改由**引擎侧车**给出（建图期把
+     `n_positions` 写进 `<engine>.fingerprint`，runner 构造期读回 + 自检），packed 建图期另加
+     `n_positions % block_size == 0` 的**强制整除**。见 `p5_s5_interface_spec.md` §8 表 5 与
+     `docs/dev/REQ-016-continuous-batching/STATE.md` 的「P5-S5 修订二」。本条第 4 项是**当时**的修法。
 - **状态**：已修复（`a4dee90`）；**未编译验证**（本沙箱无 nvcc / cmake / TRT）。真机第一步是编译 +
   按 `graph_version = 6` 重建一次 packed 引擎。回归守卫：S5-3 的 `ChunkedEqualsWholePrompt` /
   `ChunkedShortPromptsUnchanged` 断言 `generation_rows`，`ChunkLimitRejectedConfigs` 断言
@@ -3217,5 +3221,7 @@ grep '^file=' /tmp/mini_trt_llm_resnet18_onnx_fp32.engine.fingerprint   # 应变
      （①未声明 ②> `max_positions` ④> 插件上限 ⑤profile 查询失败 ③`L × rows_max > T_max`）；
      `SetChunkLimitOverride` / `ChunkLimitOverride` **退役**；**不动图 / profile**（`graph_version` 保持 6）。
      设计与复评见 `review.md` 的第三遍复评（P1-1 选 (a)、P1-3 退役）。**未编译验证**。
+     **2026-10-05 更新**：交叉校验 ② 的上界不再是 `max_positions`（该字段已删），而是**引擎侧车**里的
+     `n_positions` 真值（B1+A1）—— 校验条数不变，只有 ② 的来源变了。
 - **状态**：发现 1 与发现 2 **均已修**（发现 2 走的是"改设计契约"这条路：P2 文档 + P3 复评 + 代码），
   **全部未编译验证**；发现 1 的回归守卫 = `PagedKVCacheTest.AppendDecodeStepAdvancesMappedRowsOnly`。

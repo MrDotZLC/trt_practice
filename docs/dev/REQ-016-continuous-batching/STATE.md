@@ -43,9 +43,9 @@
      ② 真触发时多行同批的 Σ chunk 会超过 profile 的 T 上界 → `setInputShape` 响亮失败。
      **2026-10-05 作者采纳方向**：不取 A/B 的任一"反推"写法，而是把 **`max_prefill_seq_len` 提成显式
      配置**（`Config` 新字段，与建图侧同名同值）+ **五条交叉校验**（`p5_s5_interface_spec.md` §2 ①～⑤）；
-     **P2 文档已按此修订**（见 `## Implementation Plan` 的"P5-S5 修订"节），**代码待做**。
-  **发现 1 已修**（见上条）；**发现 2：方向已定 → P2 文档 + P3 复评（设计层 PASS）已落，代码等作者点名**
-  （`review.md` 的 P1-1/2/3 三条 P1 均已收口：AC8 限定、P7 口径登记、**钩子退役**）。
+     **P2 文档与代码都已落**（见 `## Implementation Plan` 的"P5-S5 修订一"节，提交 `5a43b6c`）。
+  **发现 1 已修**（见上条）；**发现 2 已收口**（P2 文档 + P3 复评（设计层 PASS）+ 代码；`review.md`
+  的 P1-1/2/3 三条 P1 均已收口：AC8 限定、P7 口径登记、**钩子退役**）。
 - **`TS-051` 的 1 处编译错误 + 5 处缺陷：已修（2026-10-04，作者点名"一并修掉"，提交 `a4dee90`；
   未编译验证）** —— 发现路径见 `docs/TROUBLESHOOTING.md` 的 `TS-051`。逐条（括号里是修法）：
   1. **编译错误（P0）**：`llm_runner.cpp` 的 packed 分支引用 `new_rows`，而声明在 `else` 分支内；
@@ -71,6 +71,8 @@
   **偏离设计一处**：spec §2 原写"`chunk_limit` 不新增 `Config` 字段"，第 4 条新增了
   `Config::max_positions` —— 理由是 `n_positions` 引擎侧**查不到**（只剩 `ceil(n_positions/block_size)`），
   已在 spec §2 末 / §4 表 / §8 表 3 与 `design.md` D16 记为"唯一例外"。
+  **2026-10-05 更新**：这处"唯一例外"**已撤销** —— 作者裁决 **B1+A1**（真值改由引擎侧车给出、
+  packed 建图期强制整除），`Config::max_positions` **已删除**（见"P5-S5 修订二"节与 spec §8 表 5）。
   六条**全部未编译验证**；真机窗口第一步是编译 + 重建 packed 引擎。
 - **S4 的 generation 段已改为复用 split-K（2026-10-04 作者指出 → 当日修完，待编译验证）**：
   原先我在新插件里自写了一份**单趟** generation kernel，而 `paged_attention_plugin.cu` 的
@@ -149,11 +151,14 @@
    `phases/p4_baseline.md` 的 Dependency Missing **三处留痕里的第 3 处**（P4 时点不可能产出，
    故记"未满足（阻塞）"并在此锚定义务）。恢复后要量的**五项**见 `benchmark_before.md` 的 `## Result`
    （第 5 项 = S5 的 chunk 维度对照）。
-6. **待决策（设计，走决策流程）**：`n_positions` 的来源 —— "调用方声明（`Config::max_positions`，
-   当前实现）"vs"建图侧注入（引擎 / 图属性）"。见 `## Recovery Notes` 的"待决策"条：判据是语义
-   （`n_positions` 是图属性），**不是**"是否撞 spec §2"；选项 B 的可行性（TRT 能否读回插件属性）
-   未验证，决策前必须先核。定案前现状保留，不影响真机窗口（它只决定"谁给这个值"，不改变已实现的
-   检查行为）。
+6. **`n_positions` 的来源：已裁决（作者 2026-10-05 选 **B1+A1**）** —— **A1**：真值（解析自
+   `config.json`）作为 `numeric_params` 的新项写进 `<engine>.fingerprint`，runner 构造期读回 +
+    一致性自检（`ceil(N / block_size)` 与 `block_tables` 的 dim1 相符、`N <= 1024`、
+   `max_prefill_seq_len <= N`），**sidecar 缺失 / 损坏即拒绝启动**；**B1**：packed 建图强制
+   `n_positions % block_size == 0`（硬失败 + spec §5 记一条，**只限 packed**）；`Config::max_positions`
+   **删除**。评估与排除记录（V1–V5）见本文件末尾的核查清单 —— 真机核查动作**已取消**。
+   **代码已落**（2026-10-05，未编译验证）—— 见 `## Implementation Plan` 的
+   「P5-S5 修订二：`n_positions` 走 B1+A1」；真机只剩"编译 + 跑 3 条新用例"。
 
 ---
 
@@ -357,7 +362,7 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
 **测试方式**：同 S5-3 —— 本环境只做静态自检（括号逐行深度、符号成对、最长行、CRLF 无 BOM）；
 真机窗口 `cmake --build` + 跑 S4/S5 用例。**新增真机前提**：packed 引擎按 `graph_version = 6` 重建。
 
-### P5-S5 修订：`max_prefill_seq_len` 显式配置（**P2 文档已落；代码待做**，2026-10-05）
+### P5-S5 修订一：`max_prefill_seq_len` 显式配置（**文档与代码均已落**，2026-10-05）
 
 **背景**：`TS-052` 发现 2 —— `chunk_limit` 原本从 profile 的**总 token 上界**反推（`input_ids` dim1
 kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配置下几乎不触发，又会在真触发时
@@ -370,8 +375,12 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
 |---|---|
 | `include/.../core/llm_runner.hpp` | 新增 `Config::max_prefill_seq_len`（契约：**只在 packed 模式有语义、非 packed 必须留 0**；`chunk_limit` 的唯一来源）；**退役** `SetChunkLimitOverride` / `ChunkLimitOverride` |
 | `src/core/llm_runner.cpp` | 构造期五条交叉校验（§2 ①～⑤，拒绝时打印实际值与上界）；`chunk_limit_ = config_.max_prefill_seq_len`（删掉 override 全局量与"从 profile dim1 推导"的旧写法） |
-| `tests/test_llm_runner_chunked.cpp` | 夹具改按字段传三种切法（删 `ScopedChunkLimitOverride`）；`ChunkLimitRejectedConfigs` 扩为"未声明 / 超 `max_positions` / 违反交叉校验 ③ / 超 1024"四组 |
-| `tests/test_llm_runner_packed.cpp` | 夹具补 `max_prefill_seq_len = kPositions`（与 `max_positions` 同源） |
+| `tests/test_llm_runner_chunked.cpp` | 夹具改按字段传三种切法（删 `ScopedChunkLimitOverride`）；`ChunkLimitRejectedConfigs` 扩为"未声明 / 超上界 / 违反交叉校验 ③ / 超 1024"四组 |
+| `tests/test_llm_runner_packed.cpp` | 夹具补 `max_prefill_seq_len = kPositions`（与建图侧同源） |
+
+**后续修订（同日更晚）**：本节引入的 `Config::max_positions` 已被 **B1+A1** 取代并**删除**
+（见下一节）—— 交叉校验 ② 的上界改为**侧车真值**，`ChunkLimitRejectedConfigs` 的两组"声明值
+越界 / 入口位置拒绝"随之并入池容量检查。本表保留为那一轮的**计划记录**，不代表当前接口。
 
 **测试方式**：同 S5-3（静态自检 + 真机窗口）。**不动建图 / profile 区间 → 保持 `graph_version = 6`，
 不需要再 bump**。**前置**：本节的 P2 文档修订（spec §2/§4/§5/§6/§8/§9、design D16、test_plan 的 S5
@@ -380,8 +389,34 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
 `review.md` 的 P1-3 已由作者确认为**退役**（删 `SetChunkLimitOverride` / `ChunkLimitOverride`）。
 **代码已落（2026-10-05，未编译验证）**：`llm_runner.hpp/.cpp`（新字段 + 五条构造期校验 + 钩子退役）、
 `test_llm_runner_chunked.cpp`（夹具改构造期传参 + `ChunkLimitRejectedConfigs` 重写）、
-`test_llm_runner_packed.cpp`（夹具补字段）。**遗留**：交叉校验 ③ 在小夹具里无法独立触发
-（`max_positions` 的池上界先拦）→ 留 P6 真机；编译与用例仍待环境。
+`test_llm_runner_packed.cpp`（夹具补字段）。
+**当时登记的遗留（已收口）**：交叉校验 ③ 在小夹具里无法独立触发（上界检查先拦）→ 已由独立用例
+`ChunkLimitCrossCheckRejectsOverStepBudget`（`da54400`）解决；编译与真机用例仍待环境。
+
+### P5-S5 修订二：`n_positions` 走 **B1+A1**（**文档与代码均已落，未编译验证**，2026-10-05）
+
+**背景**：`TS-051` 第 4 条的位置上界原由调用方声明（`Config::max_positions`）。作者 2026-10-05
+裁决 **B1+A1**：真值改由**引擎侧车**给出（A1），并在 packed 建图期加**整除硬失败**（B1），
+同时**删除** `Config::max_positions`。完整口径见 `p5_s5_interface_spec.md` §2/§5、`design.md` D16、
+`review.md` 的第四遍复评。
+
+**当前修改模块**：引擎侧车的读写（`engine_cache` / `Engine` / `builder`）+ packed 建图期约束
+（`gpt2_model_builder`）+ runner 构造期读回与自检（`LLMRunner`）+ 3 条新用例。
+
+| 文件 | 实际改动 |
+|---|---|
+| `src/core/engine_cache.cpp` | 新增 `ReadEngineSidecarField(path, key)`：逐行比对**完整行键**（数值项的字面量是 `num.<名字>`），只读 `---` 之后的正文；缺文件 / 缺键 → 空串 |
+| `include/.../core/engine.hpp` / `src/core/engine.cpp` | 新增 `const std::string& Path()`（构造期记下引擎文件路径）—— runner 靠它定位 `<engine>.fingerprint` |
+| `src/core/builder.cpp` | `numeric_params` 新增 `{"model.n_positions", <解析自 config.json 的真值>}`（`TryGetModelPositions` 静默失败时**不写这一项**，该引擎的 runner 会拒绝启动）；图与 profile **不动** |
+| `src/core/gpt2_model_builder.cpp` | packed 分支在进入层循环前硬失败 `n_positions % block_size != 0`，错误信息带实际值 / 上界 / 建议因数；**padding 路径不受影响** |
+| `include/.../core/llm_runner.hpp` | **删除** `Config::max_positions`；新增成员 `n_positions_`；`max_prefill_seq_len` 的契约注释同步（② 的上界改为侧车真值） |
+| `src/core/llm_runner.cpp` | 构造期读侧车 + 两项自检（`ceil(N/block_size)` 对 `block_tables` dim1、`N <= 1024`）；读不到 / 不自洽 → 拒绝启动；交叉校验 ② 改用 `n_positions_`；入口位置上界同样用它 |
+| `tests/test_llm_runner_packed.cpp` | 夹具去掉 `max_positions`（接口变更的机械后果） |
+| `tests/test_llm_runner_chunked.cpp` | 夹具去掉 `max_positions`；`ChunkLimitRejectedConfigs` 收敛为 (A)(B) 两组；**新增 3 条**：`MissingFingerprintSidecarRejected` / `SidecarPositionsMismatchRejected` / `NonDivisibleBlockSizeRejected`（第三条含 padding 反向对照） |
+
+**测试方式**：同 S5-3（沙箱只做静态自检：逐行括号深度、符号成对、最长行、CRLF 无 BOM）。
+**不动建图 / profile 区间 → `graph_version` 保持 6**；但指纹多一项 → **现有引擎自动失效、首次跑
+重建一次**（分钟级，属指纹机制而非 bump）。真机窗口：`cmake --build` → 跑 S4/S5 全部用例 + 3 条新用例。
 
 ---
 
@@ -471,6 +506,15 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
   越界写 + stats 重复累加）、`cu_seqlens_ctx` 形状与 profile 行维范围（`[1, max_prefill_batch + 1]`）、
   新增 `Config::max_positions` + 入口位置上界拒绝。`kPackedPrefillGraphVersion` **5 → 6**；
   S5-3 用例补 `generation_rows` 回归断言与 `max_positions` 的拒绝对照。**全部未编译验证**
+- 2026-10-05: `chunk_limit` 改由**显式声明** `Config::max_prefill_seq_len` 派生（`TS-052` 发现 2 的
+  收口）：`5a43b6c`（代码 + 五条交叉校验、`SetChunkLimitOverride` 退役）、`ccc3992`/`0ce2862`
+  （P4 的三处留痕 + 判据对照）、`da54400`（交叉校验 ③ 的独立触发用例）、`1408bf0`（编号与时效修正）。
+  **全部未编译验证**
+- 2026-10-05: **作者裁决 `n_positions` 的 → B1+A1**（`Config::max_positions` 删除）→ 文档落盘
+  （spec §2/§4/§5/§8 表 5、`design.md` D16、`review.md` 第四遍复评、`test_plan.md` 的 3 条新用例）+
+  代码落盘（`engine_cache` 读字段 helper、`Engine::Path()`、`builder.cpp` 的 `model.n_positions`、
+  `gpt2_model_builder.cpp` 的整除硬失败、runner 读回与两项自检、两个夹具与 3 条新用例）。
+  **不动建图 / profile → `graph_version` 保持 6**；指纹多一项 → 现有引擎自动失效、首次跑重建一次
 
 ---
 
@@ -505,13 +549,15 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
   "runner 入口已有这条"，但**没有任何一处写 `n_positions` 从哪来**。也就是说：即使当时按第 4 条
   停下回报，spec 里也没有现成答案可抄 —— 这条债最后以"实现时才暴露"的形式到期。**遇到这类条目要
   按"设计欠债"登记（并被当成设计缺口去补），不要只记成流程失误。**
-- **待决策（走决策流程，不要夹在复盘里定，2026-10-05）**：`n_positions` 的来源在
-  "**调用方声明**（`Config::max_positions`，当前实现）"与"**建图侧注入**（写进引擎 / 图属性，
-  runner 再查回来）"之间**尚未定案**。判据是**语义正确性**：`n_positions` 本来就是图属性（它决定
-  wpe 的行数与插件的 `max_seq_len`），不是 runner 的配置 —— **不能**因为"新增字段撞了 spec §2"
-  就去换方案（那是拿实现迁就一条可能该被修订的契约，方向反了）。**未展开项（决策前必须先核）**：
-  建图侧注入需要 runner 能把插件 / 图属性读回来，而 TRT 10.15 是否有这条公开路径**未验证**；
-  未验证前不得把它当成"更优选项"批准。定案前按现状保留（packed 模式必填 + 入口拒绝）。
+- **已裁决（作者 2026-10-05 选 **B1+A1**，取代同日的"待决策"）**：`n_positions` 的来源定案为
+  **A1**（真值来自**引擎侧车**：建图期把解析出的 `n_positions` 写进 `<engine>.fingerprint` 的
+  `num.model.n_positions`，runner 构造期读回 + 一致性自检）**+ B1**（packed 建图强制
+  `n_positions % block_size == 0`，硬失败），并**删除 `Config::max_positions`**。两点都写死在
+  spec §2/§5 与 `design.md` D16；评估与排除记录（V1–V5）留在本文件末尾的核查清单里。
+  **裁决推翻了同日的初判**：初判是"V1/V2/V3 都不通过 → 保持 A"，而裁决走的是**不依赖 TRT 回读
+  插件属性的注入路径**（写进我们自己的侧车）—— 这条初判当时没被列入 V1–V5，复盘结论是
+  "**枚举候选时要连'我们自己可控的载体'一起列**"，否则会把"没有已知可行方案"误当成"只能保持现状"。
+  **真机核查动作（打印 I/O shape / 导出 Inspector JSON）已取消**；真机只剩"编译 + 跑 3 条新用例"。
 - **Gate-A 决定（2026-10-03）**：D5 本 feature 先做；D7 诊断开关默认关；**D10 做 S3**；
   AC2 不下修；D11 补齐与后续 feature 的接口面。
 - **P4 为什么是 N/A**：作者当前不在 GTX 1660 Ti 环境，先开发代码、GPU 测试搁置。
@@ -558,3 +604,54 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
 | 留痕 ①：`STATE.md` 的 Next Action / Current Blockers 写 `Gate-B: N/A（缺依赖：<原因>）` | 满足 | `## Current Blockers` 的"P4 / P7 搁置（2026-10-03）"那条（字面行 2026-10-05 补） |
 | 留痕 ②：`summary.md` 的 Performance 一节写 N/A + 原因 | **未满足（阻塞）** | P8 产物，P4 时点不可能产出。**放行记录**：作者 2026-10-05 指令"全落"（含本条）→ 放行范围 = **允许 P4 以"阻塞"状态继续**，义务锚定在 `## Next Action` 第 5 条，**P8 必清** |
 | 留痕 ③：`docs/PROGRESS.md` 的"已知问题与坑"留一条（性能未验证及原因） | 满足 | `docs/PROGRESS.md` §5.16（2026-10-05 补） |
+
+---
+
+## 待决策核查清单（④ `n_positions` 的来源）
+
+> **状态：已裁决（作者 2026-10-05 选 **B1+A1**；裁决记录见 spec §8 表 5、评审见 `review.md` 的
+> 第四遍复评）。本节**转为决策记录，真机核查动作取消**（不再需要打印 I/O shape / 导出 Inspector JSON）**
+> —— 下面 V1–V5 保留为"评估与排除"的留档。
+>
+> **原用途（留档）**：这是 `## Recovery Notes` 里"待决策"那条的**未展开项**（"建图侧注入需要 runner 能把插件 /
+> 图属性读回来，而 TRT 10.15 是否有这条公开路径**未验证**"）的展开。**真机窗口里在"编译之后、
+> 重建 packed 引擎之前"执行**（顺序见 `## Next Action` 第 5/6 条）——若结论会改接口，先改再建引擎，
+> 避免白建一次。编号用 **V1–V5**（`①②③④⑤` 只归 spec §2 的交叉校验，不与之撞号）。
+>
+> **判定口径（先写死，免得结论含糊）**：
+> - **"精确"** = 读回来的值等于建图时的 `cfg.n_positions`；`ceil(n_positions / block_size)` 这类
+>   **取整上界不算通过**（那正是当前池检查用的界）。
+> - **"可复现"** = 核查必须留下**引擎文件 + 导出产物 + 命令**（指针写进 `TROUBLESHOOTING.md` 或本节），
+>   不接受"我看过 API 文档"这种无据结论。
+> - **取舍判据**（作者 2026-10-05 已定）：语义正确性 —— `n_positions` 是**图属性**；
+>   "是否撞 spec §2 的字段禁令"**不作为**判据。
+
+**已知前提（省得重复查）**：(a) 引擎侧唯一带 `n_positions` 痕迹的现成 I/O 是
+`ceil(n_positions / block_size)`（cache 第 0 维 / `block_tables` 第 1 维）→ **上界、非精确**；
+(b) 我们**自己**的插件把 `max_seq_len` 作为属性序列化进了引擎，问题只在"TRT 是否给了读回路径"；
+(c) runner 构造期能拿到的只有 `Engine`（`ICudaEngine` + `IExecutionContext`）与引擎文件路径，**没有**
+model dir / `config.json`。
+
+| # | 核什么 | 怎么核；判定标准 |
+|---|---|---|
+| **V1** | `ICudaEngine` 的**插件层枚举 + 属性读回**：是否有 `getNbLayers()` / `getLayerInformation(idx, kJSON / kONELINE)`；该 JSON 对插件层是否含 `PluginName` / `PluginNamespace` / **插件字段值（如 `max_seq_len`）** | **预期不通过（作者 2026-10-05 依官方文档判定）**：Inspector 的 JSON 里 **"layer parameters" 指标准层参数**（conv 的 kernel/padding/stride、激活类型…），**不含自定义插件的序列化属性** —— PluginField 只用于"反序列化时恢复插件状态"，不是配置查询接口；遍历所有层大概率只看到插件层的 name / 输入输出形状 / 精度。**仍要留证据**：`NvInfer.h` 里 `class ICudaEngine` 的**行号** + 一次导出 JSON 里插件层的**实际字段列表** |
+| **V2** | `IEngineInspector` 在 **kDETAILED** 下输出的**权重 / 常量形状**（`runtime->createEngineInspector(*engine)`）：JSON 里有形如 `"Weights": {"Type": …, "Count": N}` 的字段；我们要的是 wpe 的 `[n_positions, hidden]` | **技术上存在，但收益与风险不成正比（作者 2026-10-05）**：① **wpe 未必是可辨认的独立层**（可能被融合或识别成 Constant，取决于建图方式与 TRT 版本）；② **动态维在未绑定 context 时显示为 `-1`** —— 要拿精确值必须先建 context、设好输入 shape、再 `inspector->setExecutionContext(context)`，实现复杂度上升；③ **JSON schema 跨版本会变**（TRT 11.x 已破坏性变更：Bindings → 结构化 I/O Tensors、Format/DataType 拆分）→ 若走这条路，design **必须写明"升级 TRT 时 JSON 解析逻辑要回归"**。**验证成本硬约束：若现有引擎的 `profilingVerbosity` 不是 `kDETAILED`，不许为了验 V2 重建引擎** —— 直接标"需重建才能验；决策阶段不做" |
+| **V3** | 现有 I/O 张量里有没有**精确**载体 | 列全部 I/O 的 `getTensorShape` + profile **min/max/opt** dims（`input_ids` / `position_ids` / `block_tables` / `context_lens` / `cu_seqlens_ctx` / `context_seq_count` / `key_cache_i` / `value_cache_i` / `k_layeri` / `v_layeri` / `logits`）。**预期不通过**：`input_ids` / `position_ids` 是 `[batch, 批内实际长度]` 或扁平的 `[total_tokens]`（**不是**模型支持的最大位置数）；`block_tables` 第 1 维与 cache 第 0 维都是 `ceil(n_positions / block_size)`（= 前提 (a) 的**上界**）；其余也不承载它。**仍必须打印每个张量的维与数值当证据** |
+| **V4** | 我们自己可控的"注入"手段：**V4a** 建图时加一个**常量输出**（如单元素 `positions_len`，形状里带 n_positions）；**V4b** 把 cache 第 0 维改成精确载体 | **V4a = 唯一能得到"精确、稳定、跨版本可靠"值的手段**（作者 2026-10-05）。代价：I/O 契约变更 → **必须 bump `graph_version`**；`mini_trt_llm/tools/inspect_engine.cpp` 等工具**必须同步**（否则 I/O 数量不匹配会报错或静默忽略）；引擎多一个无计算作用的输出（性能影响可忽略，内存布局微变）。**硬约束：不要为了"验 V4a"或"为 V4a"单独建一次引擎** —— 在下一次**本来就需要的**重建里一并改（bump + 工具同步同轮完成）。**V4b 仅记录、不建议实施**（改 cache 的内存布局与语义，影响面比 V4a 大得多） |
+| **V5** | 若 V1–V3 都不通过（**预期就是这个结果**） | **保持 A**（调用方声明 + 五条交叉校验）：把 V1/V2/V3 的证据（`ICudaEngine` 头文件行号、导出 JSON 里插件层的字段列表、全部 I/O 的形状打印）写进 `design.md` 的决策记录 —— 下次不再重问。**例外（业务触发条件）**：若**无法接受** A 的唯一残留缺口 —— "runner 声明 < 建图声明"这条**安全方向**的不一致（结果仍对，只是分块更细）—— 且 runner 构造期**必须**精确知道 `n_positions` → 选 **V4a**，并**并入下一次重建** |
+
+**方案成本对照（供裁决）**：
+
+| 方案 | 若通过需要改什么 | 影响面 |
+|---|---|---|
+| **A（现状）** | 无 | 调用方必须声明；"两侧声明不一致"的**安全方向**（声明 < 建图）发现不了 |
+| **B1 = V1** | `Engine` 加"读插件属性"helper；runner 构造期改用它；`Config::max_positions` 删除或降级为可选覆盖 | 接口变更（删/改字段）→ 走 P2/P3 |
+| **B2 = V2** | 同 B1，但依赖 JSON 解析（随 TRT 版本脆弱） | 同 B1 + 脆弱性 |
+| **B3 = V4a** | 改建图（加哑输出）→ bump `graph_version`；工具同步 | 最大（图 + 引擎重建 + 工具） |
+
+**执行顺序（作者 2026-10-05 定，真机窗口"编译之后、重建引擎之前"）**：
+
+1. **先跑 V3**：打印全部 I/O 的 `getTensorShape` 与 profile min/max/opt dims —— 预期确认"无一精确等于 `n_positions`"，**留作证据**。
+2. **同轮做 V1 / V2 的静态检查（不重建引擎）**：`trtexec --dumpLayerInfo --profilingVerbosity=detailed --exportLayerInfo=<json>` 导**现有引擎**的 JSON，人工看插件层有没有字段值（V1）、wpe 形状可不可见（V2）。**若现有引擎的 `profilingVerbosity` 不是 `kDETAILED` → 直接标"需重建才能验；决策阶段不允许重建"**，不为此建引擎。
+3. **若 V1 / V2 / V3 都不通过（大概率）**：**保持 A**，把证据写进 `design.md` 的决策记录（含"V1 在结构上不可能：Inspector 不含插件属性"这条）。
+4. **若不能接受 A 的残留缺口、且必须精确**：选 **V4a**，把"改图 + bump `graph_version` + 工具同步"**并入下一次本来就需要的重建**，避免单独为它建一次引擎。

@@ -155,7 +155,8 @@ decode 引擎（读 cache + context_lens/block_tables）─→ logits[1,1,V]
 | 末块 / 非末块 | 同上（`p5_s5_interface_spec.md` §2）：同一条规则的两半 | 把末块当异常，或把非末块切成短块 |
 | chunk 的绝对位置 | 同上（`p5_s5_interface_spec.md` §2）：chunk 内第 i 个 token 的 `position_ids` = `prompt_done + i`；首 chunk 退化为 `0..L_c-1` | 用段内下标 `i` 当位置（第二块起查错位置表，且不报错） |
 | `max_prefill_seq_len`（设计层，2026-10-05） | **指针式登记**：定义以 `p5_s5_interface_spec.md` §2 为唯一来源（含"只在 packed 模式有语义、非 packed 必须留 0"与五条交叉校验） | 在非 packed 路径上给它填值并期待生效；或未声明就让 packed 模式继续跑 |
-| `max_positions` / `n_positions`（设计层，2026-10-04） | 同上（`p5_s5_interface_spec.md` §2 末）：位置表长度，与引擎交叉校验（`prompt_len + max_new - 1 <= max_positions`） | 让 `prompt_len + max_new - 1` 越过 `n_positions`（wpe 查表越界读，且不报错） |
+| `n_positions`（设计层，2026-10-04；**2026-10-05 改源**） | 同上（`p5_s5_interface_spec.md` §2 的 A1）：位置表长度，真值来自**引擎侧车**（`num.model.n_positions`），入口守 `prompt_len + max_new - 1 <= n_positions`。**调用方声明的那份（`Config::max_positions`）已删除** | 让 `prompt_len + max_new - 1` 越过 `n_positions`（wpe 查表越界读，且不报错）；或侧车缺失时"猜一个默认值" |
 | 交叉校验（设计层，2026-10-05） | 同上（spec §2）：**意图由调用方声明、上界由引擎裁决** —— 声明值必须过 profile 上界的检查 | 只信声明值、不查引擎（等于"按配置假定"）；或只用引擎反推、不声明意图 |
 | 下游单一 / 声明侧单一（设计层，2026-10-05） | 同上（spec §2 + `design.md` D16 的 Trade-off）：单一是"chunk 策略与 profile 校验共用同一声明值"；声明侧仍是 builder 与 runner **两处** | 把"单一事实来源"读成"只需给一处"，从而不做两侧一致性检查 |
 | `policy < cap`（设计层，2026-10-05） | 同上（`design.md` D16 的 Trade-off）：本轮不做第二个旋钮；**触发条件** = "想用更小的 chunk 换调度灵活性、但不想动建图上界" | 现在无数据就引入第二个旋钮；或把 cap 当 policy 用而不写明两者区别 |
+| 引擎侧车 / sidecar（设计层，2026-10-05） | **指针式登记**：定义以 `p5_s5_interface_spec.md` §2（A1）与 `engine_cache.hpp` 的注释为唯一来源 —— `<engine_path>.fingerprint`（`fingerprint=<hash>` + `---` + 规范化文本），现承担**运行期读取图属性**（`n_positions`）；**缺文件 / 缺字段 / 解析失败 = 不可信 → 拒绝启动** | 单独拷贝 `.engine` 而不带 `.fingerprint`；或 sidecar 缺失时"猜一个默认值"继续跑 |

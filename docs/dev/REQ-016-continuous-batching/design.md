@@ -477,15 +477,34 @@ varlen 自注意力、之后的走分页注意力（含当前 token）——**�
   `Config::max_prefill_seq_len`**（与建图侧同名同值）；非末块对齐（恒为 `chunk_limit`）、末块按剩余
   的实际长度。不做"按队列长度自适应"那类调度层策略（仍在 Excluded 里）—— AC1/AC9 的逐位对拍依赖
   确定性。**该声明值只在 packed 模式有语义**：非 packed 路径必须留 0（不读也不校验）。
-- **`chunk_limit` / `max_prefill_seq_len` / `n_positions` 三条来源（2026-10-05 作者采纳"显式配置 +
-  交叉校验"后统一口径）**：三者同属"**引擎查不到 → 调用方声明 + 引擎交叉校验**"这一类
-  （`Config` 里那句"Runner 自己推不出来，所以要求调用方显式给出"）：
-  - `max_prefill_seq_len`：建图侧与运行侧**各声明一次**（同一个语义值），profile 查询**只做校验**
-    （`L × block_tables.dim0.max ≤ input_ids.dim1.max` 等五条，见 `p5_s5_interface_spec.md` §2）；
-  - `n_positions`：同一模式（packed 模式必填 + 上界检查 + 入口按 `prompt_len + max_new - 1` 拒绝，
-    `TS-051` 第 4 条）；**它的"调用方声明 vs 建图侧注入"待决策项不由本轮结案**（见 STATE）。
-  原先"由 profile 推导 `chunk_limit`、不新增 `Config` 字段"的写法由此**作废**：`chunk_limit` 是
-  **策略量**，不该是形状上界的副产品（旧写法的两个后果见 `TS-052` 发现 2）。
+- **`chunk_limit` / `n_positions` 两条来源（2026-10-05 两轮裁决后的最终口径）**：
+  - `max_prefill_seq_len`（= `chunk_limit`）：**调用方声明**（建图侧与运行侧各给一次，同一个语义值），
+    profile 查询**只做校验**（`L × block_tables.dim0.max ≤ input_ids.dim1.max` 等五条，见
+    `p5_s5_interface_spec.md` §2）；原先"由 profile 推导、不新增 `Config` 字段"的写法**作废** ——
+    `chunk_limit` 是**策略量**，不该是形状上界的副产品（旧写法的两个后果见 `TS-052` 发现 2）。
+  - `n_positions`：**B1 + A1**（作者 2026-10-05 裁决，见 §"位置越界这条洞怎么关的"）——
+    真值由**引擎侧车**给出（不再由调用方声明，`Config::max_positions` **已删除**）。
+- **位置越界这条洞怎么关的（2026-10-05 作者裁决 B1+A1）**：S5 让 `prompt_len` 可以跨步增长，而 wpe 是
+  `addGather(wpe, position_ids)`（越界读**不报错**）→ 入口必须拒绝
+  `prompt_len + max_new - 1 > n_positions`。两条手段各司其职：
+  - **A1（真值来源）**：建图期把 `n_positions` 写进 `<engine>.fingerprint`（sidecar 的
+    `numeric_params`，该文件本来就有），runner 构造期**读回**并做一致性自检
+    （`ceil(N / block_size)` 与 `block_tables` 的 profile dim1 相符；`N <= 1024`；
+    `max_prefill_seq_len <= N`）；**sidecar 缺失 / 损坏即拒绝启动**（不猜默认值）。⇒ 上界**精确**。
+    **实现口径**：第二条读的是 `block_tables` 的 **dim1 张量形状**（网络里是静态维，值与 profile dim1
+    相同，但不依赖 TRT 对静态维的 profile 查询行为）—— 与 `p5_s5_interface_spec.md` §2 的
+    "实现口径"注是同一句。
+  - **B1（结构约束）**：packed 建图强制 `n_positions % block_size == 0`（**建图期硬失败**）⇒
+    **池容量 = `n_positions`** ⇒ 多一道**独立的几何校验**，且挡住"非整除配置"这类未来退化。
+  - **为什么还要 B1（A1 已能关窗）**：B1 让"池容量 == `n_positions`"这个等式成为可依赖的不变量；
+    **反过来，将来若为了支持非整除 `block_size` 而放开 B1，窗口也不会重开**（真值仍在 A1 手里）——
+    两条门槛互为兜底，而不是重复。
+  - **窗口公式（写下来，免得后人以为"只用池容量"就是精确的）**：只用池容量当上界时，可放行的
+    区间是 `(n_positions, ceil(n_positions/bs) × bs]`，**宽度 = `block_size − (n_positions % block_size)`**
+    （**整除时宽度 0**）。非整除时这段静默口子正是"按 `cache dim0 × block_size` 反推 `n_positions`"
+    那条诱人错法的落点 —— 所以：**代码里用 Config 几何量 + 与引擎交叉校验，不用 shape 反推**。
+  - **作用域**：B1 **只加在 packed 建图**；**padding 路径不适用** —— 它每步把 prompt 一次装下，
+    位置越界由 `SetInputShape` **响亮拦住**（不得把这条约束推广到两条路径）。
 - **图与引擎（`graph_version`）**：方案 A 让 I/O 契约与 `getWorkspaceSize` **都不变**，所以存在
   "复用旧引擎"的理论可能；但 `engine_cache.hpp` 的规则是"**任何改动建图 / 精度 / 插件行为的代码变更
   都要 +1**"（先例：1 → 2 正是 `PagedAttentionPlugin::getWorkspaceSize` 从 0 变正数），

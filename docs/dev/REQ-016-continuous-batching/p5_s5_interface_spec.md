@@ -67,7 +67,7 @@ chunk 的第二段之后必须**读缓存**里前面已经写好的 prompt K/V �
   路径上填了值、然后困惑"为什么没用"。
 - **packed 模式的交叉校验（任一条不过 → 构造期拒绝并打印实际值与上界；引擎仍是权威）**：
   ① `max_prefill_seq_len >= 1`（`0` 只是"未声明"的哨兵，不是合法值）；
-  ② `max_prefill_seq_len <= max_positions`（位置表上界，见下一条）；
+  ② `max_prefill_seq_len <= n_positions`（位置表**真值**：构造期从引擎侧车读回，见下一条的 A1）；
   ③ **`max_prefill_seq_len × block_tables.dim0.max <= input_ids.dim1.max`** —— 保证"每步 Σ 每行
      chunk ≤ 引擎 profile 的 T 上界"，即"多行同批不会越出形状"的**充分条件**；
   ④ `max_prefill_seq_len <= kPackedAttentionMaxContextSeqLen`；
@@ -88,24 +88,32 @@ chunk 的第二段之后必须**读缓存**里前面已经写好的 prompt K/V �
   `getProfileShape`），用途从"推导 `chunk_limit`"变成"**校验声明值**"（第 ③ / ⑤ 条）。依据仍是
   "按对方查询、不按配置假定"：**意图由调用方声明，上界由引擎裁决**。**未编译验证**：接口名与
   TRT 10.15 的实际签名要在真机窗口核对。
-- **`n_positions` 的来源（2026-10-04 作者点名"一并修掉"后补，`TS-051` 第 4 条）**：与
-  `chunk_limit` **同属一类**（引擎查不到 → **调用方声明 + 引擎校验**）——
-  引擎里没有任何张量带着
-  `n_positions`（只留下 `ceil(n_positions / block_size)`：cache 第 0 维 / `block_tables` 第 1 维），
-  而 runner 也看不到 `config.json`。所以只能由调用方声明：`LLMRunner::Config::max_positions`
-  （与 `block_size` / `num_blocks` 属于同一类"runner 推不出来"的几何参数）。
-  packed 模式下**必填**（`<= 0` → 构造期拒绝），并做两条一致性检查（`<=` cache/块表容量、
-  `<=` 插件上限 `kPackedAttentionMaxContextSeqLen`）；入口按
-  `prompt_len + max_new - 1 <= max_positions` 拒绝（prompt 与随后 `max_new` 个生成 token 用到的
-  最大位置是 `prompt_len + max_new - 2`）。**为什么不能省**：S5 的分块让 `prompt_len` 超过单步形状
-  上界成为正常路径，而 `n_positions` 是位置编码查表（`addGather(wpe, position_ids)`）的**真实**
-  上界 —— 越过它 wpe 的 gather 越界读，且**不报错**。两条来源的分工是"查得到 / 查不到"，不是口径反复。
-  **注意（2026-10-05 复盘登记，尚未定案）**：这个**来源本身**仍在决策中 —— "调用方声明"（本节的
-  当前实现）vs"建图侧注入"（`n_positions` 是图属性，若 TRT 能读回插件 / 图属性则语义更顺）。判据是
-  语义正确性，**不是**"是否撞 spec §2 的字段禁令"；见 `STATE.md` 的 Recovery Notes / Next Action
-  第 6 条。**定案前按现状保留**。**补充（2026-10-05 同日）**：上面的 `max_prefill_seq_len` 修订已把
-  "**引擎查不到的量 → 调用方声明 + 引擎交叉校验**"立为此类量的统一口径；该待决策项在它自己的决策
-  流程里裁决，本次不擅自结案（若裁决为"建图侧注入"，那两条都要一起改）。
+- **`n_positions` 的来源：引擎侧车（2026-10-05 作者裁决 **B1+A1**，取代 `Config::max_positions`）**：
+  - **真值来自建图期**：解析自 `config.json` 的 `n_positions` 作为 `numeric_params` 的一项写进
+    `<engine_path>.fingerprint`。**该 sidecar 已经存在**（格式 `fingerprint=<hash>\n---\n<规范化文本>`，
+    见 `engine_cache.cpp` 的 `WriteEngineFingerprint` 与 `builder.cpp` 的 `numeric_params`），
+    本次只是**多写一项真值**。
+  - runner 构造期**读回**它，作为**入口位置上界**：`prompt_len + max_new - 1 <= n_positions`
+    （prompt 与随后 `max_new` 个生成 token 用到的最大位置是 `prompt_len + max_new - 2`）。
+  - **一致性自检（不通过 → 构造期拒绝启动；不自作主张取 min）**：
+    `ceil(n_positions / block_size)` 必须等于引擎 `block_tables` 的 profile dim1（= cache 块数上界）；
+    另加 `n_positions <= kPackedAttentionMaxContextSeqLen`（插件上限）与
+    `max_prefill_seq_len <= n_positions`（本节 ② 的上界来源）。
+    **实现口径（2026-10-05 落码时定）**：`block_tables` 的 dim1 在网络里是**静态维**，实现直接读
+    `ICudaEngine::getTensorShape("block_tables").d[1]` —— 与"profile dim1"是**同一个值**，但不需要
+    依赖 TRT 对"静态维的 profile 查询"的行为（`getProfileShape` 的契约只讲张量维，静态维留白）。
+  - **sidecar 缺失 / 解析失败 / 字段缺失 → 拒绝启动**（与 `EngineCacheIsFresh` 的"缺 sidecar 一律
+    视为不可信"同一纪律），**不猜默认值**。**行为变更**：单独拷贝 `.engine` 而不带 `.fingerprint`
+    不再可用 —— 要写进交接说明。
+  - **`Config::max_positions` 删除**（§4）：位置上界只有一个来源（真值）—— 留一个"可被填错"的字段
+    等于把第二份事实与**静默窗口**（§5）一起带回来。
+  - **为什么必须精确**：S5 的分块让 `prompt_len` 超过单步形状上界成为正常路径，而 `n_positions` 是
+    位置编码查表（`addGather(wpe, position_ids)`）的**真实**上界 —— 越过它 wpe 越界读，且**不报错**。
+  - **决策记录（为什么不是别的路）**：V1（从 Inspector 读插件属性）**不可行**（Inspector 不含插件
+    序列化属性；runner 也没有插件实例）；V2（读 wpe 常量形状）**脆弱**（可辨识性 + JSON schema
+    跨版本）；V3（按 `cache dim0 × bs` 反推）**有取整歧义**（非整除时会落进 §5 的窗口）；
+    V4a/V4b（往图里注入）**代价更大 / 不建议** —— 完整评估见 `STATE.md` 的
+    `## 待决策核查清单（④ n_positions 的来源）`。
 - "非末块对齐、末块按实际长度"是**同一条规则的两半**：非末块一律 `chunk_limit`（对齐 → 形状与 kernel
   假设稳定），末块是该序列剩余的实际长度（允许更短，按 `cu_seqlens` 分段处理，**不是回退**）。
 
@@ -181,7 +189,7 @@ mask  = 因果（chunk 内）+ 按 cu_seqlens_ctx 分段（不同序列不互相
 
 | 类别 | 例子 | 要求 |
 |---|---|---|
-| **配置 / 形状类**（可判定） | `n_positions > 1024`、`prompt_len > n_positions`（由 `Config::max_positions` 守，见 §2 末）、推导不出 `chunk_limit`、profile 查询失败 | **显式拒绝**，错误信息里带上实际值与上界；禁止静默换路 |
+| **配置 / 形状类**（可判定） | `n_positions > 1024`、`prompt_len > n_positions`（由侧车真值守，见 §2 的 A1）、推导不出 `chunk_limit`、profile 查询失败 | **显式拒绝**，错误信息里带上实际值与上界；禁止静默换路 |
 | **运行期资源类**（不可判定） | TRT 没给 workspace（现有 paged / packed 插件会退单趟 + WARN，`paged_attention_plugin.cu` 的兜底注释） | 保留既有降级，但必须满足：① 只影响速度、不影响正确性；② 打一次 WARN 说明原因；③ **S5 新增的路径不得引入新的这类静默降级** |
 
 写这条分界的理由：两条既有降级（paged / packed 的 split-K → 单趟）是 REQ-014 交付时定的，
@@ -200,12 +208,14 @@ mask  = 因果（chunk 内）+ 按 cu_seqlens_ctx 分段（不同序列不互相
 | cache 记账 | host 侧从"赋值"改成"**累加**"（`context_lens_host_[row] += row_lengths[i]`、`Sequence::length` 同）；预留量校验改用**累计长度** —— 只改 kernel 不改这两处 = 第二块起静默错 |
 | 采样 | 只有 `prompt_done == prompt_len` 的行参与采样；行集用**显式行列表 + 紧凑暂存**，不动 `SampleBatch` 签名与行号纪律（§2） |
 | 退出判据 | `max_new` 计时从 prefill 完成起（§2） |
-| `Engine`（新增只读接口） | 加一个 profile 查询（`getProfileShape`）：用途是**校验**调用方声明的 `max_prefill_seq_len` / `max_positions`（§2 的交叉校验 ③/⑤），**不再用来推导 `chunk_limit`**（2026-10-05 修订） |
+| `Engine`（新增只读接口） | ① profile 查询（`getProfileShape`）：**校验**声明值与做一致性自检（§2 的 ①～⑤ 与侧车一致性），**不再用来推导 `chunk_limit`**；② **新增 `const std::string& Path()`** —— runner 用它定位引擎侧车（§2 的 A1） |
 | `LLMRunner::Config`（**2026-10-05 修订：新增**） | `max_prefill_seq_len`：`chunk_limit` 的来源（与建图侧同名同值）；**只在 packed 模式有语义，非 packed 必须留 0**；paired 校验 ①～⑤ 见 §2 |
-| `LLMRunner::Config`（新增 `max_positions`） | 位置表长度 `n_positions`：引擎侧查不到（只留 `ceil(n_positions/block_size)`），只能由调用方声明；packed 模式下必填 + 两条上界检查，入口按 `prompt_len + max_new - 1` 拒绝（§2 末、§3 的适用范围表） |
+| `LLMRunner::Config`（**2026-10-05 修订：删除** `max_positions`） | 位置上界改由**引擎侧车里的 `n_positions` 真值**给出（§2 的 A1）；删掉声明字段 = 消掉"第二份事实"与 §5 的静默窗口。`max_prefill_seq_len` **保留**（它的窗口已被交叉校验 ③ 关死） |
+| 引擎侧车（`engine_cache.{hpp,cpp}` / `builder.cpp`） | `numeric_params` **新增 `model.n_positions`**（真值来自解析后的模型配置）→ 自动出现在 `<engine>.fingerprint` 的规范化文本里；`engine_cache` 新增"读 sidecar 文本里某个 `key=value`"的小 helper（照 `ReadEngineFingerprint` 的解析风格）。**副作用**：指纹内容变 → 现有引擎自动失效、首次跑重建一次（分钟级；不是 bump） |
+| 建图期硬校验（`gpt2_model_builder.cpp`） | packed 分支在构造 `PackedAttentionPlugin` **之前**校验 `n_positions % block_size == 0`；不整除 → 拒绝建图，错误信息给 `n_positions` / `block_size` / `ceil × bs` 与**建议因数**（§5 的外部约束；padding 路径不适用） |
 | 图 / profile（`builder.cpp`） | `cu_seqlens_ctx` 的行维上界从 `max_prefill_batch` 改成 `max_prefill_batch + 1`（它的长度是 `B_ctx + 1`；用行维范围会让"整批都是 context 行"的首步 `setInputShape` 失败，`TS-051` 第 6 条） |
 | 测试专用钩子（**2026-10-05 修订：退役**） | 原先的 `SetChunkLimitOverride` / `ChunkLimitOverride` 不再需要 —— 三种切法直接通过 `Config::max_prefill_seq_len` 在**构造期**给值（一个机制，而不是"字段 + 进程级覆盖"两套，§6） |
-| 图版本 | **已定（作者 2026-10-04）：bump 4 → 5**，依据 `engine_cache.hpp` 的"任何改动插件行为的代码变更都要 +1"与 1 → 2 的先例；**同日收口再 5 → 6**：`cu_seqlens_ctx` 的 profile 区间变了（上一行），而 profile 区间同样进不了指纹。代价：真机需要重建 packed 引擎（版本 5 的缓存作废）。**2026-10-05 的 `max_prefill_seq_len` 修订不动建图与 profile 区间 → 保持 6，不需要再 bump** |
+| 图版本 | **已定（作者 2026-10-04）：bump 4 → 5**，依据 `engine_cache.hpp` 的"任何改动插件行为的代码变更都要 +1"与 1 → 2 的先例；**同日收口再 5 → 6**：`cu_seqlens_ctx` 的 profile 区间变了（上一行），而 profile 区间同样进不了指纹。代价：真机需要重建 packed 引擎（版本 5 的缓存作废）。**2026-10-05 的 `max_prefill_seq_len` 修订与 **B1+A1** 修订都不动建图与 profile 区间 → `graph_version` 保持 6**；但 A1 让指纹的 `numeric_params` 多一项 → **现有引擎会自动失效、首次跑重建一次**（分钟级，属指纹机制而非 bump） |
 | 判据/用例 | 见 §6（新增一组，不改 S4/S3 的既有用例） |
 
 **不改的东西**：打包顺序（context 在前）、段边界与下标纪律、split-K 的复用（generation 段照旧）、
@@ -235,15 +245,33 @@ packed 插件的输入个数与顺序、**其余** profile 区间（`cu_seqlens_
   `context_lens` 的行维**多一格**。沿用行维范围时，`B_ctx = max_prefill_batch` 的首步（整批都是
   context 行）会直接 `setInputShape` 失败（`TS-051` 第 6 条）。
 - **形状约束的唯一来源（2026-10-05 去重：本节不再自列清单，R1 = 枚举只能引用）**：
-  - **构造期五条** = §2 的 ①～⑤（`L ≥ 1` / `L ≤ max_positions` / `L × rows_max ≤ T_max` /
+  - **构造期五条** = §2 的 ①～⑤（`L ≥ 1` / `L ≤ n_positions` / `L × rows_max ≤ T_max` /
     `L ≤ 插件上限` / profile 查询必须成功）—— 清单以 §2 为唯一来源，本节不转述；
-  - **入口位置上界** = `prompt_len + max_new - 1 ≤ max_positions`（§2 末）。它同时兜住 **kernel 侧**的
+  - **入口位置上界** = `prompt_len + max_new - 1 ≤ n_positions`（§2 的 A1）。它同时兜住 **kernel 侧**的
     "每 query 的 key 数 = `prompt_done + pos + 1 ≤ prompt_len ≤ n_positions ≤
     kPackedAttentionMaxContextSeqLen`" —— 第二段不等式（`n_positions ≤ 1024`）由 `configurePlugin`
     在建图期拦。
   - 注意 **`prompt_len` 允许大于 `L`**（长 prompt 分多步），所以约束落在"每 query 的 key 数"与
     "**每步 Σ 每行 chunk ≤ T_max**"上，而不是"prompt 必须一次装下"。
   - 任何一条不满足 → 构造期 / 入口**显式拒绝**（§3 的适用范围表），不静默换路。
+- **packed 建图的外部约束：`n_positions % block_size == 0`**（2026-10-05 新增；与
+  `n_positions <= 1024` 并列的第二条外部约束）：
+  - **为什么**：`num_blocks() = ceil(n_positions / block_size)`（`gpt2_model_builder.cpp` 里的推导）
+    ⇒ 整除 ⇔ **每序列池容量 = `num_blocks × block_size` = `n_positions`** ⇒ 池容量可用作
+    **位置上界的独立几何校验**（真值来源见 §2 的引擎侧车）。
+  - **不整除时的窗口（必须写下来，免得后人以为"只用池容量"就是精确的）**：上界只能取
+    `ceil(n_positions / block_size) × block_size`，于是 `(n_positions, ceil × bs]` 这一段**会被放行**，
+    宽度 = `block_size − (n_positions % block_size)`（**整除时宽度 0**）。落进这段的 prompt 会让
+    绝对位置越过 wpe 表 → **越界读且不报错**；"按 `cache 第 0 维 × block_size` 反推 `n_positions`"
+    正是掉进这个窗口的诱人错法。
+  - **双保险**：① **建图期硬失败** —— 不整除就拒绝建 packed 图，错误信息给 `n_positions` /
+    `block_size` / `ceil × bs` 与**建议因数**。只写文档挡不住"下次有人换 `block_size` 或
+    `n_positions` 时静默产生非整除配置"；② 本节记一条（与 `1024` 同类：**模型 / 内核参数变更时
+    要同步修订**）。
+  - **适用范围只限 packed 建图**：padding 路径（`kPaddedTwoPhase`）**不需要**整除 —— 它每步把
+    prompt 一次装下，位置越界由 `SetInputShape` **响亮拦住**。**不得**把这条约束推广到两条路径。
+  - **与 A1 的关系**：A1（§2 的侧车真值）已独立关窗，所以**即便将来放开 B1**（例如要支持非整除的
+    `block_size`），窗口也不会重开；B1 的增量价值 = 一道独立的几何校验 + 挡住非整除配置。
 - 引擎与图：packed 的 I/O 契约与 `getWorkspaceSize` 都**不变**（方案 A：score 仍在 shared），
   所以"S5 不动图"这句话在**拓扑层面**成立；但 `graph_version` 仍要 bump（`engine_cache` 看不见
   "插件对同一绑定的计算语义变了"）：**4 → 5 → 6**（5 = 插件语义变了、6 = `cu_seqlens_ctx` 的 profile
@@ -265,7 +293,11 @@ packed 插件的输入个数与顺序、**其余** profile 区间（`cu_seqlens_
 | `ChunkedRetireAndBlocks` | 分块跨步时的块记账与退出归还正确（AC3 在分块下的形态） |
 | `ChunkedPositionsAreAbsolute` | 第二块起的 `position_ids` 是 `prompt_done + i`（不是段内 `i`）；这条单独锁住，因为它错了也只会表现为 token 逐位不同 |
 | `ChunkedSamplingRowSetIsCompacted` | 同一批里"分块中的长 prompt"排在"本步完成的短 prompt"**之前**时，完成的那行仍被正确采样、未完成的行不出 token（显式行列表的紧凑暂存） |
-| `ChunkLimitRejectedConfigs` | 配置 / 形状类不可用被**显式拒绝**，错误信息里带上实际值与上界；反向断言"没有静默换路"：① 非法 `Config`（沙箱可判）；② `chunk_limit` 越界；③ `max_positions` 未声明 / 超过引擎侧上界；④ 请求需要的位置超过 `max_positions`（入口拒绝，用 `max_positions = 8 < 池容量 16` 把"池装不下"那条检查排除掉，再加正向对照） |
+| `ChunkLimitRejectedConfigs` | 配置 / 形状类不可用被**显式拒绝**，错误信息里带上实际值与上界；反向断言"没有静默换路"。用例内部分组用 **(A)/(B)**（`①②③④⑤` 只用于 §2 的交叉校验编号）：**(A)** 非法 `Config`（沙箱可判）；**(B)** `max_prefill_seq_len` **未声明** / 越界（含交叉校验 ③）。**注（2026-10-05 B1+A1 修订后）**：`Config::max_positions` 已删除，原先的"声明值超 `max_positions`"与"入口位置拒绝"两组**并入池容量检查** —— B1 的整除约束下"池容量 == `n_positions`"，位置越界与池装不下是**同一个条件**（不再单列，避免制造"两条独立判据"的错觉） |
+
+> **2026-10-05 追加 / 收敛的用例**（`ChunkLimitCrossCheckRejectsOverStepBudget` = ③ 的独立触发；
+> `MissingFingerprintSidecarRejected` / `SidecarPositionsMismatchRejected` / `NonDivisibleBlockSizeRejected`
+> = A1/B1 的三条）以 **`test_plan.md` 的 S5 一节为唯一清单**，本节不重复列出（两份清单会漂移）。
 
 ## 7. 风险
 
@@ -319,6 +351,17 @@ packed 插件的输入个数与顺序、**其余** profile 区间（`cu_seqlens_
 | 14 | "policy < cap"第二旋钮 | 本轮**不做**；design.md 的 Trade-off 写明触发条件（作者第 4 点） |
 | 15 | `n_positions` 的待决策项（§8 表 3 第 8 行） | 本轮的"声明 + 交叉校验"与它同构，但**不擅自结案**；若最终裁决为"建图侧注入"，两个字段要一起改（§2 末） |
 
+**第五轮确认（作者 2026-10-05 裁决 **B1+A1**，含五条修订口径）**：
+
+| # | 事项 | 作者决定 | 落到哪 |
+|---|---|---|---|
+| 16 | `n_positions` 的来源 | **B1 + A1**：真值来自**引擎侧车**（A1），结构上再加**建图期整除硬失败**（B1） | §2 的 A1 小节、§4 表、§5 的外部约束；`design.md` D16 |
+| 17 | 整除约束的登记位置 | **硬失败 + 文档双保险**（只写文档挡不住"换 `block_size` / `n_positions` 时静默产生非整除配置"） | §5 |
+| 18 | 约束的适用范围 | **只加在 packed 建图**；padding 路径不适用（它的越界由 `SetInputShape` 响亮拦住） | §5；`design.md` D16 |
+| 19 | `block_tables` 的 profile dim | 保留为**建图期 / 加载期的自检**；**不用它反推 `n_positions`**（整除约束一旦被绕过会重引入取整歧义） | §2（一致性自检条） |
+| 20 | `Config::max_positions` | **删除**（不降级为"可选收紧"—— 可选字段会重新引入"第二份事实被填错"的风险） | §2 / §4 |
+| 21 | 窗口公式与整除特例 | **写进 design**：宽度 `block_size − (n_positions % block_size)`、"整除时宽度 0" —— 作为反驳"按 `cache dim0 × bs` 反推"的直接论据 | §5；`design.md` D16 |
+
 **下一步**：设计修订已出（本文件 + `design.md` D15/D16 + `analysis.md` 的术语登记），
 Gate-A 重开待作者确认；确认后按 `review.md` 的 S5 用例清单开始 S5-1 的实现。
 
@@ -359,3 +402,13 @@ P1 三条在此收口），逐节修订：
 声明侧两处**，且不新增"从 profile 反推"的校验（§2 + design D16 的 Trade-off）；④ "policy < cap"
 第二旋钮不做，只写触发条件（design D16）。另：§8 表 4 第 15 行明确 `n_positions` 的待决策项**不由
 本轮结案**。依据：作者 2026-10-05 的采纳指令与四点修订（见 §8 表 4）。
+
+**2026-10-05（作者裁决 B1+A1 后）**：`n_positions` 的来源**结案** ——
+**A1**：真值（解析自 `config.json`）作为 `numeric_params` 的新项写进 `<engine>.fingerprint`；
+runner 构造期读回 + 一致性自检（`ceil(N / block_size)` 与 `block_tables` 的 profile dim1 相符、
+`N <= 1024`、`max_prefill_seq_len <= N`），**sidecar 缺失 / 损坏即拒绝启动**；
+**B1**：packed 建图强制 `n_positions % block_size == 0`（**硬失败** + 本文档记一条，**只限 packed**）。
+相应**删除 `Config::max_positions`** —— 入口位置上界只剩"真值"一个来源，§5 的静默窗口
+（宽度 `block_size − (n_positions % block_size)`，整除时为 0）随之关闭。改动落点：本文件
+§2 / §4 / §5 / §8 表 5 / 本节；`design.md` D16；`engine_cache.hpp` 的注释；代码与用例见
+`STATE.md` 的实现计划（**未编译验证**）。

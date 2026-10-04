@@ -615,7 +615,82 @@ S4 的代码按"未编译验证"记账，真机窗口的第一件事是编译（
 
 ---
 
+## S5 设计的第四遍复评：`n_positions` 来源改走 B1+A1（2026-10-05，作者裁决"按此落"）
+
+**触发与范围**：作者裁决 **B1+A1**（真值来自引擎侧车 + packed 建图整除硬失败），并要求**删除**
+`Config::max_positions`。本节按同一套判据复核这次修订，核对对象 = 修订后的 spec §2/§4/§5 与代码现状
+（`engine_cache.cpp` 的 sidecar 格式、`builder.cpp` 的 `numeric_params`、`gpt2_model_builder.cpp` 的
+`blocks_per_seq` 推导、`Engine` 的接口）。
+
+### 核对通过的关键事实（B1+A1 成立的证据）
+
+| 说法 | 代码证据 | 结论 |
+|---|---|---|
+| sidecar 已存在且带可读文本 | `engine_cache.cpp:105` 写 `fingerprint=<hash>\n---\n<CanonicalFingerprintText>`；`builder.cpp:233` 已在填 `numeric_params` | 成立：A1 只需 **+1 项** |
+| 池容量在整除时 = `n_positions` | `gpt2_model_builder.cpp:423` 取 `blocks_per_seq = cfg.num_blocks()`，注释写明"由 `ceil(n_positions / block_size)` 推出" | 成立：B1 的等式有据 |
+| `Engine` 拿不到路径 | `engine.hpp` 只有 ctor 收 `engine_path`，无成员/accessor | **要补 `Path()`**，否则 runner 定位不到 sidecar |
+| **B1 与既有池检查重叠** | runner 入口的池预算检查是 `max(stride, len+want) ≤ max_blocks_per_seq × block_size`；B1 下该上界 == `n_positions` | **成立（本轮新发现）**：B1 在位时"位置越界"与"池装不下"**是同一个条件** → 入口**不需要**再单列"位置检查"；A1 的**正确性**贡献是**冗余的**（其价值 = 真值显式可用 + 将来放开 B1 时不重开窗口）—— 已写进 spec §2/§5，避免后人误以为是两条独立判据 |
+
+### 表一（增量）：受影响的 checklists 条目
+
+| Item | Level | Result | Action |
+|---|---|---|---|
+| C++-API 输入输出是否明确 | P0 | 通过 | 删 `max_positions` 是**放松**（少一个必填）；`max_prefill_seq_len` 契约不变 |
+| C++-错误处理是否统一 | P0 | 通过 | sidecar 缺失/损坏、自检不一致 → **拒绝启动**（不取 min、不猜默认值），与既有纪律一致 |
+| C++-接口易扩展（P1） | P1 | 通过 | `Engine::Path()` 与 `ReadEngineSidecarField` 都是小而明确的接口 |
+| CUDA-边界 / TRT-profile / 插件 / workspace | P0·P1 | 不适用 | 不动 kernel、插件、profile 区间 → `graph_version` 保持 6 |
+| TRT-Dynamic shape 是否覆盖 | P0 | 通过 | 侧车真值只做校验与入口界，不参与形状 |
+| LLM-Request 生命周期 | P0 | 通过 | 不影响；**行为变更**：引擎必须与 `.fingerprint` 同行（已写进 spec） |
+| LLM-Long context 是否测试 | P1 | 待真机 | 新增 3 条用例（sidecar 缺失 / 侧车与引擎不一致 / 非整除配置建图期拒绝），见 `test_plan.md` |
+| C++-Debug/Release 可编译 | P0 | 待确认 | 实现阶段（真机） |
+| 建图期硬失败（新增判据） | — | 已定 | `n_positions % block_size != 0` → 拒绝建 packed 图；**padding 路径不适用** |
+
+### 表二（增量）：需求落点
+
+| 需求条目 | 设计落点 | 结论 |
+|---|---|---|
+| Included 8 / AC9（分块推进） | spec §2（A1 真值 + 自检）、§5（B1 外部约束）、`design.md` D16 | 已落点（本轮修订） |
+| AC1（数值一致）/ AC8（两路径可回退） | 不受影响；A1 的"引擎必须带 sidecar"是**使用约束**，不改变可回退性 | 通过 |
+
+### 表三（增量）：术语定义
+
+| 名词 | 定义所在 | 结论 |
+|---|---|---|
+| 引擎侧车 / sidecar | `p5_s5_interface_spec.md` §2（A1）与 `engine_cache.hpp` 的注释 | 已定义（本轮首次引入；**指针式登记**进 `analysis.md` 的 Terminology） |
+| B1 / A1 | spec §8 表 5 与 §2/§5 | 已定义（**只在本 feature 文档内使用**的决策标号，不推广为通用名词） |
+
+### P0 Blockers
+
+**无。**
+
+### P1 Risks
+
+1. **"引擎 + sidecar 必须同行"是新的使用约束**（拷贝 / 归档 / CI 缓存都要带 `.fingerprint`）→ 已写进
+   spec §2 的"行为变更"；`EngineCacheIsFresh` 的"缺 sidecar 即不可信"可兜住。
+2. **A1 的正确性贡献是冗余的**（B1 下池检查已等价）→ 已在 §2/§5 写明"两条手段各司其职"，避免被误读
+   成两条独立判据。
+3. **真机验证仍搁置**（编译 + 3 条新用例 + 既有 9 条）。
+
+### P2 Quality
+
+| 项 | 说明 |
+|---|---|
+| 实现细节 | `Engine::Path()` 由本 feature 引入（作者已认可倾向此做法）；`ReadEngineSidecarField` 沿用 `ReadEngineFingerprint` 的解析风格 |
+| 指纹副作用 | `numeric_params` +1 项会改指纹 → 现有引擎**自动失效、首次跑重建一次**（分钟级），**不是** `graph_version` bump |
+
+### Decision（第四遍复评）
+
+- **P0：无；P1：3 条（均已写进 spec/design 或登记）→ 设计层 PASS。**
+- **代码实现**（`engine_cache` 读字段 helper / `builder.cpp` +1 项 / `Engine::Path()` /
+  `gpt2_model_builder.cpp` 整除硬校验 / runner 读回与三项自检 / 删除 `max_positions` / 3 条新用例）
+  按作者"按此落"进入 **P5**。
+- 本记录只覆盖这次修订，不追溯修改 2026-10-03/04/05 的既有记录。
+
+---
+
 ## Decision
+
+PASS（无 P0；P1 已由作者于 2026-10-03 确认，Gate-A 通过）
 
 PASS（无 P0；P1 已由作者于 2026-10-03 确认，Gate-A 通过）
 
@@ -626,4 +701,6 @@ PASS（无 P0；P1 已由作者于 2026-10-03 确认，Gate-A 通过）
 - **2026-10-05 的第三遍复评**（`chunk_limit` 改由显式配置派生）结论：**P0 无、设计层 PASS**；
   P1-1（AC8 张力）由作者选 (a) 并同步限定 `requirement.md` 的 AC8，P1-2（性能未验证）登记进 STATE 的
   P7 行，P1-3（`SetChunkLimitOverride` 退役）由作者确认为**退役**。**三条均已收口**，代码实现待点名。
+- **2026-10-05 的第四遍复评**（`n_positions` 来源改走 **B1+A1**）结论：**P0 无、设计层 PASS**；
+  代码实现（删 `max_positions` + 侧车读回 + 建图期整除硬校验 + 3 条新用例）按作者"按此落"进入 P5。
   记录见上一节；本行不追溯修改更早的记录。
