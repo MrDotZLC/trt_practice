@@ -15,12 +15,15 @@ P6 产物。本版 2026-10-03 建立（S1 代码已落、未编译）。
 | Included 4：每序列 K/V 分配与回收 | 跑 N 轮后空闲块回初始值 | **属于 S2**（S1 沿用"下次调用开头释放"） | 待 S2 |
 | Included 5：请求级调度 | 静态批先跑通；连续批（活跃批 + 压实）在 S3 | `BatchEqualsSequential`（静态批）+ `BatchEqualsSequentialUnderScheduling`（连续批总闸） | 待真机 |
 | Included 6：批量 == 逐条单跑 | 逐 token 逐位相同 | `BatchEqualsSequential` + `BatchEqualsSequentialWithTopP` | 待真机 |
+| Included 7：按真实长度计费 + 两条路径（打包为默认） | 两条路径各自成立；packed 只算 T 个 token | `PackedEqualsSequential` + `PackedShortSequenceNotPenalized`（S4）+ `FallbackSwitchKeepsResults`（两路径可回退） | 待真机 |
 | AC1 数值一致性 | 同上 | 同上两条（贪心 + 随机各一条） | 待真机 |
 | AC2 长度不齐 | 批内长度不同时逐行正确 | `UnequalPromptLengthsInFlight`（S3）+ `RejectsUnequalPromptLengths`（S1 静态批拒绝） | 待真机 |
 | AC3 资源回收 | 空闲块回到初始值 | `BlocksReturnAtEnd`（S3，含失败路径）+ `FreeBlocksReturnAfterBatch` / `FreeBlocksUnchangedAfterFailure`（S2） | 待真机 |
 | AC4 不回归 | 既有用例不新增红 | 全量 `mini_trt_llm_tests` | 待真机 |
 | AC5 单序列语义不变 | B=1 与旧路径逐位相同 | `BatchSingleRowMatchesGenerate` | 待真机 |
 | AC6 性能可复现 | 先声明判别下限，再 A/B | **属于 P4/P7**（环境搁置） | 待环境 |
+| AC7 不浪费 | 短序列不受最长序列影响 | `PackedShortSequenceNotPenalized`（S4；**代价**那条属 P4/P7） | 待真机 |
+| AC8 两条路径各自成立且可回退 | 各自满足 AC1；切换不改调用方接口 | `FallbackSwitchKeepsResults`（S4）+ `PackedEqualsSequential` | 待真机 |
 
 ## Unit Test
 
@@ -60,6 +63,24 @@ S1 没有新增单元级用例（改动集中在 runner 与采样器的接口层
 | `DeterminismWithArrivalSteps` | 换一组 `arrival_step`（Top-P 随机流）→ 逐条逐位相同（锁 per-row 随机步号） |
 | `BlocksReturnAtEnd` | AC3：正常路径与"重复 seq_id 整批拒绝"路径都全归还 |
 | `BatchEqualsSequentialUnderScheduling` | **总闸**：4 条 > `max_batch`、长度不齐、Top-P，全部与逐条单跑逐位相同；顺带锁 `context_rows == 请求数` / `prefill_calls == 2` / `max_active ≤ max_batch` |
+
+### S4 packed 混合批（`LlmRunnerPackedTest.*`，2026-10-04 落码，未编译验证）
+
+> **packed 路径的"逐条单跑"参考实现 = 单请求的 `RunScheduler`**：packed 模式下
+> `GenerateBatch` / `Generate` 会明确拒绝（它们是 padding 路径的入口，拿去跑 packed 引擎只会绑错张量）。
+> 另：两条用例的判据是"**由构造保证 + 由结果兜住**"（runner 不暴露内部缓冲，顺序/行序没有外部入口），
+> 已在用例注释里写明，避免后人高估。
+
+| 用例 | 判据 |
+|---|---|
+| `PackedEqualsSequential` | AC1 在 packed 路径内部成立：packed 批跑 == 单请求跑（Top-P 随机流也逐位相同） |
+| `MixedStepContextAndGeneration` | **核心场景**：同一步里既有新入批的 context 行、又有在跑的 generation 行，两者结果都对 |
+| `ContextTokensPrecedeGeneration` | 打包顺序（context token 在前）；由构造保证，用对顺序敏感的场景兜住 |
+| `CuSeqlensBoundaryCases` | `context_seq_count == 0`（纯 generation）与首步纯 context 两种极端都发生过且结果对 |
+| `PackedWriteBackMapsCorrectly` | cache 层：packed 源（**行长不等**）+ 行映射的写回落到各自序列自己的块，逐行长度正确 |
+| `PackedMetadataFollowsPackedOrder` | `block_tables` / `context_lens` 按 packed 行序重建（照 S3 直传镜像会让 generation 行读到别人的块） |
+| `PackedShortSequenceNotPenalized` | AC7 的可观测部分：同批长度差很大时短序列结果不受影响（代价那条属 P4/P7） |
+| `FallbackSwitchKeepsResults` | AC8：回退到 `kPaddedTwoPhase` 后仍各自成立（不要求跨路径逐位相同） |
 
 ## Regression Test
 

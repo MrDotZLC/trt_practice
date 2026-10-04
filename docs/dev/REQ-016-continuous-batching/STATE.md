@@ -91,7 +91,7 @@
 | 插件 | `packed_attention_plugin.{hpp,cu}` + `BlockReduceMax` + 注册；generation 段**复用 paged 的 split-K**（给 `PagedAttentionKernelArgs` 与三条 kernel 加行/token 基址） | **已落**（`257aedd` / `487bc9d`），未编译 |
 | ① 图/构建 | 接口（`BuildOptions::packed_mixed` / `Config::packed_mixed_prefill`，默认 **false**）+ `kPackedPrefillGraphVersion = 4` + 指纹按开关选代次；**图本体**：`input_ids/position_ids` 用 `Dims2(1,-1)`、去掉 `padding_bias`、加 `block_tables`/`context_lens`/每层 cache/`cu_seqlens_ctx`/`context_seq_count`、注意力换 `PackedAttentionPlugin`（Q/K/V 转 token-major `[T,NH,D]`，输出再转回 heads-major）、**K/V 输出导 token-major**；`ApplyProfile` 改成**按输入名**给范围（packed 的两条动态轴） | **已落**，未编译 |
 | ② runner + cache | `Config::prefill_mode`（默认 padding；packed 模式下只用 `prefill_engine_`）、`RunPackedMixedStep`（打包 → 一次调用 → 两段 K/V → 采样）、`UploadRowParamsByOrder`、**按 packed 行序重建** `block_tables`/`context_lens`、⑤ 的 packed↔活跃行号换算与 eos 顺序；cache 侧：`WritePrefillKV`/`AppendDecodeStep` 加 `cu_seqlens_ctx`（**默认 null/0 = 既有行为**）+ 新增 packed-prefill 写回 kernel（一个 block 一行，行长不等） | **已落**，未编译 |
-| ③ 用例 | §9 的 8 条（`PackedEqualsSequential` / `MixedStepContextAndGeneration` / `ContextTokensPrecedeGeneration` / `CuSeqlensBoundaryCases` / `PackedWriteBackMapsCorrectly` / `PackedMetadataFollowsPackedOrder` / `PackedShortSequenceNotPenalized` / `FallbackSwitchKeepsResults`）+ test_plan 行 | 待做 |
+| ③ 用例 | `tests/test_llm_runner_packed.cpp`（8 条：`PackedEqualsSequential` / `MixedStepContextAndGeneration` / `ContextTokensPrecedeGeneration` / `CuSeqlensBoundaryCases` / `PackedWriteBackMapsCorrectly` / `PackedMetadataFollowsPackedOrder` / `PackedShortSequenceNotPenalized` / `FallbackSwitchKeepsResults`）+ `test_plan.md` 的 S4 行 | **已落**，未编译 |
 
 **测试方式**：本沙箱无编译器 → 只做静态自检（逐行括号深度、符号成对、最长行、CRLF/无 BOM）。
 真机：编译 → 跑两条路径的用例 → 重跑既有 decode 用例（这次动过 paged kernel 的索引基址）。
