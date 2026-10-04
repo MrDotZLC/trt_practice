@@ -175,6 +175,13 @@ P9 需 P8），**不是漏产**。所以本 feature 停在 P5/P6 是符合流程
 
 ## Next Action
 
+> **下一步（唯一）**：真机窗口 → `cmake --build build -j` → 跑 `mini_trt_llm_tests` 全量 +
+> `LlmRunnerPackedTest.*`(8) / `LlmRunnerSchedulerTest.*`(9) / `LlmRunnerChunkedTest.*`(12) +
+> 本轮新增的 7 条（`EngineCacheTest.*` 5 条 host、`PagedKVCacheTest.WritePrefillKV*` 2 条）→
+> 按 `test_plan.md` 的 S1/S3/S4/S5 四节清单逐条打勾并回填 `## Actual Result`（P6）。
+> **首跑会看到 GPT-2 的引擎各判 `stale` 并重建一次**（`docs/PROGRESS.md` §6.5 已预告，属预期）。
+> 下面 1–6 条是**按 S1→S5 排列的历史清单**（每条的细节与证据都在），当前只有上面这一件是真的"下一步"。
+
 1. **S4（代码已落；真机验证待环境）**：作者 2026-10-04 给出"选择性批处理"的口径（两相共享一个 packed 张量、
    attention 按段分派、context token 必须在前），据此已出 **P2 级设计草案**：新建
    `p5_s4_interface_spec.md`（§11 列了 5 条待确认）+ design.md 的 D13 扩充 / S4 小节 / D14。
