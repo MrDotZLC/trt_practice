@@ -46,6 +46,20 @@ void Touch(const std::string& path, const std::string& content) {
     out << content;
 }
 
+// 按**原始字节**写（不做文本模式的换行翻译）：用来构造"Windows 上写出的 sidecar"那种 CRLF 文件，
+// 否则在 Windows 上跑这组用例时 `\r\n` 会被再翻译一次（`\r\r\n`），把用例变成平台相关的假红。
+void TouchRaw(const std::string& path, const std::string& bytes) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << bytes;
+}
+
+// 带图属性项的输入：`model.n_positions` 是 A1 写进 sidecar 的那一项（2026-10-05）。
+EngineFingerprintInputs InputsWithPositions() {
+    EngineFingerprintInputs inputs = BaseInputs();
+    inputs.numeric_params = {{"prefill.max_seq", 32}, {"model.n_positions", 16}};
+    return inputs;
+}
+
 }  // namespace
 
 TEST(EngineCacheTest, FingerprintIsDeterministicAndOrderInsensitive) {
@@ -185,6 +199,98 @@ TEST(EngineCacheTest, SourceFileIdentityIgnoresPathSpelling) {
 
     std::filesystem::remove(probe);
     std::filesystem::remove(other);
+}
+
+// ---------------------------------------------------------------------------
+// A1 的侧车读回：`ReadEngineSidecarField`（2026-10-05，B1+A1）
+// ---------------------------------------------------------------------------
+// 这组与上面几条一样是**纯 host**（不需要 GPU / TRT 运行时），所以它比
+// `LlmRunnerChunkedTest` 的三条 B1+A1 用例**更早能验**：后者要真机窗口，这组有编译器就能跑。
+//
+// 覆盖的坑都属于"读错了不报错，只是读不到"这一类 —— 而"读不到"的后果由 `LLMRunner` 兜住：
+// **拒绝启动**（不猜默认值）。所以这里的每条都同时锁住"读得到"和"读不到时确实读不到"。
+
+TEST(EngineCacheTest, SidecarFieldReadsNumericParamByFullLineKey) {
+    const std::string engine = MakeTempEnginePath("sidecar_key");
+    Touch(engine, "engine-bytes");
+    const EngineFingerprintInputs inputs = InputsWithPositions();
+    ASSERT_TRUE(WriteEngineFingerprint(engine, ComputeEngineFingerprint(inputs), inputs));
+
+    // 规范化文本里的字面量是 `num.<名字>=<值>` —— key 必须是**完整行键**。
+    EXPECT_EQ(ReadEngineSidecarField(engine, "num.model.n_positions"), "16");
+    // 反向自证：只写名字（漏掉 `num.`）必须读不到。这条是给"照文档示例抄半个键"上的锁：
+    // 漏了前缀会**静默**失效（返回空串 → 拒绝启动），而不是读到错的值。
+    EXPECT_EQ(ReadEngineSidecarField(engine, "model.n_positions"), "")
+        << "半个键（漏 `num.` 前缀）不该命中 —— 详见 engine_cache.hpp 的注释";
+
+    std::filesystem::remove(engine);
+    std::filesystem::remove(EngineFingerprintPath(engine));
+}
+
+TEST(EngineCacheTest, SidecarFieldDoesNotMatchByPrefix) {
+    const std::string engine = MakeTempEnginePath("sidecar_prefix");
+    Touch(engine, "engine-bytes");
+    EngineFingerprintInputs inputs = BaseInputs();
+    // 故意造一对前缀关系（`prefill.max_seq` vs `prefill.max_seq_extra`）：
+    // 模糊匹配在这里会读出另一个键的值，且**不会报错**。
+    inputs.numeric_params = {{"prefill.max_seq", 512}, {"prefill.max_seq_extra", 1024}};
+    ASSERT_TRUE(WriteEngineFingerprint(engine, ComputeEngineFingerprint(inputs), inputs));
+
+    EXPECT_EQ(ReadEngineSidecarField(engine, "num.prefill.max_seq"), "512")
+        << "读到 1024 说明解析做成了前缀匹配（撞上了 num.prefill.max_seq_extra）";
+    EXPECT_EQ(ReadEngineSidecarField(engine, "num.prefill.max_seq_extra"), "1024");
+
+    std::filesystem::remove(engine);
+    std::filesystem::remove(EngineFingerprintPath(engine));
+}
+
+TEST(EngineCacheTest, SidecarFieldMissingKeyOrFileIsEmpty) {
+    const std::string engine = MakeTempEnginePath("sidecar_missing");
+    Touch(engine, "engine-bytes");
+    const EngineFingerprintInputs inputs = InputsWithPositions();
+    ASSERT_TRUE(WriteEngineFingerprint(engine, ComputeEngineFingerprint(inputs), inputs));
+
+    // 缺该键 / 空 key / 侧车不存在：一律空串（= 不可信 → 调用方拒绝启动），不猜默认值。
+    EXPECT_EQ(ReadEngineSidecarField(engine, "num.decode.max_batch"), "");
+    EXPECT_EQ(ReadEngineSidecarField(engine, ""), "");
+    EXPECT_EQ(ReadEngineSidecarField(MakeTempEnginePath("sidecar_absent"),
+                                     "num.model.n_positions"), "");
+
+    std::filesystem::remove(engine);
+    std::filesystem::remove(EngineFingerprintPath(engine));
+}
+
+TEST(EngineCacheTest, SidecarFieldReadsBodyOnly) {
+    const std::string engine = MakeTempEnginePath("sidecar_body");
+    Touch(engine, "engine-bytes");
+    const EngineFingerprintInputs inputs = InputsWithPositions();
+    ASSERT_TRUE(WriteEngineFingerprint(engine, ComputeEngineFingerprint(inputs), inputs));
+
+    // 第一行是机器读的 `fingerprint=<hash>`：它**不属于**正文项，用同一个 key 必须读不到
+    // （否则"读正文"的起点就错了，任何键都可能命中第一行）。
+    EXPECT_EQ(ReadEngineSidecarField(engine, "fingerprint"), "");
+
+    // 只有第一行、没有 `---`：没有正文 → 空串。
+    Touch(engine, "fingerprint=0123456789abcdef\n");
+    EXPECT_EQ(ReadEngineSidecarField(engine, "num.model.n_positions"), "");
+
+    std::filesystem::remove(engine);
+    std::filesystem::remove(EngineFingerprintPath(engine));
+}
+
+TEST(EngineCacheTest, SidecarFieldToleratesCrlfLineEndings) {
+    const std::string engine = MakeTempEnginePath("sidecar_crlf");
+    Touch(engine, "engine-bytes");
+    // 文本模式下写出的 sidecar 在 Windows 上是 CRLF：**正文行与 `---` 分隔行**的行尾 `\r` 都必须
+    // 先剥掉再比较，否则键比较失配、连"正文起点"都认不出来，表现为"文件里明明有这一项却读不到"
+    // （跨平台排查时很容易被当成"文件没写成功"）。所以这里整份文件都用 CRLF，`---` 也用。
+    TouchRaw(EngineFingerprintPath(engine),
+             "fingerprint=0123456789abcdef\r\n---\r\nstage=single\r\n"
+             "num.model.n_positions=16\r\n");
+    EXPECT_EQ(ReadEngineSidecarField(engine, "num.model.n_positions"), "16");
+
+    std::filesystem::remove(engine);
+    std::filesystem::remove(EngineFingerprintPath(engine));
 }
 
 }  // namespace mini_trt_llm

@@ -32,6 +32,18 @@ P6 产物。本版 2026-10-03 建立（S1 代码已落、未编译）。
 S1 没有新增单元级用例（改动集中在 runner 与采样器的接口层）。
 但**采样器本身有既有单测**，必须在真机确认仍然全绿——见 Regression Test。
 
+**S5 的 B1+A1 修订新增了一组纯 host 单测**（2026-10-05，落 `tests/test_engine_cache.cpp`，
+断言 `ReadEngineSidecarField`；**不需要 GPU / TRT**，有编译器就能跑 —— 比下面三条要真机窗口的
+runner 侧用例更早能验）。用例清单以该文件为准，这里只登记 5 条的**判据**：
+
+| 用例 | 判据 |
+|---|---|
+| `EngineCacheTest.SidecarFieldReadsNumericParamByFullLineKey` | 完整行键 `num.model.n_positions` 读到 `16`；**半个键**（`model.n_positions`，漏 `num.` 前缀）读到空串（在 `LLMRunner` 里 = 拒绝启动，不是静默用默认值） |
+| `EngineCacheTest.SidecarFieldDoesNotMatchByPrefix` | `num.prefill.max_seq` 与 `num.prefill.max_seq_extra` 共存时各读到自己的值（读到 1024 说明做成了前缀匹配） |
+| `EngineCacheTest.SidecarFieldMissingKeyOrFileIsEmpty` | 缺键 / 空 key / 侧车文件不存在 → 一律空串（不可信） |
+| `EngineCacheTest.SidecarFieldReadsBodyOnly` | 用 `fingerprint` 当 key 读不到第一行（正文只从 `---` 之后开始）；只有第一行、没有 `---` → 空串 |
+| `EngineCacheTest.SidecarFieldToleratesCrlfLineEndings` | 整份 sidecar 用 CRLF（含 `---` 行）时仍能读到值（Windows 上文本模式写出的形态） |
+
 ## Integration Test
 
 `tests/test_llm_runner_batch.cpp`（新建，8 条）：
