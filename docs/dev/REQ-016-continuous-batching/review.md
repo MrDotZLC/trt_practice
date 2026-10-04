@@ -343,9 +343,157 @@ S4 的代码按"未编译验证"记账，真机窗口的第一件事是编译（
 - **P1（两条）**：① fused kernel 的收益判据绑 P4/P7（环境不可用）；② 真机长 prompt 场景。
 - **结论：PASS（设计层面）**。**实现顺序：作者 2026-10-04 改判** —— S4 的真机测试先搁置，
   **S5 的代码先做**（两者共用同一张 packed 图，S5 只在它之上加 chunk 语义，
-  不改图 / profile / `graph_version`）。原写的"排在 S4 真机收口之后"这条前提**作废**；
+  不改图 / profile）。原写的"排在 S4 真机收口之后"这条前提**作废**；
   真机窗口恢复后按 S4 → S5 的顺序一起验证（S5 的用例与 S4 的回归同一批跑）。
+  （2026-10-04 第二遍复评改判：`graph_version` 不能再写"不改"，见下节 P1-1。）
+
+## S5 设计的第二遍复评（2026-10-04，作者要求）
+
+**触发与范围**：作者要求对 S5 的设计方案再做一遍评审。判据与上一节相同（四个 checklists 的
+[P0] / [P1] 逐条回答 + 需求落点表 + 术语表），但**核对对象从"设计是否自洽"改成"设计与代码现状
+是否对得上"**：上一节的 15 条增量项多数只回答了"设计怎么说"，没有对照
+`packed_attention_plugin.cu` / `paged_attention_split.hpp` / `paged_kv_cache_kernels.cu` /
+`llm_runner.cpp` 的真实形态。按 `AGENTS.md` §5 的「反向也要查」，与代码矛盾处必须当场修，
+因此这一节改判了上一节的结论。
+
+### 核对通过的既有能力（S5 的便宜处，先记下来）
+
+| 说法 | 代码证据 | 结论 |
+|---|---|---|
+| 读缓存不需要新输入 | packed 插件的输入已含 `block_tables[5]` / `context_lens[6]` / `cu_seqlens_ctx[7]`（`packed_attention_plugin.hpp` §输入契约） | 成立：不动绑定、不动图拓扑 |
+| 注意力时刻的"已写入长度"就是 `prompt_done` | runner 顺序是 ②上传元数据 → ③跑引擎 → ④写回；上传时 `host_context_lens[j] = SequenceLength(seq_id)`（`llm_runner.cpp:1458`） | 成立：分页部分天然是 `[0, prompt_done)` |
+| 写回起点可白拿 | 写回发生在引擎调用之后，设备端 `context_lens` 仍是本步之前的值 | 成立：kernel 用 `context_lens[row] + t`，不需要新输入 |
+| 压实不丢已写 chunk 的 K/V | `FreeSequence` 按各序列自己的块表重建行镜像（`paged_kv_cache.cpp:157-168`） | 成立：块归属跟着 sequence |
+| 首块自动退化 | `prompt_done == 0` ⇒ 分页部分长度为 0 | 成立（前提是新 kernel 显式处理 cache 长度 0） |
+
+### 表一（增量，含改判）：受影响的 checklists 条目
+
+标注「改判」的行是本节相对上一节改了结论的项；未列出的条目在本轮不受 S5 影响（沿用上一节的结论）。
+
+| Item | Level | Result | Action |
+|---|---|---|---|
+| CUDA-Kernel 边界条件 | P0 | **不通过（改判）** | 上一节写"由 `cu_seqlens_ctx` 分段表达"，但没写每 query 的 key 数上界与新 kernel 的形态；现补为"新写 chunked context kernel + `key 数 <= 1024`"（D16 / spec §3） |
+| CUDA-越界访问 | P0 | **待确认（改判）** | 写回从 `prompt_done` 起是对的，但 host 侧记账必须同时从"赋值"改"累加"、预留量校验改按累计长度；只改 kernel 会静默错（spec §4） |
+| CUDA-Synchronization | P0 | 通过 | 不新增同步点，沿用"每步重建 + 同流有序" |
+| CUDA-Global Memory 访问是否安全 | P0 | **待确认（改判）** | 新增"按块表读缓存前缀"的访问面；越界保护要覆盖"累计长度 vs 预留量"（原稿只按单次 chunk 长度） |
+| CUDA-是否存在 race condition | P0 | 通过 | 各行的 K/V 写目标互不相交（按块表）+ 图外按 stream 串行 |
+| CUDA-Stream 生命周期 | P0 | 通过 | 沿用默认流 |
+| CUDA-Event 同步 | P0 | 不适用 | 本轮不引入 Event |
+| CUDA-优化是否有 benchmark 证明 | P0 | 待确认 | 收益判据仍绑 P4/P7（环境搁置）；本轮补记"首块也吃分页开销"这个代价 |
+| CUDA-不同 shape 是否覆盖测试 | P1 | 通过 | 全对齐步 / 含末块步 + `chunk_limit` 取 1 / 中间值 / ≥ prompt_len |
+| TRT-Tensor shape 是否明确 | P0 | 通过 | chunk 只让 `T` 变小，仍在 `[1, max_batch × max_prefill_seq_len]` 内 |
+| TRT-Dynamic shape profile 是否覆盖 | P0 | 通过 | 同 S4 区间；真实约束是 `n_positions <= 1024` 与 `prompt_len <= n_positions` |
+| TRT-Plugin creator / serialize / enqueue stream / Binding 一致性 | P0 | 通过 | 输入个数与顺序不变 |
+| TRT-Plugin workspace 管理 | P1 | **不通过（改判）** | "不改 workspace"未被证明过：若走 split-K 扩 query 的方案，`getWorkspaceSize` 会变 → 必须 bump `graph_version`。现采用"新写 kernel、score 留在 shared"的方案把这条约束**变成可证的**（D16 方案 A/C 对比） |
+| C++-API 输入输出是否明确 | P0 | 通过 | 不新增开关、不改调用方签名 |
+| C++-错误处理方式是否统一 | P0 | 通过 | 新路径的越界改为入口显式拒绝（兜底纪律的检查对象已落成真实常量） |
+| C++-Debug / Release 是否均可编译 | P0 | 待确认 | 实现阶段验证（P5，本环境无 nvcc） |
+| LLM-Prefill / Decode 是否区分 | P0 | **不通过（改判）** | S5 引入第三种"分块中的 prefill"行；"本步完成的行"在活跃表里可能不连续，而采样器只吃连续 `[count]` → 需要显式行列表 + 紧凑暂存（spec §2/§4） |
+| LLM-Scheduler 状态是否一致 | P0 | **待确认（改判）** | ① `prompt_done` 与 `PagedKVCache::Sequence::length` 是同一事实的第二份拷贝，应单源；② 活跃表要能表达"生成中 / 分块中 / 新准入"三类并存 |
+| LLM-Batch 状态是否一致（不变量 4） | P0 | 待确认 | 采样行集不得靠重排活跃表实现（会破行号同源），故选显式行列表 |
+| LLM-Dynamic request 加入 / 退出是否安全 | P0 | 通过 | 分块中途不抢占、不换出；退出判据只在 prefill 完成后参与 |
+| LLM-Long context 是否测试 | P1 | 待确认 | S5 的动机本身；用例 + 真机长 prompt 场景 |
+| LLM-Batch 调度策略是否合理 | P1 | 待确认 | D10 的结论不变（两步式收益仍要 P4 数据） |
+| AC9 需求落点 | — | **已落点（本轮补）** | 判据写成"分块与不分块逐位相同"，并增补位置与采样行集两个用例 |
+
+### 表二（增量）：需求落点
+
+| 需求条目 | 设计落点 | 结论 |
+|---|---|---|
+| Included 7：不等长 prefill 按真实长度计费 + 两条路径（打包为默认） | §Runtime Flow（S3/S4）+ D10 + D13 | 已落点（`design.md` 的 Requirement Coverage 表本轮补登） |
+| Included 8：长 prompt 的分块推进（S5） | §Runtime Flow（S5）+ D15 + D16 | 已落点（本轮补登） |
+| AC7 不浪费 | §验证策略（AC7 行）+ D10 | 已落点（本轮补登） |
+| AC8 两条路径各自成立且可回退 | §Runtime Flow（S3/S4）+ D13 + D14 | 已落点（本轮补登） |
+| AC9 分块与不分块等价 | §Runtime Flow（S5）+ D16 + `p5_s5_interface_spec.md` §6 | 已落点（本轮补登；含位置与采样行集两条） |
+
+### 表三（增量）：术语定义
+
+| 模糊名词 | 定义所在 | 结论 |
+|---|---|---|
+| 分块 / chunk（Included 8、AC9） | `p5_s5_interface_spec.md` §2（`chunk_len = min(prompt_len - prompt_done, chunk_limit)`、非末块对齐 / 末块按实际长度） | **已定义（指针式登记，作者 2026-10-04 定）**：`analysis.md` 的 Terminology 里新增了条目，但**不复制正文**，指向 spec §2 作唯一来源 |
+| 末块 / 非末块 | 同上 §2 | 已定义（同"分块"一条，指针式登记） |
+| chunk 的绝对位置 | 同上 §2（chunk 内第 i 个 token 的 `position_ids` = `prompt_done + i`） | 已定义（指针式登记；判伪口径见该行） |
+| 分块与不分块逐位相同 | `analysis.md` Terminology 的"完全一致"（逐位相同，top-1 相同不算通过） | 已定义（AC9 复用该口径） |
+
+### P0 Blockers
+
+1. **position_ids 的绝对位置在 S5 侧没有落点（数值正确性）。** `llm_runner.cpp:1426` 现在写的是
+   `host_positions[offset + i] = i`（注释："段内位置从 0 起"）；模型是绝对位置查表
+   （`gpt2_model_builder.cpp` 的 `addGather(wpe, position_ids)`）。第二块 chunk 必须是
+   `prompt_done + i`，而 spec §4 / D16 / 交接 prompt 都没提这一条 → 照文档实现会静默算错，AC9 必红。
+   **已修**：`design.md` D16 与 spec §2/§4 补规则，spec §6 增用例 `ChunkedPositionsAreAbsolute`。
+2. **"统一成分页因果"在实现层是空壳。** generation 段的 split-K 是 decode 专用（每行 1 个 query、
+   workspace 布局写死 `[split][batch][head][m,l,acc]`、`has_current_token` 单 token），
+   context kernel 又完全不接 `block_tables`/`context_lens` 且越界时**静默 return 不写输出**。
+   "统一成同族、只是 query 数 > 1"于是没有可实现的落点。
+   **已修**：spec §3 写清 chunked context kernel 的形态（网格同形、K/V 两段、score 留 shared、
+   `getWorkspaceSize` 不变、禁止静默跳过），D16 给出 A/B/C 三个方案与选定理由。
+3. **采样行集的表达没有落点。** 采样器只吃连续 `[count]`（`llm_runner.hpp` 的 `SampleBatch` 契约
+   与 `d_step_tokens_` 注释），而"本步完成 prefill 的行"在活跃表里可能被未完成的行隔开；
+   重排活跃表会破不变量 4。
+   **已修**：spec §2/§4 定"显式行列表 + 紧凑暂存"，不动采样器签名与行号纪律；spec §6 增用例
+   `ChunkedSamplingRowSetIsCompacted`。
+
+### P1 Risks
+
+1. **`graph_version` 的"不需要 bump"没有依据，且与项目自己的规则 / 先例冲突。**
+   `engine_cache.hpp` 写的是"任何改动建图 / 精度 / **插件行为**的代码变更都要 +1"；
+   `builder.cpp` 记着 4 = packed 图、以及 1 → 2 正是因 `PagedAttentionPlugin::getWorkspaceSize`
+   从 0 变正数。技术上新引擎可以复用（kernel 由运行期插件解析加载）**当且仅当** I/O 与
+   `getWorkspaceSize` 都不变 —— 但那是"有条件的豁免"，原稿只写了结论。
+   **处置**：作者 2026-10-04 复核后**确定** `kPackedPrefillGraphVersion` 4 → 5（见本节末的
+   "作者确认记录"；不再保留"沿用 4 + 写豁免条件"的分支）。
+2. **"fused kernel 支持的常量集合"在代码里不存在。** 可当检查对象的只有
+   `kPackedAttentionMaxContextSeqLen = 1024`、`configurePlugin` 对 `max_seq_len` 的校验、
+   `kPagedAttentionMaxSplits = 8`、`kMaxHeadSize = 1024`；`chunk_limit` 是**数据**不是模板常量。
+   **已修**：改成 `n_positions <= 1024` ＋ `prompt_len <= n_positions` 两条。
+3. **写回位置与记账的口径没落到设计。** 现有 kernel 从 0 覆盖写（`paged_kv_cache_kernels.cu` 的
+   packed 写回用 `t / block_size`、`t % block_size`），host 侧是赋值
+   （`paged_kv_cache.cpp:323-324`）。S5 必须同时改 kernel 与记账。
+   **已修**：spec §4 增"cache 记账（累加）"行，并在 §7 增对应风险行。
+
+### P2 Quality
+
+| 项 | 说明 |
+|---|---|
+| `prompt_done` 与 `PagedKVCache::Sequence::length` 双源 | spec §2 已注明优先单源（S4 的 `host_context_lens` 就是取 `SequenceLength`），避免第二份拷贝漂移 |
+| `design.md` 的 `## Requirement Coverage` 漏登 Included 7/8 与 AC7/8/9 | 本轮补齐（5 行），`## 验证策略` 同步补 AC7/AC8/AC9 行 |
+| 现有 S5 复评表一写"workspace 拿不到时显式拒绝、不再沿用静默降级"，但 packed 插件此刻仍会静默退单趟 | 该纪律针对"配置不可用"，运行期 workspace 缺失是另一类；需要作者写清边界（本轮只在 P1-1 里记下） |
+| 本节的表一是"增量"口径，而非技能 Exit Gate 要求的具体条目数 | 沿用 S3/S4 复评的既有先例；若作者要严格口径，可另出一版全量表（52 项） |
+
+### Decision（第二遍复评）
+
+- **P0：3 条**（position_ids 落点、chunked context kernel 形态、采样行集表达）→ **BLOCK**，返回 P2 补设计。
+  本轮已把这 3 条的落点写进 `design.md`（D15/D16 + 验证策略 + Requirement Coverage）与
+  `p5_s5_interface_spec.md`（§2/§3/§4/§5/§6/§7）；作者同日给出第三轮确认（见本节末），
+  重开 Gate-A 只差"确认这轮修订文档"这一步。
+- **P1：3 条**（`graph_version` 裁决、常量集合口径、写回记账口径）。三条都已收口 ——
+  第 1 条由作者 2026-10-04 确认为 **bump 4 → 5**，另两条落成文档（见本节末的"作者确认记录"）。
+- **术语表**：`分块` / `末块` / `chunk 的绝对位置` 已按作者口径**指针式登记**进 `analysis.md`
+  （表里只放指针与判伪口径，定义以 spec §2 为唯一来源）。
+- **与上一节的关系**：上一节的"P0：无 / PASS"**被本节改判**（原因见开头"触发与范围"）。
+  本节的结论不追溯覆盖 2026-10-03 的整体 Gate-A 记录，只针对 S5 这一增量。
+
+### 作者确认记录（2026-10-04 第二轮）
+
+| # | 事项 | 作者决定 | 落到哪 |
+|---|---|---|---|
+| 1 | `graph_version`（本节 P1-1） | **确定 bump 4 → 5**（不再保留"沿用 4 + 写豁免条件"的分支） | `design.md` D16；`p5_s5_interface_spec.md` §4/§5 |
+| 2 | "分块"的术语口径（本节表三） | **指针式登记**：`analysis.md` 的 Terminology 里登记条目，定义指向 spec §2 作唯一来源，不复制正文 | `analysis.md`；`p5_s5_interface_spec.md` §2 |
+| 3 | 第二遍复评查出的三条缺口 | **全部折进设计**（见下两行的具体形态） | 见下 |
+| 4 | 缺口之一：`chunk_limit` 的来源 | 给 **`Engine` 加只读 profile 查询**并由 runner 在构造期推导，**不新增 `LLMRunner::Config` 字段**；查询失败即构造期报错（依据"按对方查询、不按配置假定"）。**具体机制由本轮折入时选定，作者可否决** | `design.md` D16；`p5_s5_interface_spec.md` §2/§4/§5 |
+| 5 | 缺口之二 / 之三：入口拒绝的信息与兜底纪律的边界 | 配置 / 形状类**显式拒绝**（错误信息带实际值与上界）；运行期资源类（TRT 未给 workspace）保留既有降级但只降速、打 WARN，且 **S5 新增路径不得引入新的静默降级** | `design.md` D16；`p5_s5_interface_spec.md` §3 |
+
+**收口状态**：本节的 3 条 P0 与 3 条 P1 均已落到文档（P0 落在 design/spec，P1 的
+`graph_version` 与常量口径、记账口径同）；P0-1 的实现（`Engine` 的 profile 查询接口）与
+`graph_version` 常量本身属**代码**，按 §0.7 留到 S5-1 开工时再动。
+Gate-A 的重开等作者确认这轮修订文档。
 
 ## Decision
 
 PASS（无 P0；P1 已由作者于 2026-10-03 确认，Gate-A 通过）
+
+**范围注**：上面这行是 2026-10-03 对"本 feature 整体设计"的 Gate-A 记录，保持不动。
+**S5 这一增量的 Gate-A 在 2026-10-04 的第二遍复评里被改判为 BLOCK**（见上一节：P0 三条已补落点，
+P1 三条已收口 —— `graph_version` 由作者确认为 bump 4 → 5，术语按指针式登记，另两条落成文档）。
+作者确认这轮修订文档后，在这里记一次复评结论、Gate-A 重开。
