@@ -27,6 +27,18 @@
 
 ## Current Blockers
 
+- **S4 的 generation 段当前是单趟回退（2026-10-04 作者指出，**必须修**）**：新插件
+  `packed_attention_plugin.cu` 里的 generation kernel 是**自包含的单趟实现**，而 `paged_attention_plugin.cu`
+  的**生产路径早就是 split-K**（REQ-014 交付；单趟只是 A/B 参考与 workspace 缺失时的兜底，见该文件
+  enqueue 的 `LaunchPagedAttentionSplit` 分支）。S4 是**默认路径**，按现在这样落地等于在默认路径上
+  丢掉 REQ-014 的收益 —— 这是**回退**，不是"v1 取舍"（我最初的提交说明写错了，已在本条更正）。
+  **修法（不动 split-K 算法本身）**：给**已交付的** `PagedAttentionKernelArgs` 与两个 kernel
+  （单趟 + split 第一阶段）加"行/token 基址"的**设备端读取**参数（`cu_seqlens_ctx` + `context_seq_count`，
+  默认 null/0 = 现状），索引改为 `row_base + batch` / `token_base + batch`，
+  **workspace 槽位仍按段内 batch 下标**（混合调用里就是 `0..B_gen-1`）→ 归并 kernel 不用改；
+  然后 S4 插件的 generation 段**直接调 `LaunchPagedAttentionSplit`**，`getWorkspaceSize` 改报
+  split-K 的构建期上界。**代价**：动到 REQ-014 的已交付代码（机械改动），真机编译窗口要把既有
+  decode 用例重跑一遍确认没动坏。**在它修好之前，S4 不能当默认路径。**
 - **S1 批量用例的 profile 配置不足（2026-10-04 发现，已修 `ed52098`）**：`tests/test_llm_runner_batch.cpp`
   用 `SmallGpt2BuilderConfig()`（`max_prefill_batch = max_decode_batch = 1`）却声明 `max_batch = 2` ——
   真机首次跑 P6 时这批用例会因 profile 形状越界而红。已改成 `SmallGpt2BuilderConfig(max_batch)`

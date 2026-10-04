@@ -124,10 +124,15 @@ __global__ void PackedContextAttentionKernel(
 // 其中 `T_ctx = cu_seqlens_ctx[B_ctx]` 是**设备值**，只能由 kernel 自己读 ——
 // 宿主侧因此不需要任何 D2H（见 p5_s4_interface_spec.md §3 的下标纪律）。
 //
-// **为什么另写一份而不是复用 paged 插件的 kernel**：那份 kernel 在 paged 插件 TU 的匿名命名空间里，
-// 跨 TU 调用要么把它提出来做共享头（会动到已交付的插件），要么重写。S4 v1 选后者：
-// 这份是**自包含的简单版**（不做 split-K / 子块定位），把优化留到 P4/P7 有数据之后 ——
-// 与"不动 `PagedAttentionPlugin`（S3 回退路径仍用它）"这条设计约束一致。
+// **已知回退（必须修，2026-10-04 作者指出）**：这份是**单趟**实现，而 `PagedAttentionPlugin` 的
+// **生产路径早就是 split-K**（REQ-014 交付；单趟只是 A/B 参考与 workspace 缺失时的兜底）。
+// S4 是默认路径，照这份落地等于在默认路径上丢掉 REQ-014 的收益 —— **这不是"v1 取舍"**。
+//
+// 修法（见 STATE.md 的 Current Blockers，不动 split-K 算法本身）：给**已交付的**
+// `PagedAttentionKernelArgs` 与两个 kernel 加"行/token 基址的设备端读取"参数
+// （`cu_seqlens_ctx` + `context_seq_count`，默认 null/0 即现状），本插件的 generation 段改为
+// **直接调 `LaunchPagedAttentionSplit`**（`paged_attention_kernel.hpp` 是公开 API），
+// `getWorkspaceSize` 相应改报 split-K 的构建期上界 —— 这样两条路径的 generation 段共用同一份实现。
 template <typename T>
 __global__ void PackedGenerationAttentionKernel(
     const T* __restrict__ query, const T* __restrict__ key_new, const T* __restrict__ value_new,

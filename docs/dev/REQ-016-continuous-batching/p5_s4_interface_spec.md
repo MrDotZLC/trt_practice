@@ -172,6 +172,14 @@ packed 路径是 `T · V ≈ Σ L_i · V` —— 这正是"不等长批按真实
 - **A1（采用）**：**一个新插件**，内部按段分派 —— context 段走 varlen 自注意力，generation 段走分页 + 自包含当前 token。
   理由：段边界在设备端；两插件方案要在图里按运行时标量切片再合并（Select/Concat），多一层显存与出错面。
   **它不替代现有 `PagedAttentionPlugin`**：S3 回退路径仍用它。
+  **但 generation 段必须复用它的 split-K（2026-10-04 作者指出，硬要求）**：`PagedAttentionPlugin` 的
+  **生产路径是 split-K**（REQ-014 交付；单趟只是 A/B 参考与 workspace 缺失时的兜底），
+  而 S4 是**默认路径** —— 自己重写一份单趟实现等于在这里丢掉 REQ-014 的收益。
+  做法：给已交付的 `PagedAttentionKernelArgs` 与两个 kernel 加"行 / token 基址的设备端读取"参数
+  （`cu_seqlens_ctx` + `context_seq_count`，默认 null/0 即现状），索引走 `row_base + batch` /
+  `token_base + batch`，**workspace 槽位仍按段内 batch 下标**（归并 kernel 不用改）；
+  本插件的 generation 段直接调 `LaunchPagedAttentionSplit`，`getWorkspaceSize` 改报 split-K 构建期上界。
+  **在改完之前，S4 不能当默认路径**（登记在 STATE.md 的 Current Blockers）。
 - A2：两个插件 + 图内按 `context_seq_count` 切片/合并。留作对照（若 A1 的 kernel 复杂度失控）。
 
 **profile**：packed 引擎的"token 维" `T ∈ [1, max_batch × max_prefill_seq_len]`，
