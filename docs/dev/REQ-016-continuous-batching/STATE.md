@@ -42,12 +42,17 @@
   用 `SmallGpt2BuilderConfig()`（`max_prefill_batch = max_decode_batch = 1`）却声明 `max_batch = 2` ——
   真机首次跑 P6 时这批用例会因 profile 形状越界而红。已改成 `SmallGpt2BuilderConfig(max_batch)`
   （默认仍是 1/1/1，单序列用例不受影响）。
-- **S4/S5 已过 P3 增量复评 + 第二遍复评（2026-10-04）**：S4 设计经作者确认 4 条（分路径前提、
-  `p5_s3` §10 限定、插件 **A1**、映射与不变量 4 口径）+ 段内下标纪律；**chunked prefill 立项为 S5**
-  （requirement 的 Included/AC 与 Excluded 已同步改口径，design.md 新增 D15）；第二遍复评又补了
+- **S4 已过 P3 增量复评 + 第二遍复评（2026-10-04）**：S4 设计经作者确认 4 条（分路径前提、
+  `p5_s3` §10 限定、插件 **A1**、映射与不变量 4 口径）+ 段内下标纪律；第二遍复评又补了
   5 处实现级缺口，并把 `SchedulerStats` 口径与 profile 的 `opt` 两条按推荐定案。
-  复评结论：P0 无、P1 一条（性能类判据绑真机）+ S5 的 P2 待补 —— 见 review.md。
-  **S4 可在真机窗口进入实现；S5 在它自己的 P2 补齐前不开工。**
+  结论：P0 无、P1 一条（性能类判据绑真机）—— 见 review.md。**S4 可在真机窗口进入实现。**
+- **S5 已完成两轮 P3 复评 + 设计修订，Gate-A 已重开（2026-10-04）**：第二遍复评把上一节的
+  "P0 无 / PASS"**改判为 BLOCK** —— 查出 3 条会静默算错的落点缺失（chunk 的绝对位置、
+  chunked context kernel 的真实形态、采样行集的表达）与 3 条 P1。修订已落 `design.md` D15/D16
+  与 `p5_s5_interface_spec.md`，作者同日确认：① `kPackedPrefillGraphVersion` **bump 4 → 5**；
+  ② 分块术语**指针式登记**（`analysis.md`，定义以 spec §2 为唯一来源）；③ 三条缺口全部折入
+  （`chunk_limit` 改由 `Engine` 的 profile 查询推导、入口拒绝带实际值与上界、兜底纪律按
+  "能否在构造期/入口判定"分适用范围）。**结论：S5 设计层可开工；代码一行未动**（见 `## Implementation Plan`）。
 - **P4 / P7 搁置（2026-10-03）**：当前不在 GTX 1660 Ti 环境，无法取基线。按
   `phases/p4_baseline.md` 的 Dependency Missing 记 N/A；`benchmark_before.md` 写明环境恢复后
   必须补的四项测量。**批上限（`max_batch`）暂时只能取保守值并标注"待实测"**，不得写成实测结论。
@@ -65,21 +70,18 @@
    **5 条已全部定**（4 条确认 + chunked prefill 立项为 S5），并已过 P3 增量复评（review.md）。
    **下一步**：真机窗口内实现 S4（新图 + 新插件 + 打包/写回/采样适配 + 开关），
    然后按 §9 的 7 条用例补 `test_plan.md`。
-1. **S5（chunked prefill，作者 2026-10-04 立项）**：范围/代价/依赖已进 design.md D15 与
-   requirement Included 8 / AC9。**开工前必须先补它自己的 P2（接口细化）**；排在 S4 之后。
-   **P2 已出（2026-10-04）**：新建 `p5_s5_interface_spec.md` + design.md D16 ——
-   裁决：① 分块语义（chunk 期间不出 token、`max_new` 从 prefill 完成起计时、`chunk_limit` 是常量）；
-   ② 注意力**统一成分页因果**（首块自动退化成 S4 的 varlen）；③ 不动图与 `graph_version`；
-   ④ 用例 5 条（含 AC9 的 `ChunkedEqualsWholePrompt`）。**§8 有 4 条待作者确认** → 之后进 P3 复评，
-   **确认前不动 S5 的代码**。
-   **§8 四条已由作者确认（2026-10-04）**：① 分块语义同意；② `chunk_limit` **不暴露给调用方、由
-   profile 上限推导**（且必须落在 fused kernel 支持的常量集合内）；③ 接受"统一成分页因果"，
-   并加**兜底纪律：无法走 fused kernel 的配置要显式拒绝，不许静默回退**；④ 不新增开关，
-   **非末块对齐、末块按实际长度**。**S5 的 P3 增量复评已出**（review.md）：P0 无、P1 两条
-   （fused 收益绑 P4/P7；真机长 prompt）。
-   **实现顺序（作者 2026-10-04 改判）**：S4 的**真机测试先搁置**，**S5 的代码先做**（共用同一张
-   packed 图；S5 只加 chunk 语义，不动图/profile/`graph_version`）。真机窗口恢复后按 S4 → S5
-   一起验证。**下个会话从 S5 的第 1 步开始**（交接 prompt 见本目录的 `next_session_prompt.md`）。
+1. **S5（chunked prefill，作者 2026-10-04 立项）**：设计已定稿并过**两轮** P3 复评 ——
+   `requirement` Included 8 / AC9；`design.md` D15/D16；`p5_s5_interface_spec.md`；`review.md` 的
+   两节复评。第二遍复评把上一节的"P0 无"**改判为 BLOCK**（3 条 P0 + 3 条 P1），修订后作者同日确认：
+   `graph_version` **bump 4 → 5**、术语**指针式登记**、三条缺口全部折入设计（见 `## Current Blockers`）。
+   **下一步**：S5-1 —— **待作者点名开工**；开工前先按技能 P5 把 Implementation Plan 写进
+   `## Implementation Plan` 的 P5-S5 小节（本环境无编译器，所有改动标注**未编译验证**）。
+   三个子步：S5-1 注意力（新写 chunked 分页因果 kernel，score 留 shared、`getWorkspaceSize` 不变）
+   → S5-2 runner + cache（切 chunk、**绝对位置**、写回**累加**记账、采样行集紧凑暂存）
+   → S5-3 用例（`ChunkedEqualsWholePrompt` 等，见 spec §6）。
+   **实现顺序（作者 2026-10-04 改判）**：S4 的真机测试先搁置、S5 的代码先做（共用同一张 packed 图）；
+   真机窗口恢复后按 S4 → S5 一起验证。**交接用的 `next_session_prompt.md` 已按作者指令删除**，
+   本节 + `review.md` 的两节复评即交接入口。
 3. **P5-S1（代码已落，待编译）**：改了 `llm_runner.hpp` / `llm_runner.cpp` /
    `sampler_common.hpp` / `sampler_kernels.cu`，新增 `tests/test_llm_runner_batch.cpp`。
    真机下一步：`cmake --build build -j` → 全量 `mini_trt_llm_tests` → 新增的
@@ -227,6 +229,15 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
 会红，且红的不是批量逻辑而是 profile 配置。修法是把 S1 的 fixture 也换成抬批上限的配置
 （或把该配置提到 `gpt2_test_support.hpp` 里）。**待作者定夺**。
 
+### P5-S5（**未开工**：设计已定稿并通过 Gate-A，2026-10-04）
+
+- **状态**：设计已定稿（`design.md` D15/D16 + `p5_s5_interface_spec.md`），两轮 P3 复评通过、
+  作者确认完毕；**代码尚未开始**（`graph_version` 常量、插件、runner、cache 一行未动）。
+- **开工前必做**：按技能 P5 补全本节内容（当前模块 / 预计文件 / 测试方式）后再动代码；
+  改动面与边界以 `p5_s5_interface_spec.md` §4 的改动表为准，三个子步见 `## Next Action` 第 1 条。
+- **验证口径**：本环境无 nvcc / cmake / TRT → 全部改动标注**未编译验证**；真机窗口先编译，
+  再按 spec §6 的用例跑。
+
 ---
 
 ## Phase History
@@ -278,6 +289,18 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
   D9 预算检查；新增 4 条用例
 - 2026-10-03: 随机流改为 per-batch `seeds`（行号不进随机流）→ AC1 对**所有采样策略**成立；
   同时把静态审查反查出的 4 处文档↔代码不一致改齐
+- 2026-10-04: **S5 第二遍复评（作者要求）**：核对对象从"设计自洽"改为"设计与代码现状对得上"，
+  改判上一节的"P0 无 / PASS"为 **BLOCK** —— 3 条 P0（chunk 的**绝对位置**、chunked context kernel
+  的**真实形态**、**采样行集**的表达）+ 3 条 P1（`graph_version` 裁决、常量集合口径、写回记账口径）。
+  同轮修订 `design.md`（D16 重写、D15 补第 ⑤ 件、验证策略补 AC7/8/9、Requirement Coverage 补
+  Included 7/8、不变量补第 6 条）与 `p5_s5_interface_spec.md`（§2～§9）
+- 2026-10-04: **作者确认 S5 第二轮**：① `kPackedPrefillGraphVersion` **bump 4 → 5**；
+  ② "分块 / 末块 / chunk 的绝对位置" **指针式登记**进 `analysis.md`（定义以 spec §2 为唯一来源）；
+  ③ 第二遍复评查出的三条缺口全部折入设计（`chunk_limit` 改由 `Engine` 的 profile 查询推导、
+  入口拒绝带实际值与上界、兜底纪律按"能否在构造期 / 入口判定"分适用范围）
+- 2026-10-04: 作者指令**删除** `next_session_prompt.md`（未跟踪文件，不可从 git 恢复；其中"三条
+  git 提交坑"未另处留档，其余内容已并入 design / spec / review）；同作者指令**回滚**单笔合并提交
+  `313e2b4`，改按 Phase 拆三笔：`c87af79`(P3) / `90e64c4`(P2) / `272e245`(P1)
 
 ---
 
