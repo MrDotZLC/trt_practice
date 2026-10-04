@@ -54,7 +54,10 @@ struct ChunkedFixture {
     bool ok = false;
 };
 
-ChunkedFixture MakeChunkedFixture(const std::string& name, int32_t max_batch) {
+// `builder_max_prefill_seq_len` = **建图侧**的 per-row 上界（默认与本夹具模型的位置数相同）。
+// 只有"交叉校验 ③"那条用例会把它改小 —— 那是 S5 的真实形态（分块真的会启用）。
+ChunkedFixture MakeChunkedFixture(const std::string& name, int32_t max_batch,
+                                  int32_t builder_max_prefill_seq_len = kPositions) {
     ChunkedFixture fixture;
     if (!fixture.directory.valid()) {
         return fixture;
@@ -64,6 +67,9 @@ ChunkedFixture MakeChunkedFixture(const std::string& name, int32_t max_batch) {
         return fixture;
     }
     EngineBuilder::Config builder_config = test_support::SmallGpt2BuilderConfig(max_batch);
+    // 建图侧的 per-row 上界可覆盖：`max_prefill_seq_len < n_positions` 就是 S5 的**真实形态**
+    // （允许一条 prompt 跨多步推进），也是交叉校验 ③ 唯一能独立触发的配置（见下面那条用例）。
+    builder_config.max_prefill_seq_len = builder_max_prefill_seq_len;
     builder_config.packed_mixed_prefill = true;  // S5 是 packed 路径内部的能力，没有独立开关
     EngineBuilder builder(fixture.logger, builder_config);
     fixture.engine_path = fixture.directory.EnginePath(name + "_packed.engine");
@@ -457,18 +463,21 @@ TEST(LlmRunnerChunkedTest, ChunkedRetireAndBlocks) {
 // ⑧ 配置 / 形状类不可用必须显式拒绝
 // ---------------------------------------------------------------------------
 
-// 三组判据：① 非法 Config 在构造期（任何引擎 / 显存动作之前）就被拒 —— 这一段**不需要 GPU**，
-// 沙箱里也真的跑过（放在 skip 之前，且用 ASSERT：失败会直接以"红"收场，不会被后面的 skip 吞掉）；
-// ② 真机段 · 构造期拒绝：`max_prefill_seq_len`（切法）**未声明** / 越界、`max_positions` 未声明 /
-// 越界 —— 声明值 = 上界必须**接受**（自证"拒绝的是越界，不是字段本身"）；③ 真机段 · 入口拒绝：
-// 请求需要的位置超过 `max_positions` 时必须失败。判据是"**没有静默换路**"，错误信息带实际值与上界。
+// 三组判据（**分组用 (A)/(B)/(C)**；`①②③④⑤` 在本文件里只留给 spec §2 的交叉校验编号）：
+//   (A) 非法 Config 在构造期（任何引擎 / 显存动作之前）就被拒 —— 这一段**不需要 GPU**，沙箱里也真的
+//       跑过（放在 skip 之前，且用 ASSERT：失败会直接以"红"收场，不会被后面的 skip 吞掉）；
+//   (B) 真机段 · 构造期拒绝：`max_prefill_seq_len`（切法）**未声明** / 越界、`max_positions` 未声明 /
+//       越界 —— 声明值 = 上界必须**接受**（自证"拒绝的是越界，不是字段本身"）；
+//   (C) 真机段 · 入口拒绝：请求需要的位置超过 `max_positions` 时必须失败。
+// 判据是"**没有静默换路**"，错误信息带实际值与上界（日志不进判据）。
 //
-// **本夹具的覆盖说明（诚实登记）**：交叉校验 ③（`L × rows_max ≤ T_max`）在本夹具里**无法独立触发**
-// —— rows_max = `max_batch` = 4、T_max = 4 × 16 = 64 ⇒ ③ 等价于 `L ≤ 16`，而 `max_positions` 的
-// 上界（池容量 16）先把它拦下（② 先报）。要独立触发 ③ 需要 `n_positions ≠ max_prefill_seq_len` 的
-// 真实配置（留到 P6 的真机窗口）；这里只断言"越界被拒 + 边界值被接受"。
+// **本夹具的覆盖说明（诚实登记）**：**spec §2 的交叉校验 ③**（`L × rows_max ≤ T_max`）在本夹具里
+// **无法独立触发** —— rows_max = `max_batch` = 4、T_max = 4 × 16 = 64 ⇒ 交叉校验 ③ 等价于 `L ≤ 16`，
+// 而 `max_positions` 的上界（池容量 16）先把它拦下（**交叉校验 ②** 先报）。要独立触发它需要
+// `n_positions ≠ max_prefill_seq_len` 的配置 —— 见下面第 ⑨ 条用例
+// （`ChunkLimitCrossCheckRejectsOverStepBudget`）；这里只断言"越界被拒 + 边界值被接受"。
 TEST(LlmRunnerChunkedTest, ChunkLimitRejectedConfigs) {
-    // ① 非法 Config（全 0）：构造期第一道校验就拒绝，不碰引擎、不碰显存。
+    // (A) 非法 Config（全 0）：构造期第一道校验就拒绝，不碰引擎、不碰显存。
     LLMRunner::Config bogus;
     LLMRunner invalid_runner(bogus, nullptr, nullptr, nullptr);
     ASSERT_FALSE(invalid_runner.ok()) << "非法 Config 必须在构造期被拒";
@@ -477,36 +486,36 @@ TEST(LlmRunnerChunkedTest, ChunkLimitRejectedConfigs) {
     ChunkedFixture fixture = MakeChunkedFixture("chunked_reject", kMaxBatch);
     ASSERT_TRUE(fixture.ok);
 
-    // ②-a 切法**未声明**（`0` 只是"未声明"的哨兵）→ 构造期拒绝。
+    // (B-a) 切法**未声明**（`0` 只是"未声明"的哨兵）→ 构造期拒绝。
     std::unique_ptr<LLMRunner> undeclared =
         MakeRunner(fixture, kMaxBatch, /*max_prefill_seq_len=*/0);
     EXPECT_FALSE(undeclared->ok()) << "packed 模式下未声明 max_prefill_seq_len 必须构造期拒绝";
 
-    // ②-b 声明值 = 位置表上界（本夹具 = 单序列容量 16）：必须**接受**（自证拒绝的是越界）。
+    // (B-b) 声明值 = 位置表上界（本夹具 = 单序列容量 16）：必须**接受**（自证拒绝的是越界）。
     std::unique_ptr<LLMRunner> on_bound =
         MakeRunner(fixture, kMaxBatch, /*max_prefill_seq_len=*/kPositions);
     EXPECT_TRUE(on_bound->ok()) << "max_prefill_seq_len = " << kPositions << " 被误拒";
 
-    // ②-c 声明值 = 上界 + 1：构造期必须拒绝（本夹具里 ②（≤ `max_positions`）先报）。
+    // (B-c) 声明值 = 上界 + 1：构造期必须拒绝（本夹具里 **spec §2 交叉校验 ②**（≤ `max_positions`）先报）。
     std::unique_ptr<LLMRunner> over_bound =
         MakeRunner(fixture, kMaxBatch, /*max_prefill_seq_len=*/kPositions + 1);
     EXPECT_FALSE(over_bound->ok())
         << "max_prefill_seq_len 越界（" << (kPositions + 1) << " > " << kPositions
         << "）必须构造期拒绝";
 
-    // ②-d `max_positions` 没给（默认 0）：packed 模式下必须构造期拒绝 —— 这个值引擎侧查不到
+    // (B-d) `max_positions` 没给（默认 0）：packed 模式下必须构造期拒绝 —— 这个值引擎侧查不到
     //      （只剩 `ceil(n_positions/block_size)` 这个上界），"猜一个默认值"就是留下越界读的隐患。
     std::unique_ptr<LLMRunner> missing_positions = MakeRunner(
         fixture, kMaxBatch, /*max_prefill_seq_len=*/kPositions, /*max_positions=*/0);
     EXPECT_FALSE(missing_positions->ok()) << "packed 模式下 max_positions 未声明必须构造期拒绝";
 
-    // ②-e `max_positions` 比引擎侧上界还大（自相矛盾：池/块表根本装不下那么多位置）→ 拒绝。
+    // (B-e) `max_positions` 比引擎侧上界还大（自相矛盾：池/块表根本装不下那么多位置）→ 拒绝。
     std::unique_ptr<LLMRunner> oversized_positions = MakeRunner(
         fixture, kMaxBatch, /*max_prefill_seq_len=*/kPositions, kTokensPerSeq + 4);
     EXPECT_FALSE(oversized_positions->ok())
         << "max_positions 超过 cache/块表容量（" << kTokensPerSeq << "）必须构造期拒绝";
 
-    // ③ 入口拒绝：`max_positions` 取 8（**小于**池容量 16，所以"装不下池"那条检查会放行），
+    // (C) 入口拒绝：`max_positions` 取 8（**小于**池容量 16，所以"装不下池"那条检查会放行），
     //    请求需要位置 11 —— 只有那条位置表检查能拦下它。切法给 8（= 声明的上界，合法）。
     //    正向对照：同一 runner 上 prompt 8 + 1 个新 token（最大位置 7）必须能跑完。
     const int32_t kSmallPositions = 8;
@@ -523,6 +532,42 @@ TEST(LlmRunnerChunkedTest, ChunkLimitRejectedConfigs) {
         runner->RunScheduler({MakeRequest(MakePrompt(kSmallPositions), GreedyOptions(1), 0)});
     ASSERT_EQ(fits.size(), 1u) << "正向对照：位置放得下的请求必须照常跑完";
     EXPECT_EQ(fits[0].tokens.size(), 1u);
+}
+
+// ⑨ **spec §2 交叉校验 ③ 的独立触发**（`p5_s5_interface_spec.md` §2 的第 ③ 条）：
+// `L × block_tables.dim0.max ≤ input_ids.dim1.max` —— 保证"每步 Σ 每行 chunk 不越出引擎 profile
+// 的 T 上界"，即"多行同批不越出形状"的充分条件。
+//
+// **为什么需要单独一条**：本文件其它用例里 `max_prefill_seq_len` 与 `n_positions` 相等（都是 16），
+// 于是**交叉校验 ③** 等价于 `L ≤ 16`，会被**交叉校验 ②**（≤ `max_positions`）先拦下 —— 拿不到
+// "**③ 自己拦人**"的证据。这条把**建图侧的 per-row 上界**降到 8（模型 `n_positions` 仍是 16，
+// 即 S5 的真实形态），于是 `rows_max = 4`、`T_max = 4 × 8 = 32` ⇒ 交叉校验 ③ 的合法上界 =
+// `32 ÷ 4 = 8`，而交叉校验 ② 的合法上界仍是 `max_positions = 16` —— 两者不再重合。
+//
+// 判据（只到"构造期拒绝 + 边界值接受"；错误信息的文案不进判据）：
+//   * `L = 8`（= `T_max ÷ rows_max`，恰在交叉校验 ③ 的边界上）→ **接受**（正向对照）；
+//   * `L = 9`（> 交叉校验 ③ 的上界，但 ≤ `max_positions`）→ **拒绝**：交叉校验 ② 放它过去，
+//     只有交叉校验 ③ 能拦。
+TEST(LlmRunnerChunkedTest, ChunkLimitCrossCheckRejectsOverStepBudget) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    constexpr int32_t kBuilderPerRowCap = 8;  // 建图侧的 max_prefill_seq_len
+    ChunkedFixture fixture = MakeChunkedFixture("chunked_cross_check", kMaxBatch,
+                                                /*builder_max_prefill_seq_len=*/kBuilderPerRowCap);
+    ASSERT_TRUE(fixture.ok);
+
+    // `L = 8`：`8 × 4 = 32 = T_max` —— 恰好压在交叉校验 ③ 的边界上，必须接受。
+    std::unique_ptr<LLMRunner> on_cross_bound =
+        MakeRunner(fixture, kMaxBatch, kBuilderPerRowCap, /*max_positions=*/kPositions);
+    EXPECT_TRUE(on_cross_bound->ok())
+        << "L = T_max ÷ rows_max（" << kBuilderPerRowCap << "）应当接受";
+
+    // `L = 9`：交叉校验 ②（≤ max_positions 16）不拦，只有交叉校验 ③（9 × 4 = 36 > 32）能拦 →
+    // 这就是"③ 自己拦人"的独立证据。
+    std::unique_ptr<LLMRunner> over_step_budget =
+        MakeRunner(fixture, kMaxBatch, kBuilderPerRowCap + 1, /*max_positions=*/kPositions);
+    EXPECT_FALSE(over_step_budget->ok())
+        << "L = " << (kBuilderPerRowCap + 1) << " 超过 T_max ÷ rows_max（" << kBuilderPerRowCap
+        << "）：交叉校验 ② 不拦（≤ max_positions），必须由 spec §2 交叉校验 ③ 拒绝";
 }
 
 }  // namespace

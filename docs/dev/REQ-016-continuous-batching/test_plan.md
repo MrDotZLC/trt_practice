@@ -122,7 +122,8 @@ S1 没有新增单元级用例（改动集中在 runner 与采样器的接口层
 | `ChunkProgressStateIsCorrect` | `prompt_done` 推进正确：chunk 期间不出 token、完成后才采第 0 个、`max_new` 从那时计时 |
 | `ChunkedSamplingRowSetIsCompacted` | "分块中的长 prompt"排在"本步完成的短 prompt"**之前**时，完成的那行仍被正确采样、未完成的行不出 token |
 | `ChunkedRetireAndBlocks` | 分块跨步时的块记账与退出归还正确（AC3 在分块下的形态） |
-| `ChunkLimitRejectedConfigs` | 配置 / 形状类不可用（推导不出 `chunk_limit`、越界、`prompt_len > n_positions`）被**显式拒绝**，错误信息带实际值与上界；反向断言"没有静默换路" |
+| `ChunkLimitRejectedConfigs` | 配置 / 形状类不可用被**显式拒绝**，错误信息带实际值与上界；反向断言"没有静默换路"。用例内部分组用 **(A)/(B)/(C)/(D)**（`①②③④⑤` 在本表只用于 spec §2 的交叉校验编号，避免撞号）：**(A)** 非法 `Config`（沙箱可判）；**(B)** `max_prefill_seq_len` **未声明** / 越界；**(C)** `max_positions` 未声明 / 超过池容量；**(D)** 请求需要的位置超过 `max_positions`（入口拒绝 + 正向对照）——（2026-10-05 按"显式配置"修订更新：原写的"推导不出 `chunk_limit`"已不存在） |
+| `ChunkLimitCrossCheckRejectsOverStepBudget`（2026-10-05 补登，**沙箱已写 / 真机跑**） | **spec §2 交叉校验 ③ 的独立触发**：建图侧 per-row 上界 = 8、模型 `n_positions` 仍 16（S5 的真实形态）⇒ `rows_max = 4`、`T_max = 32`、交叉校验 ③ 的合法上界 = 8，而交叉校验 ② 的上界仍是 16；断言 `L = 8` **接受**、`L = 9` **被交叉校验 ③ 拒绝**（② 放它过去）。**为什么单列一条**：其它用例里 `L_build = n_positions = 16` 使交叉校验 `③ ⟺ L ≤ 16`、被 ② 先拦，拿不到"③ 自己拦人"的证据 |
 
 ## Regression Test
 
