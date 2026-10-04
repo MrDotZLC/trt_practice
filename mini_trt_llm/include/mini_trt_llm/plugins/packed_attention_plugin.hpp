@@ -15,10 +15,14 @@ namespace mini_trt_llm {
 inline constexpr char kPackedAttentionPluginName[] = "MiniTrtLlmPackedAttention";
 inline constexpr char kPackedAttentionPluginVersion[] = "1";
 
-// **S4 的混合批注意力**（design.md D14 / p5_s4_interface_spec.md §7 的 A1：单插件内部分派）。
+// **S4 的混合批注意力 + S5 的 chunked prefill**（design.md D14/D16、p5_s4_interface_spec.md §7 的 A1：
+// 单插件内部分派）。
 //
 // 一个 packed 张量里装两相，attention 按段分派两条 kernel：
-//   * context 段（前 B_ctx 条序列的**全部** token）→ varlen 因果自注意力（K/V 来自 packed 张量本身）；
+//   * context 段（前 B_ctx 条序列**本步**的 token）→ **chunked 分页因果自注意力**（S5）：
+//     K/V = 分页缓存里的 [0, `context_lens[row]`) （该序列本步之前已写入的 prompt）++
+//     本 chunk 自包含的 [0, 段内 pos]；`context_lens[row] == 0` 时（首次准入）**自动退化**成
+//     S4 的 varlen 自注意力 —— 同一段代码，不分叉第二套实现；
 //   * generation 段（后 B_gen 行的 1 个 token）→ 分页注意力（K/V 来自分页缓存 + 当前 token 自包含）；
 //     **复用 `PagedAttentionPlugin` 的 split-K**（REQ-014 的生产路径，见 `enqueue`），
 //     因此 `getWorkspaceSize` 报的是 split-K 的构建期上界，而不是 0。
@@ -30,7 +34,9 @@ inline constexpr char kPackedAttentionPluginVersion[] = "1";
 //   3 key_cache      [num_blocks, block_size, num_kv_heads, head_size]
 //   4 value_cache    同 key_cache
 //   5 block_tables   [B_total, max_blocks_per_seq]    INT32（**按 packed 行序**排列）
-//   6 context_lens   [B_total]                        INT32（同上；generation 段取"推进前"的值）
+//   6 context_lens   [B_total]                        INT32（同上；**两段都取"本步推进前"的值** ——
+//                                                     context 段用它当分页前缀长度 = prompt_done，
+//                                                     generation 段用它当 position_ids 与追加位置）
 //   7 cu_seqlens_ctx [B_ctx + 1]                      INT32（**段内**下标，从 0 起）
 //   8 context_seq_count [1]                           INT32（段边界 B_ctx；kernel 读它取 T_ctx）
 // 输出：
@@ -41,8 +47,10 @@ inline constexpr char kPackedAttentionPluginVersion[] = "1";
 // 而段内 token 总数 T_ctx = cu_seqlens_ctx[B_ctx] 是**设备值** —— 由 kernel 自己读，
 // 因此分派**不需要**任何 D2H 同步（见 p5_s4_interface_spec.md §3 的下标纪律）。
 //
-// **共享内存**：context kernel 按编译期上限 `kPackedAttentionMaxContextSeqLen` 分配 score 数组；
-// `max_seq_len` 属性必须 ≤ 该上限，否则 `configurePlugin` 直接失败（宁可在建图时拦住）。
+// **共享内存**：context kernel 按编译期上限 `kPackedAttentionMaxContextSeqLen` 分配 score 数组。
+// S5 之后每个 query 的 key 数 = `context_lens[row] + 段内 pos + 1 <= prompt_len <= n_positions`，
+// 所以仍然由 `max_seq_len`（= 建图时的 `cfg.n_positions`）兜住：它必须 ≤ 该上限，否则
+// `configurePlugin` 直接失败（宁可在建图时拦住，而不是在 kernel 里静默跳过）。
 inline constexpr int32_t kPackedAttentionMaxContextSeqLen = 1024;
 
 class PackedAttentionPlugin : public IPluginV3Base {

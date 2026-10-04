@@ -42,7 +42,12 @@ constexpr int32_t kEngineGraphVersion = 3;
 // 它与 version 3 的 padding prefill 图**并存**（由 `Config::packed_mixed_prefill` 选），
 // 两套图的 I/O 契约不同（多 6 个输入、K/V 输出换成 token-major 的 [T,NH,D]、去掉 padding_bias），
 // 所以用各自代次进指纹 —— 复用错引擎的后果是"按旧契约绑张量"，那是静默错而不是报错。
-constexpr int32_t kPackedPrefillGraphVersion = 4;
+// **4 → 5（2026-10-04，S5）**：packed 图的 context 段从"自包含 varlen 注意力"变成
+// **chunked 分页因果注意力**（K/V = 分页缓存前缀 ++ 本 chunk，见 `packed_attention_plugin.cu`）。
+// I/O 契约、profile 区间与 `getWorkspaceSize` 都没变，但**插件对同一绑定的计算语义变了** ——
+// 指纹看不见插件源码的变化，复用按旧语义建的引擎会让分块后的结果**静默算错**，所以手工 +1。
+// 依据：本文件开头的 1 → 2（`PagedAttentionPlugin::getWorkspaceSize` 从 0 变正数）同一条规矩。
+constexpr int32_t kPackedPrefillGraphVersion = 5;
 
 const char* StageName(BuildStage stage) {
     switch (stage) {

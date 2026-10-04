@@ -74,11 +74,10 @@
    `requirement` Included 8 / AC9；`design.md` D15/D16；`p5_s5_interface_spec.md`；`review.md` 的
    两节复评。第二遍复评把上一节的"P0 无"**改判为 BLOCK**（3 条 P0 + 3 条 P1），修订后作者同日确认：
    `graph_version` **bump 4 → 5**、术语**指针式登记**、三条缺口全部折入设计（见 `## Current Blockers`）。
-   **下一步**：S5-1 —— **待作者点名开工**；开工前先按技能 P5 把 Implementation Plan 写进
-   `## Implementation Plan` 的 P5-S5 小节（本环境无编译器，所有改动标注**未编译验证**）。
-   三个子步：S5-1 注意力（新写 chunked 分页因果 kernel，score 留 shared、`getWorkspaceSize` 不变）
-   → S5-2 runner + cache（切 chunk、**绝对位置**、写回**累加**记账、采样行集紧凑暂存）
-   → S5-3 用例（`ChunkedEqualsWholePrompt` 等，见 spec §6）。
+   **子步进度（作者 2026-10-04 点名）**：**S5-1 注意力已落码（未编译验证）** —— 见
+   `## Implementation Plan` 的 P5-S5 小节；**下一步 S5-2**（runner + cache：`Engine` 的 profile
+   查询与 `chunk_limit` 推导 / 入口拒绝、切 chunk、**绝对位置**、写回**累加**记账、采样行集紧凑暂存），
+   再 **S5-3 用例**（`ChunkedEqualsWholePrompt` 等，见 spec §6）。
    **实现顺序（作者 2026-10-04 改判）**：S4 的真机测试先搁置、S5 的代码先做（共用同一张 packed 图）；
    真机窗口恢复后按 S4 → S5 一起验证。**交接用的 `next_session_prompt.md` 已按作者指令删除**，
    本节 + `review.md` 的两节复评即交接入口。
@@ -229,14 +228,34 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
 会红，且红的不是批量逻辑而是 profile 配置。修法是把 S1 的 fixture 也换成抬批上限的配置
 （或把该配置提到 `gpt2_test_support.hpp` 里）。**待作者定夺**。
 
-### P5-S5（**未开工**：设计已定稿并通过 Gate-A，2026-10-04）
+### P5-S5（**进行中**：S5-1 已落码、未编译验证，2026-10-04）
 
-- **状态**：设计已定稿（`design.md` D15/D16 + `p5_s5_interface_spec.md`），两轮 P3 复评通过、
-  作者确认完毕；**代码尚未开始**（`graph_version` 常量、插件、runner、cache 一行未动）。
-- **开工前必做**：按技能 P5 补全本节内容（当前模块 / 预计文件 / 测试方式）后再动代码；
-  改动面与边界以 `p5_s5_interface_spec.md` §4 的改动表为准，三个子步见 `## Next Action` 第 1 条。
-- **验证口径**：本环境无 nvcc / cmake / TRT → 全部改动标注**未编译验证**；真机窗口先编译，
-  再按 spec §6 的用例跑。
+**Implementation Plan（技能 P5 要求：当前模块 / 预计文件 / 测试方式）**
+
+- **S5-1（本次，插件侧）—— 已落码（未编译验证）**
+  - **实改**：`packed_attention_plugin.cu` 的 `PackedContextAttentionKernel` 换成 chunked 分页因果版
+    （新增 `key_cache` / `value_cache` / `block_tables` / `context_lens` / `block_size` /
+    `max_blocks_per_seq` 六个参数；`key_count = cache_len + pos + 1`；K/V 按 `t < cache_len`
+    分流到分页缓存或本 chunk；**同一个循环里分支**而不是两段循环 —— `cache_len == 0` 时线程认领的
+    t 序列与 S4 完全一致，因此与不分块基线**逐位相同**）；`enqueue` 的两处 launch 同步补齐实参；
+    `.hpp` 的输入契约注释改为 S4+S5 双语义（并写明 `context_lens` 两段都取"推进前"的值）；
+    `builder.cpp` 的 `kPackedPrefillGraphVersion` 4 → 5（插件语义变更同提交 bump）。
+  - **未做（属 S5-2）**：`chunk_limit` 的推导与入口拒绝（需要 `Engine` 的 profile 查询）、
+    runner 侧的切 chunk / 绝对位置 / 采样行集、cache 侧的写回起点与累加记账。
+  - **当前模块**：TensorRT 插件（context 段的注意力语义）+ 图代次；**3 个文件**，改动量 ~90 行
+    （技能 P5 的 soft 约束是 <=3 文件 / <=300 行）。
+  - **测试方式**：本环境无 nvcc / cmake / TRT，改动**全部标未编译验证**；用例按 spec §6 在 **S5-3**
+    落地（届时二选一：新建 `tests/test_llm_runner_chunked.cpp` 或并入 packed 用例文件，并说明理由），
+    真机窗口先编译再跑。
+  - **边界**：**不动**输入个数与顺序、不动 `getWorkspaceSize`、不动 profile；`chunk_limit` 的推导与
+    入口拒绝属 S5-2（runner 侧），插件只保留建图期的 `n_positions <= 1024` 校验。
+- **S5-2（下一步，runner + cache）**：`Engine` 新增只读 profile 查询 → 推导 `chunk_limit` 与入口拒绝；
+  `RunPackedMixedStep` 按 §2 切 chunk、写**绝对位置**（`prompt_done + i`）、采样行集用显式行列表
+  紧凑暂存；`paged_kv_cache*` 的写回从 `prompt_done` 起并把 host 记账改成**累加**。
+- **S5-3（最后，用例）**：`ChunkedEqualsWholePrompt` / `ChunkBoundaryDoesNotDisturbOthers` /
+  `ChunkedShortPromptsUnchanged` / `ChunkProgressStateIsCorrect` / `ChunkedRetireAndBlocks` /
+  `ChunkedPositionsAreAbsolute` / `ChunkedSamplingRowSetIsCompacted` / `ChunkLimitRejectedConfigs`，
+  见 spec §6。
 
 ---
 
@@ -301,6 +320,13 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
 - 2026-10-04: 作者指令**删除** `next_session_prompt.md`（未跟踪文件，不可从 git 恢复；其中"三条
   git 提交坑"未另处留档，其余内容已并入 design / spec / review）；同作者指令**回滚**单笔合并提交
   `313e2b4`，改按 Phase 拆三笔：`c87af79`(P3) / `90e64c4`(P2) / `272e245`(P1)
+- 2026-10-04: **作者点名"做 S5-1"** → 写 Implementation Plan（本节 P5-S5）后落码：
+  `packed_attention_plugin.cu` 的 context kernel 换成 **chunked 分页因果**（K/V = 分页缓存
+  `[0, context_lens[seq])` ++ 本 chunk 自包含，因果边界 `cache_len + pos`；`cache_len == 0` 时
+  与 S4 逐位相同）、`enqueue` 补六个实参、`.hpp` 契约注释更新、`builder.cpp` 的
+  `kPackedPrefillGraphVersion` **4 → 5**。**全部未编译验证**（本环境无 nvcc / cmake / TRT）；
+  用例留在 S5-3。自检：花括号 / 圆括号 / 方括号平衡，最长行 101 < 200，CRLF 无 BOM，
+  `PackedContextAttentionKernel` 定义与两处调用成对
 
 ---
 

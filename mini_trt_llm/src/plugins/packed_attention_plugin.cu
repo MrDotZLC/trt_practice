@@ -26,8 +26,23 @@ using cuda::FromFloat;
 using cuda::ToFloat;
 
 // ---------------------------------------------------------------------------
-// context 段：varlen 因果自注意力（K/V 来自 packed 张量本身，不读缓存）
+// context 段：**chunked 分页因果自注意力**（S5，见 p5_s5_interface_spec.md §3）
 // ---------------------------------------------------------------------------
+//
+// 一条序列的 prompt 允许跨多步推进，本步只送一段 chunk：
+//   query = 本 chunk 的 L_c 个 token（段内区间由 `cu_seqlens_ctx` 给出）
+//   K/V   = 分页缓存里的 [0, cache_len)（该序列**本步之前**已写入的 prompt 部分）
+//           ++ 本 chunk 自包含的 [0, pos]（因果）
+//   因果边界 = cache_len + pos；不同序列按 `cu_seqlens_ctx` 分段，互不可见。
+//
+// **首 chunk 自动退化**：`cache_len == 0`（首次准入的行）时缓存部分为空，key 的遍历范围与
+// per-thread 归约顺序与 S4 的 varlen 版本**逐位相同** —— 这正是不分块那一侧能直接沿用既有基线的
+// 原因（AC5/AC9）。所以这里刻意写成"一个循环里分支"，而不是"缓存段 + chunk 段两段循环"：
+// 后者会改变每个线程认领的 t 序列，从而改变部分和的浮点累加顺序。
+//
+// **`cache_len` 从哪来**：就是注意力时刻的 `context_lens[seq]`。runner 的顺序是
+// "上传元数据 → 跑引擎 → 写回"，所以该值恰好是**本步之前**已写入的 prompt 长度（prompt_done）；
+// 首次准入的行注册长度为 0，于是自动走上面的退化分支。**不需要新输入**。
 //
 // 网格 (num_heads, B_ctx, max_seq_len)：z 维是**段内位置**，宿主侧只知道上限
 // （设备端的单序列长度早退由 kernel 自己判），所以超出 `len` 的块立即返回 ——
@@ -39,14 +54,16 @@ using cuda::ToFloat;
 // score 存进 shared（上限 1024 → 4 KB），因此不需要把整行 logits 物化到显存；
 // **这一段自己不占 workspace** —— 插件的 workspace 需求来自 generation 段的 split-K（见下）。
 //
-// **正确性优先**：context 段这是 v1，复杂度 O(T_ctx × L × D)；tiling / 在线 softmax 之类的优化
+// **正确性优先**：复杂度 O(T_ctx × (L_c + cache_len) × D)；split / tiling 之类的优化
 // 等 P4/P7 有数据之后再谈（与采样器 fast/legacy 的处理方式一致）。
 // **generation 段不走这条**：它复用 paged 插件的 split-K（REQ-014 的生产路径），见下方注释。
 template <typename T>
 __global__ void PackedContextAttentionKernel(
     const T* __restrict__ query, const T* __restrict__ key, const T* __restrict__ value,
-    T* __restrict__ output, const int32_t* __restrict__ cu_seqlens_ctx, int32_t num_heads,
-    int32_t num_kv_heads, int32_t head_size, float scale) {
+    T* __restrict__ output, const T* __restrict__ key_cache, const T* __restrict__ value_cache,
+    const int32_t* __restrict__ block_tables, const int32_t* __restrict__ context_lens,
+    const int32_t* __restrict__ cu_seqlens_ctx, int32_t num_heads, int32_t num_kv_heads,
+    int32_t head_size, int32_t block_size, int32_t max_blocks_per_seq, float scale) {
     __shared__ float s_scores[kPackedAttentionMaxContextSeqLen];
     __shared__ float s_reduce[kMaxWarps];
 
@@ -61,8 +78,12 @@ __global__ void PackedContextAttentionKernel(
     if (pos >= len) {
         return;  // grid.z 是上限：越界块立即返回，不读不写
     }
-    if (len > kPackedAttentionMaxContextSeqLen) {
-        return;  // 兜底：configurePlugin 已按 max_seq_len 拦过
+    // 分页部分的 key 数 = 该序列本步之前的已写入长度（首 chunk 为 0）。
+    // 这里只做**防御性**检查：真正的拒绝落在建图期（configurePlugin 的 max_seq_len <= 1024）
+    // 与 runner 入口（prompt_len <= n_positions，S5-2）—— kernel 没有错误通道，不能靠它报错。
+    const int32_t cache_len = context_lens[seq];
+    if (cache_len < 0 || cache_len + len > kPackedAttentionMaxContextSeqLen) {
+        return;
     }
 
     // GQA/MQA：一组 query head 共享同一个 kv head（与 paged 插件同一约定）
@@ -73,12 +94,27 @@ __global__ void PackedContextAttentionKernel(
         query + (static_cast<size_t>(begin + pos) * num_heads + head) * head_size;
     T* output_row =
         output + (static_cast<size_t>(begin + pos) * num_heads + head) * head_size;
-    const int32_t key_count = pos + 1;  // 因果：只看段内 0..pos
+    // 因果：缓存前缀全部可见 + 本 chunk 的 [0, pos]。cache_len == 0 时退化为 S4 的 [0, pos]。
+    const int32_t key_count = cache_len + pos + 1;
 
     // pass 1：scores（每线程认领若干 key，各自写自己的槽位）
     for (int32_t t = tid; t < key_count; t += nt) {
-        const T* key_row =
-            key + (static_cast<size_t>(begin + t) * num_kv_heads + kv_head) * head_size;
+        const T* key_row = nullptr;
+        if (t < cache_len) {
+            // t 落在缓存前缀里 → 按块表寻址（与 paged 插件的布局同一套公式）
+            const int32_t physical_block =
+                block_tables[static_cast<size_t>(seq) * max_blocks_per_seq + t / block_size];
+            const int32_t slot = t % block_size;
+            key_row = key_cache +
+                      ((static_cast<size_t>(physical_block) * block_size + slot) * num_kv_heads +
+                       kv_head) *
+                          head_size;
+        } else {
+            // t 落回本 chunk 自身的 K（源张量里段内下标 = begin + (t - cache_len)）
+            key_row =
+                key + (static_cast<size_t>(begin + (t - cache_len)) * num_kv_heads + kv_head) *
+                          head_size;
+        }
         float dot = 0.0f;
         for (int32_t d = 0; d < head_size; ++d) {
             dot += ToFloat(query_row[d]) * ToFloat(key_row[d]);
@@ -107,9 +143,22 @@ __global__ void PackedContextAttentionKernel(
     for (int32_t d = tid; d < head_size; d += nt) {
         float acc = 0.0f;
         for (int32_t t = 0; t < key_count; ++t) {
-            const T* value_row =
-                value + (static_cast<size_t>(begin + t) * num_kv_heads + kv_head) * head_size;
-            acc += s_scores[t] * ToFloat(value_row[d]);
+            if (t < cache_len) {
+                const int32_t physical_block =
+                    block_tables[static_cast<size_t>(seq) * max_blocks_per_seq + t / block_size];
+                const int32_t slot = t % block_size;
+                const T* value_row =
+                    value_cache +
+                    ((static_cast<size_t>(physical_block) * block_size + slot) * num_kv_heads +
+                     kv_head) *
+                        head_size;
+                acc += s_scores[t] * ToFloat(value_row[d]);
+            } else {
+                const T* value_row =
+                    value + (static_cast<size_t>(begin + (t - cache_len)) * num_kv_heads + kv_head) *
+                                head_size;
+                acc += s_scores[t] * ToFloat(value_row[d]);
+            }
         }
         output_row[d] = FromFloat<T>(acc * inv_sum);
     }
@@ -346,18 +395,24 @@ int32_t PackedAttentionPlugin::enqueue(const nvinfer1::PluginTensorDesc* inputDe
         const dim3 grid(static_cast<unsigned int>(num_heads_),
                         static_cast<unsigned int>(b_ctx),
                         static_cast<unsigned int>(max_seq_len_));
+        // context 段（chunked 分页因果）：除了 packed 张量本身的 Q/K/V，还要读分页缓存与块表。
+        // `context_lens` 在这里是"本步之前已写入的长度"（= prompt_done），不是推进后的值。
         if (is_half) {
             PackedContextAttentionKernel<__half><<<grid, threads, 0, stream>>>(
                 static_cast<const __half*>(inputs[0]), static_cast<const __half*>(inputs[1]),
                 static_cast<const __half*>(inputs[2]), static_cast<__half*>(outputs[0]),
+                static_cast<const __half*>(inputs[3]), static_cast<const __half*>(inputs[4]),
+                static_cast<const int32_t*>(inputs[5]), static_cast<const int32_t*>(inputs[6]),
                 static_cast<const int32_t*>(inputs[7]), num_heads_, num_kv_heads_, head_size_,
-                scale_);
+                block_size_, max_blocks_per_seq, scale_);
         } else {
             PackedContextAttentionKernel<float><<<grid, threads, 0, stream>>>(
                 static_cast<const float*>(inputs[0]), static_cast<const float*>(inputs[1]),
                 static_cast<const float*>(inputs[2]), static_cast<float*>(outputs[0]),
+                static_cast<const float*>(inputs[3]), static_cast<const float*>(inputs[4]),
+                static_cast<const int32_t*>(inputs[5]), static_cast<const int32_t*>(inputs[6]),
                 static_cast<const int32_t*>(inputs[7]), num_heads_, num_kv_heads_, head_size_,
-                scale_);
+                block_size_, max_blocks_per_seq, scale_);
         }
     }
     if (b_gen > 0) {
