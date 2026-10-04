@@ -61,7 +61,8 @@ PagedKVCache::PagedKVCache(const Config& config)
     // 写回行映射的暂存：同样按 max_batch 预分配（§不变量 5）。
     // 恒等表在这里就推到设备——decode 每步都要用它，放到解码循环里拷会引入 H2D（§不变量 3）。
     const size_t rows_bytes = static_cast<size_t>(config_.max_batch) * sizeof(int32_t);
-    if (!rows_device_.Allocate(rows_bytes) || !identity_rows_device_.Allocate(rows_bytes)) {
+    if (!rows_device_.Allocate(rows_bytes) || !identity_rows_device_.Allocate(rows_bytes) ||
+        !row_starts_device_.Allocate(rows_bytes)) {
         MINI_TRT_LOG_ERROR("PagedKVCache: failed to pre-allocate row-mapping buffers");
         return;
     }
@@ -223,7 +224,8 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
                                          int32_t row_count, const int32_t* row_lengths,
                                          cudaStream_t stream,
                                          const int32_t* cu_seqlens_ctx,
-                                         int32_t context_seq_count) {
+                                         int32_t context_seq_count,
+                                         const int32_t* row_starts) {
     if (!valid_ || key == nullptr || value == nullptr || tokens <= 0 || rows == nullptr ||
         row_count <= 0 || row_lengths == nullptr) {
         return cudaErrorInvalidValue;
@@ -273,9 +275,11 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
         }
         const Sequence& sequence = sequences_.at(order_[static_cast<size_t>(row)]);
         const int32_t length = packed_source ? row_lengths[i] : tokens;
-        if (length > sequence.reserved_tokens) {
+        // S5：写了起点之后，真正要保证的是"这一段写完不越过预留"（累计口径）。
+        const int32_t end = (row_starts != nullptr) ? row_starts[i] + length : length;
+        if (end > sequence.reserved_tokens) {
             MINI_TRT_LOG_ERROR("PagedKVCache: prefill length "
-                               << length << " exceeds reserved "
+                               << end << " exceeds reserved "
                                << sequence.reserved_tokens << " tokens of seq "
                                << order_[static_cast<size_t>(row)]);
             return cudaErrorInvalidValue;
@@ -308,6 +312,15 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
     // S4：源是 packed 张量时，源行基址由 kernel 从设备端读（见 PagedKVWriteArgs 的说明）
     args.cu_seqlens_ctx = cu_seqlens_ctx;
     args.context_seq_count = context_seq_count;
+    // S5：写回起点（host → device）。nullptr = 从 0 覆盖写（S3/S4 的行为）。
+    if (row_starts != nullptr) {
+        if (cudaMemcpyAsync(row_starts_device_.data(), row_starts,
+                            static_cast<size_t>(row_count) * sizeof(int32_t),
+                            cudaMemcpyHostToDevice, stream) != cudaSuccess) {
+            return cudaErrorInvalidValue;
+        }
+        args.row_starts = static_cast<const int32_t*>(row_starts_device_.data());
+    }
 
     const cudaError_t err = LaunchWriteKV(args, stream);
     if (err != cudaSuccess) {
@@ -320,8 +333,11 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
     // 后续 UploadMetadata 把错长度推回设备 —— 与"写回覆盖"是同一类静默错。
     for (int32_t i = 0; i < row_count; ++i) {
         const size_t row = static_cast<size_t>(rows[i]);
-        context_lens_host_[row] = row_lengths[i];
-        sequences_[order_[row]].length = row_lengths[i];
+        // S5：给了写回起点就是**累加**（分块 prefill 每块只写自己那一段）；没给仍是赋值。
+        const int32_t written =
+            (row_starts != nullptr) ? row_starts[i] + row_lengths[i] : row_lengths[i];
+        context_lens_host_[row] = written;
+        sequences_[order_[row]].length = written;
     }
     // 立刻把长度推到设备：decode 追加的位置取自设备端 context_lens，
     // 漏掉这一步的话追加会写回位置 0（静默覆盖第一个 token）。
@@ -334,7 +350,7 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
 cudaError_t PagedKVCache::AppendDecodeKV(int32_t layer, const void* key, const void* value,
                                          int32_t row_count, cudaStream_t stream,
                                          const int32_t* cu_seqlens_ctx,
-                                         int32_t context_seq_count) {
+                                         int32_t context_seq_count, const int32_t* rows) {
     if (!valid_ || key == nullptr || value == nullptr) {
         return cudaErrorInvalidValue;
     }
@@ -349,6 +365,17 @@ cudaError_t PagedKVCache::AppendDecodeKV(int32_t layer, const void* key, const v
     if (batch <= 0 || row_count <= 0 || row_count > batch) {
         return cudaErrorInvalidValue;
     }
+    // S5：显式行列表（nullptr = 恒等，S1/S2/S3 的行为）。行号必须落在已登记范围内 ——
+    // 越界寻址会写到别的序列的块里（静默错），必须在入口拦住。
+    if (rows != nullptr) {
+        for (int32_t i = 0; i < row_count; ++i) {
+            if (rows[i] < 0 || rows[i] >= batch) {
+                MINI_TRT_LOG_ERROR("PagedKVCache: append row mapping out of range at " << i
+                                   << " (row " << rows[i] << ", registered batch " << batch << ")");
+                return cudaErrorInvalidValue;
+            }
+        }
+    }
 
     PagedKVWriteArgs args;
     args.key = key;
@@ -359,7 +386,20 @@ cudaError_t PagedKVCache::AppendDecodeKV(int32_t layer, const void* key, const v
     args.context_lens = const_cast<int32_t*>(context_lens());
     // decode 的行序就等于批内顺序（= order_），所以用构造期备好的恒等表：
     // 这里每步都会被调用，另拷一份映射会让解码循环里出现 H2D（AGENTS.md §3.A.3）。
-    args.rows = static_cast<const int32_t*>(identity_rows_device_.data());
+    // 行映射：给了显式列表就用它（S5 分块后"本步追加的行"不再是活跃前缀）；否则走构造期备好的恒等表。
+    // **`rows` 是 host 指针，而 kernel 按设备端寻址** —— 给了显式列表就必须先拷进
+    // 构造期备好的 `rows_device_`（容量按 max_batch，与 prefill 路径同一个缓冲；
+    // 两步之间同 stream 串行，所以复用它不会与 prefill 的那次拷贝打架）。
+    if (rows != nullptr) {
+        if (cudaMemcpyAsync(rows_device_.data(), rows,
+                            static_cast<size_t>(row_count) * sizeof(int32_t),
+                            cudaMemcpyHostToDevice, stream) != cudaSuccess) {
+            return cudaErrorInvalidValue;
+        }
+        args.rows = static_cast<const int32_t*>(rows_device_.data());
+    } else {
+        args.rows = static_cast<const int32_t*>(identity_rows_device_.data());
+    }
     args.row_count = row_count;
     args.tokens = 1;
     args.num_kv_heads = config_.num_kv_heads;
@@ -381,7 +421,7 @@ cudaError_t PagedKVCache::AppendDecodeStep(const std::vector<const void*>& keys,
                                            int32_t row_count,
                                            cudaStream_t stream,
                                            const int32_t* cu_seqlens_ctx,
-                                           int32_t context_seq_count) {
+                                           int32_t context_seq_count, const int32_t* rows) {
     if (keys.size() != values.size() ||
         keys.size() != static_cast<size_t>(config_.num_layers)) {
         MINI_TRT_LOG_ERROR("PagedKVCache: AppendDecodeStep expects one K/V pair per layer");
@@ -390,7 +430,7 @@ cudaError_t PagedKVCache::AppendDecodeStep(const std::vector<const void*>& keys,
     for (int32_t layer = 0; layer < config_.num_layers; ++layer) {
         const cudaError_t err = AppendDecodeKV(layer, keys[static_cast<size_t>(layer)],
                                               values[static_cast<size_t>(layer)], row_count,
-                                              stream, cu_seqlens_ctx, context_seq_count);
+                                              stream, cu_seqlens_ctx, context_seq_count, rows);
         if (err != cudaSuccess) {
             return err;
         }
@@ -398,13 +438,15 @@ cudaError_t PagedKVCache::AppendDecodeStep(const std::vector<const void*>& keys,
     // 推进必须发生在所有写入之后，所以独立成一个 kernel（同一 stream 上串行）；
     // 且**只推进这一批（前 row_count 行）一次**。
     const cudaError_t err = LaunchAdvanceContextLens(
-        const_cast<int32_t*>(context_lens()), row_count, /*tokens=*/1, stream);
+        const_cast<int32_t*>(context_lens()), row_count, /*tokens=*/1, stream, rows);
     if (err != cudaSuccess) {
         return err;
     }
     for (int32_t b = 0; b < row_count; ++b) {
-        context_lens_host_[static_cast<size_t>(b)] += 1;
-        sequences_[order_[static_cast<size_t>(b)]].length += 1;
+        // 行映射必须与设备侧一致：给了显式列表就按它推进（S5），否则恒等（S3/S4）。
+        const int32_t row = (rows != nullptr) ? rows[b] : b;
+        context_lens_host_[static_cast<size_t>(row)] += 1;
+        sequences_[order_[static_cast<size_t>(row)]].length += 1;
     }
     return cudaSuccess;
 }

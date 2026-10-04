@@ -140,7 +140,8 @@ class PagedKVCache {
                               int32_t tokens, const int32_t* rows, int32_t row_count,
                               const int32_t* row_lengths, cudaStream_t stream,
                               const int32_t* cu_seqlens_ctx = nullptr,
-                              int32_t context_seq_count = 0);
+                              int32_t context_seq_count = 0,
+                              const int32_t* row_starts = nullptr);
 
     // 追加 decode 当前 token 的**某一层** K/V（[batch, kv_heads, 1, head_size]）。
     // 只负责写数据，**不推进语境长度**——长度是"每个 token 一个"的量，
@@ -150,7 +151,8 @@ class PagedKVCache {
     cudaError_t AppendDecodeKV(int32_t layer, const void* key, const void* value,
                                int32_t row_count, cudaStream_t stream,
                                const int32_t* cu_seqlens_ctx = nullptr,
-                               int32_t context_seq_count = 0);
+                               int32_t context_seq_count = 0,
+                               const int32_t* rows = nullptr);
 
     // 追加一步 decode 的**所有层**，只追加**前 row_count 行**，写完后只推进这一批的语境长度。
     // runner 应当用这个入口：把"必须恰好推进一次"这件事收进 API，
@@ -162,7 +164,8 @@ class PagedKVCache {
                                  const std::vector<const void*>& values, int32_t row_count,
                                  cudaStream_t stream,
                                  const int32_t* cu_seqlens_ctx = nullptr,
-                                 int32_t context_seq_count = 0);
+                                 int32_t context_seq_count = 0,
+                                 const int32_t* rows = nullptr);
 
     // 整块缓冲（含所有层）与单层的字节数。单层尺寸才是使用方需要的：
     // 引擎的 K/V 输入是"每层一段"的 4-D 张量。
@@ -198,6 +201,9 @@ class PagedKVCache {
     // 批内顺序，用它就不必在解码循环里传/拷映射（AGENTS.md §3.A.3）。
     DeviceBuffer rows_device_;
     DeviceBuffer identity_rows_device_;
+    // S5：写回起点（每行从哪个 cache 位置开始写）。nullptr = 从 0 覆盖写（S3/S4 的行为）；
+    // 分块 prefill 时传 `prompt_done`，同一个缓冲复用（同 stream 串行，不与 rows_device_ 冲突）。
+    DeviceBuffer row_starts_device_;
     DeviceBuffer key_cache_device_;
     DeviceBuffer value_cache_device_;
 

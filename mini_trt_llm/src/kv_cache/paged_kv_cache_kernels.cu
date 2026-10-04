@@ -83,7 +83,8 @@ __global__ void WriteKVPackedPrefillKernel(const SrcT* __restrict__ key,
                                            const int32_t* __restrict__ rows,
                                            const int32_t* __restrict__ cu_seqlens_ctx,
                                            int32_t kv_heads, int32_t head_size,
-                                           int32_t block_size, int32_t max_blocks_per_seq) {
+                                           int32_t block_size, int32_t max_blocks_per_seq,
+                                           const int32_t* __restrict__ row_starts) {
     const int32_t engine_row = blockIdx.x;
     const int32_t begin = cu_seqlens_ctx[engine_row];
     const int32_t len = cu_seqlens_ctx[engine_row + 1] - begin;
@@ -96,9 +97,13 @@ __global__ void WriteKVPackedPrefillKernel(const SrcT* __restrict__ key,
         const int32_t t = static_cast<int32_t>(rest / kv_heads);
         const int64_t source_index =
             ((static_cast<int64_t>(begin + t) * kv_heads + h) * head_size) + d;
+        // S5：写回起点（分块 prefill 的第 2 块起必须从 `prompt_done` 续写，不能从 0 覆盖）。
+        // nullptr = 0 → 与 S3/S4 的"从 0 覆盖写"逐位相同。
+        const int32_t start = (row_starts != nullptr) ? row_starts[engine_row] : 0;
+        const int32_t position = start + t;
         const int32_t physical_block =
-            block_tables[static_cast<size_t>(row) * max_blocks_per_seq + t / block_size];
-        const int32_t slot = t % block_size;
+            block_tables[static_cast<size_t>(row) * max_blocks_per_seq + position / block_size];
+        const int32_t slot = position % block_size;
         const int64_t cache_offset =
             ((static_cast<int64_t>(physical_block) * block_size + slot) * kv_heads + h) *
                 head_size +
@@ -108,10 +113,15 @@ __global__ void WriteKVPackedPrefillKernel(const SrcT* __restrict__ key,
     }
 }
 
+// 推进语境长度。`rows == nullptr` 时按恒等映射推进**前 batch_size 行**（S3/S4 的行为，
+// 因为那时"本步追加的行"就是活跃前缀 = cache 前缀）；S5 分块后两者可能不再重合，
+// 所以给一张**显式行列表**（每步重建、行号指向 cache 内部行空间）。
 __global__ void AdvanceContextLensKernel(int32_t* __restrict__ context_lens, int32_t tokens,
-                                         int32_t batch_size) {
-    const int32_t b = blockIdx.x * blockDim.x + threadIdx.x;
-    if (b < batch_size) {
+                                         int32_t batch_size,
+                                         const int32_t* __restrict__ rows) {
+    const int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < batch_size) {
+        const int32_t b = (rows != nullptr) ? rows[i] : i;
         context_lens[b] += tokens;
     }
 }
@@ -154,7 +164,7 @@ cudaError_t LaunchWriteKV(const PagedKVWriteArgs& args, cudaStream_t stream) {
                 static_cast<const SrcT*>(args.key), static_cast<const SrcT*>(args.value),
                 static_cast<DstT*>(args.key_cache), static_cast<DstT*>(args.value_cache),
                 args.block_tables, args.rows, args.cu_seqlens_ctx, args.num_kv_heads,
-                args.head_size, args.block_size, args.max_blocks_per_seq);
+                args.head_size, args.block_size, args.max_blocks_per_seq, args.row_starts);
         };
         if (args.source_is_half && args.is_half) {
             launch_packed(__half{}, __half{});
@@ -194,14 +204,14 @@ cudaError_t LaunchWriteKV(const PagedKVWriteArgs& args, cudaStream_t stream) {
 }
 
 cudaError_t LaunchAdvanceContextLens(int32_t* context_lens, int32_t batch_size,
-                                     int32_t tokens, cudaStream_t stream) {
+                                     int32_t tokens, cudaStream_t stream, const int32_t* rows) {
     if (context_lens == nullptr || batch_size <= 0 || tokens <= 0) {
         return cudaErrorInvalidValue;
     }
     (void)cudaGetLastError();
     const int32_t blocks = (batch_size + kThreadsPerBlock - 1) / kThreadsPerBlock;
     AdvanceContextLensKernel<<<blocks, kThreadsPerBlock, 0, stream>>>(context_lens, tokens,
-                                                                     batch_size);
+                                                                     batch_size, rows);
     return cudaGetLastError();
 }
 

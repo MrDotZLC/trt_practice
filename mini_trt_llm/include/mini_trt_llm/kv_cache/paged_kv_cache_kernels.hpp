@@ -64,6 +64,9 @@ struct PagedKVWriteArgs {
     const int32_t* cu_seqlens_ctx = nullptr;  // [context_seq_count + 1]
     int32_t context_seq_count = 0;            // S4 的段边界（context 段的序列数）
     // 目标缓存行的映射仍由 `rows`（+`row_count`）给出，与上面两个量正交。
+    // S5：每行的**写回起点**（分块 prefill 的第 2 块起不能从 0 覆盖写）。
+    // 同样必须是**设备**数组（kernel 直接读），nullptr = 每行从 0 覆盖写（S3/S4 的行为）。
+    const int32_t* row_starts = nullptr;  // [row_count]
 };
 
 // 按分页布局写入 K/V。
@@ -73,6 +76,7 @@ cudaError_t LaunchWriteKV(const PagedKVWriteArgs& args, cudaStream_t stream);
 // 单独一个 kernel 是为了让"读位置"与"推进长度"严格分成两个阶段，
 // 避免同一 batch 内出现"有些线程还在按旧长度写、有些已经推进"的竞态。
 cudaError_t LaunchAdvanceContextLens(int32_t* context_lens, int32_t batch_size,
-                                     int32_t tokens, cudaStream_t stream);
+                                     int32_t tokens, cudaStream_t stream,
+                                     const int32_t* rows = nullptr);
 
 }  // namespace mini_trt_llm
