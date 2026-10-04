@@ -7,19 +7,40 @@
 | phase | P5-Implementation |
 | phase_index | 5 |
 | status | in-progress |
-| updated | 2026-10-04 |
+| updated | 2026-10-05 |
 | owner | Codex |
 
 ---
 
 ## Completed Artifacts
 
-- `requirement.md`（P0-Requirement，2026-10-03 重做）
-- `analysis.md`（P1-Analysis，2026-10-03 重做，**新增 Terminology**）
-- `design.md`（P2-Design，2026-10-03 重做，**新增 Requirement Coverage、验证策略、D10/D11**）
-- `review.md`（P3-Review，2026-10-03 新建，结论 PASS）
-- `benchmark_before.md`（P4-Baseline，2026-10-03，**N/A：环境不可用，已按 Dependency Missing 记账**）
-- `p5_s1_interface_spec.md`（P5 补充：S1 接口细化，2026-10-03，经作者确认）
+> **口径（2026-10-05 盘点，作者点名清单第 6 项）**：清单以技能
+> `.agents/skills/trt-inference-engineering/workflows/feature.md` 的 `## Required Artifacts`
+> 为**唯一来源**（10 件，与 `SKILL.md` 的 Artifact Directory 一致）—— 本表**行数 = 10**，
+> 每行只写"现状 + 证据指针"，**不转述**技能对每件内容的定义（Mandatory #8）。
+
+| # | 产物 | 产出阶段 | 现状 | 证据 / 缺口 |
+|---|---|---|---|---|
+| 1 | `STATE.md` | 全程 | 在（维护中） | 本文件 |
+| 2 | `requirement.md` | P0-Requirement | 在 | 2026-10-03 重做；Included 8 / AC9 |
+| 3 | `analysis.md` | P1-Analysis | 在 | 2026-10-03 重做；含 Terminology（指针式登记） |
+| 4 | `design.md` | P2-Design | 在 | D1–D16 + Requirement Coverage + 验证策略 |
+| 5 | `review.md` | P3-Review | 在 | 四遍复评（Gate-A PASS + S5 的三个增量） |
+| 6 | `benchmark_before.md` | P4-Baseline | 在（记 `N/A`） | `## Result` = `N/A` + 恢复清单**五项**（P4 Dependency Missing 三处留痕之一） |
+| 7 | `benchmark.md` | P7-Benchmark | **缺** | 卡外部依赖：`phases/p7_benchmark.md` 要求先有 before 数据（无 before 不可执行）+ 独占 GPU；P4 环境未恢复 |
+| 8 | `test_plan.md` | P6-Test | 在（未填结果） | 四节清单（S1/S3/S4/S5）+ `TS-055` 已对齐名字/条数/顺序；`## Actual Result` 等真机 |
+| 9 | `summary.md` | P8-Documentation | **缺** | P8 产物，依赖 `benchmark.md` 与 P6 结论；其 Performance 一节的 `N/A` 义务已登记（见 `## Next Action` 第 5 条，**P8 必清**） |
+| 10 | `interview_notes.md` | P9-Interview | **缺** | P9 产物，依赖 `summary.md` |
+
+**另外 5 件**（不在那 10 件里，属本 feature 的 P5 接口细化，同样落在 Artifact Directory）：
+`p5_s1_interface_spec.md` … `p5_s5_interface_spec.md` —— 是 S1–S5 的接口/口径来源，被
+`design.md` / `review.md` / `test_plan.md` 引用。
+
+**盘点结论（2026-10-05）**：10 件里 **7 件在、3 件缺**（`benchmark.md` / `summary.md` /
+`interview_notes.md`）；三件**都卡在阶段顺序与外部依赖上**（P7 需 before 数据与独占 GPU、P8 需 P7、
+P9 需 P8），**不是漏产**。所以本 feature 停在 P5/P6 是符合流程的位置：技能的"未满足（阻塞）"
+已按 `## 判据对照` 记账（P4 的三处留痕 + P8 的义务锚点）。**本盘点只读**：不新建那三件产物 ——
+`summary.md` / `interview_notes.md` 的**起草**要等 P8/P9 入口，且需作者单独点名。
 
 旧版产物可用 `git show f9f8502:docs/dev/REQ-016-continuous-batching/<file>` 取回。
 
@@ -569,6 +590,12 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
   文件的 `TEST` 名逐位比对：名字与条数本来就一致（10/9/8/12），**顺序**在 S1/S3/S4 三节不同 →
   把清单顺序统一到文件，并在 `test_plan.md` 的 Integration Test 写明这条口径（另修掉 `Expected Result`
   里陈旧的"8 条"）；**纯文档改动**
+- 2026-10-05: **产物完备性盘点（作者点名清单第 6 项）** —— 按技能 `workflows/feature.md` 的
+  `## Required Artifacts`（10 件，唯一来源）逐件对现状：**7 件在、3 件缺**（`benchmark.md` /
+  `summary.md` / `interview_notes.md`），三件都卡在阶段顺序与外部依赖（P7 需 before + 独占 GPU、
+  P8 需 P7、P9 需 P8），**不是漏产**；另 5 件 `p5_s*_interface_spec.md` 是 P5 接口细化（不在那 10 件里）。
+  本盘点**只读**，未新建产物；`## Completed Artifacts` 已从旧版 6 行清单改写成这张 10 行表，
+  `updated` 字段同步到 2026-10-05
 
 ---
 
