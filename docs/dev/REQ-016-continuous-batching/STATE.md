@@ -67,6 +67,16 @@
    然后按 §9 的 7 条用例补 `test_plan.md`。
 1. **S5（chunked prefill，作者 2026-10-04 立项）**：范围/代价/依赖已进 design.md D15 与
    requirement Included 8 / AC9。**开工前必须先补它自己的 P2（接口细化）**；排在 S4 之后。
+   **P2 已出（2026-10-04）**：新建 `p5_s5_interface_spec.md` + design.md D16 ——
+   裁决：① 分块语义（chunk 期间不出 token、`max_new` 从 prefill 完成起计时、`chunk_limit` 是常量）；
+   ② 注意力**统一成分页因果**（首块自动退化成 S4 的 varlen）；③ 不动图与 `graph_version`；
+   ④ 用例 5 条（含 AC9 的 `ChunkedEqualsWholePrompt`）。**§8 有 4 条待作者确认** → 之后进 P3 复评，
+   **确认前不动 S5 的代码**。
+   **§8 四条已由作者确认（2026-10-04）**：① 分块语义同意；② `chunk_limit` **不暴露给调用方、由
+   profile 上限推导**（且必须落在 fused kernel 支持的常量集合内）；③ 接受"统一成分页因果"，
+   并加**兜底纪律：无法走 fused kernel 的配置要显式拒绝，不许静默回退**；④ 不新增开关，
+   **非末块对齐、末块按实际长度**。**S5 的 P3 增量复评已出**（review.md）：P0 无、P1 两条
+   （fused 收益绑 P4/P7；真机长 prompt）。**S5 的实现排在 S4 的真机收口（P6）之后。**
 3. **P5-S1（代码已落，待编译）**：改了 `llm_runner.hpp` / `llm_runner.cpp` /
    `sampler_common.hpp` / `sampler_kernels.cu`，新增 `tests/test_llm_runner_batch.cpp`。
    真机下一步：`cmake --build build -j` → 全量 `mini_trt_llm_tests` → 新增的

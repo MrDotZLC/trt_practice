@@ -298,6 +298,52 @@ S1/S2/S3 的 padding 路线，S4 把执行形态从"每步两次调用"改成"�
 **P0：无。P1：一条** —— 性能类判据（AC6 / AC7 / D10 的负载对照）仍绑真机，环境不可用；
 S4 的代码按"未编译验证"记账，真机窗口的第一件事是编译（P5 Exit Gate）。
 
+## S5 设计的 P3 增量复评（2026-10-04）
+
+**触发与范围**：chunked prefill 立项为 S5（requirement Included 8 / AC9），P2 草案出齐
+（`p5_s5_interface_spec.md` + design.md D15/D16），作者同日确认了 §8 的四条。
+本节的增量点：**S5 会第一次修改 attention 的计算语义**（context 段从"自包含 varlen"变成"分页因果"），
+所以 CUDA 侧的 P0/P1 项要重新回答；TRT 侧反而**不动**（同图、同 profile 区间、同 `graph_version`）。
+
+### 表一（增量）：受影响的 checklists 条目
+
+| Item | Level | Result | Action |
+|---|---|---|---|
+| CUDA-Kernel 边界条件 | P0 | 通过（设计层） | query 数 > 1 + 按段因果 + 末块变短，全部由 `cu_seqlens_ctx` 分段表达；实现期逐条自检 |
+| CUDA-越界访问 | P0 | 通过 | 写回位置从 `prompt_done` 起、预留仍按 `prompt_len + max_new`（S4 已改成按真实长度）→ 不会越出预留 |
+| CUDA-race condition | P0 | 通过 | 与 S4 同一分派结构：各行的 K/V 写目标互不相交（按块表）+ 图外按 stream 串行 |
+| CUDA-Synchronization | P0 | 通过 | 不新增同步点；沿用"每步重建 + 同流有序" |
+| CUDA-不同 shape 覆盖测试 | P1 | 通过 | 两个极端（全对齐步 / 含末块的步）进 `ChunkedEqualsWholePrompt`（`chunk_limit` 取 1 / 中间值 / ≥ prompt_len） |
+| CUDA-优化是否有 benchmark 证明 | P0 | **待确认** | "fused kernel 的收益"只能由 P4/P7 判（环境搁置）；本设计只保证**不静默回退**（§3 兜底纪律） |
+| TRT-Tensor shape / Dynamic profile | P0 | 通过 | **S5 不动图**：chunk 只让每步的 `T` 变小，仍在 S4 已定的 `[1, max_batch × max_prefill_seq_len]` 内 |
+| TRT-Binding 一致性 / `graph_version` | P0 | 通过 | 同图同绑定，**不需要 bump**（S4 契约的直接红利） |
+| TRT-Plugin workspace 管理 | P1 | 通过 | 仍走 `getWorkspaceSize()`；拿不到 workspace 时按 §3 的兜底纪律**显式拒绝**（不再沿用 paged 插件"退单趟"那种静默降级） |
+| C++-API 输入输出是否明确 | P0 | 通过 | **不新增开关**、不改调用方签名（`chunk_limit` 由 profile 推导） |
+| C++-RAII / 异常路径 | P0/P1 | 通过 | 不新增资源类型；失败路径仍由 `SequenceScope` 兜底归还 |
+| LLM-Scheduler 状态是否一致 | P0 | 通过 | 活跃表新增 `prompt_done`，与行号/压实同源（不变量 4 的口径不变） |
+| LLM-Dynamic request 加入 / 退出是否安全 | P0 | 通过 | 分块中途不抢占、不换出；退出判据（EOS / `max_new`）只在 prefill 完成后参与 |
+| LLM-Long context 是否测试 | P1 | 待确认 | 这是 S5 的动机：用例 + 真机长 prompt 场景 |
+| AC9 需求落点 | — | 已落点 | 判据写成"分块与不分块逐位相同"（`p5_s5_interface_spec.md` §6） |
+
+### 复评发现
+
+1. **`chunk_limit` 必须落在 fused kernel 支持的常量集合内**（作者口径：由 profile 推导 + 显式拒绝）——
+   实现时要在**构造期**校验并给出可操作的错误信息，否则"推导值"会在运行期撞上 kernel 的假设。
+2. **非末块对齐 / 末块按实际长度**要写成一条规则的**两半**（不是两种模式）：对齐是为了形状与 kernel
+   假设稳定，末块变短由同一个 kernel 按 `cu_seqlens` 处理 —— 这正是 §3"不静默回退"的边界。
+3. **`SchedulerStats` 的口径要跟着改**：分块后 `context_rows` 变成"Σ 本步 chunk 行数"，而一条序列可能
+   **跨多步**出现在 context 段（S4 下它只出现一次）。用例断言与 `test_plan` 的行要按新口径写，
+   免得把"同一序列多次出现在 context 段"误判成缺陷。
+4. **退出判据的计时**：`max_new` 从 prefill 完成起算 —— 这条要落成活跃表字段语义（`generated` 只在
+   完成后才增长），否则分块会改变可见语义；用例 `ChunkProgressStateIsCorrect` 锁住。
+
+### Decision（复评）
+
+- **P0：无**（S5 设计层面）；表一的 Action 列作为实现阶段的 P0 自检清单。
+- **P1（两条）**：① fused kernel 的收益判据绑 P4/P7（环境不可用）；② 真机长 prompt 场景。
+- **结论：PASS（设计层面）**。**实现顺序上 S5 排在 S4 的真机收口（P6）之后** —— 它依赖 S4 的
+  packed 契约已经被真机验证过这一前提；在那之前不动 S5 的代码。
+
 ## Decision
 
 PASS（无 P0；P1 已由作者于 2026-10-03 确认，Gate-A 通过）
