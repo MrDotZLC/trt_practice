@@ -234,17 +234,20 @@ packed 插件的输入个数与顺序、**其余** profile 区间（`cu_seqlens_
   `B_ctx + 1`（最后一项是段内 token 总数，插件也靠 `dim[0] - 1` 推 `B_ctx`），比 `block_tables` /
   `context_lens` 的行维**多一格**。沿用行维范围时，`B_ctx = max_prefill_batch` 的首步（整批都是
   context 行）会直接 `setInputShape` 失败（`TS-051` 第 6 条）。
-- **真实的形状约束只有三条**（第二遍复评替换了原稿"支持集合"的笼统说法）：
-  ① `chunk_limit >= 1`（否则切不动）；
-  ② `chunk_limit <= profile 的行上界`（切出来的 chunk 不能越出形状）；
-  ③ 每 query 的 key 数 = `prompt_done + pos + 1 <= prompt_len <= n_positions <=
-  kPackedAttentionMaxContextSeqLen = 1024` —— 最后一步不等式是建图期已有的校验
-  （`configurePlugin` 按插件属性 `max_seq_len = cfg.n_positions` 拦），前两步是数据依赖的运行时事实。
-  注意 **`prompt_len` 允许大于 `chunk_limit`**（长 prompt 分多步），约束落在"每 query 的 key 数"上。
-  任何一条不满足 → 构造期/入口**显式拒绝**（§3 的适用范围表）。
+- **形状约束的唯一来源（2026-10-05 去重：本节不再自列清单，R1 = 枚举只能引用）**：
+  - **构造期五条** = §2 的 ①～⑤（`L ≥ 1` / `L ≤ max_positions` / `L × rows_max ≤ T_max` /
+    `L ≤ 插件上限` / profile 查询必须成功）—— 清单以 §2 为唯一来源，本节不转述；
+  - **入口位置上界** = `prompt_len + max_new - 1 ≤ max_positions`（§2 末）。它同时兜住 **kernel 侧**的
+    "每 query 的 key 数 = `prompt_done + pos + 1 ≤ prompt_len ≤ n_positions ≤
+    kPackedAttentionMaxContextSeqLen`" —— 第二段不等式（`n_positions ≤ 1024`）由 `configurePlugin`
+    在建图期拦。
+  - 注意 **`prompt_len` 允许大于 `L`**（长 prompt 分多步），所以约束落在"每 query 的 key 数"与
+    "**每步 Σ 每行 chunk ≤ T_max**"上，而不是"prompt 必须一次装下"。
+  - 任何一条不满足 → 构造期 / 入口**显式拒绝**（§3 的适用范围表），不静默换路。
 - 引擎与图：packed 的 I/O 契约与 `getWorkspaceSize` 都**不变**（方案 A：score 仍在 shared），
-  所以"S5 不动图"这句话在**拓扑层面**成立；`graph_version` 仍 **bump 4 → 5**（作者 2026-10-04 确认，
-  见 §4），因为 `engine_cache` 看不见"插件对同一绑定的计算语义变了"。
+  所以"S5 不动图"这句话在**拓扑层面**成立；但 `graph_version` 仍要 bump（`engine_cache` 看不见
+  "插件对同一绑定的计算语义变了"）：**4 → 5 → 6**（5 = 插件语义变了、6 = `cu_seqlens_ctx` 的 profile
+  行维变了；见 §4 的表）。2026-10-05 的 `max_prefill_seq_len` 修订**不动图与 profile → 保持 6**。
 
 ## 6. 判据与用例（待实现后补进 test_plan.md）
 
@@ -275,7 +278,7 @@ packed 插件的输入个数与顺序、**其余** profile 区间（`cu_seqlens_
 | **位置用了段内 `i` 而不是 `prompt_done + i`** | 第二块起查错位置表，token 静默逐位不同 | §2 的绝对位置规则 + 用例 `ChunkedPositionsAreAbsolute`（2026-10-04 第二遍复评补） |
 | **只改 kernel 忘了改 cache 侧的累加记账** | 第二块起 `context_lens` 被写回旧值 → 覆盖自己的 K/V / 后续 decode 位置错 | §4 的"cache 记账"行 + 预留量按累计长度校验（2026-10-04 第二遍复评补） |
 | **采样行集有"洞"却不做紧凑暂存** | 未完成的行被当成完成行采样（多出 token）或完成的行被跳过（少出 token） | §2 的显式行列表 + 用例 `ChunkedSamplingRowSetIsCompacted`（2026-10-04 第二遍复评补） |
-| **复用旧引擎却只改了插件语义** | 旧引擎 + 新代码 = 现象与结论无法解释（`engine_cache` 看不见插件行为变化） | §4/§5：`kPackedPrefillGraphVersion` **bump 4 → 5**（作者 2026-10-04 确认） |
+| **复用旧引擎却只改了插件语义** | 旧引擎 + 新代码 = 现象与结论无法解释（`engine_cache` 看不见插件行为变化） | §4/§5：`kPackedPrefillGraphVersion` **bump 4 → 5 → 6**（5 = 插件语义、6 = `cu_seqlens_ctx` 的 profile 行维；作者 2026-10-04 确认 5、同日收口到 6） |
 | **把 `chunk_limit` 的来源写成"config 里的字段"** | `LLMRunner::Config` 里**没有** `max_prefill_seq_len`，实现时无从取值，最容易退回"猜一个默认值"（= 运行时口径与建图口径不一致的静默错） | §2 定"Engine profile 查询 + 查询失败即构造期报错"；用例 `ChunkLimitRejectedConfigs` |
 | **兜底纪律被写成一刀切** | 要么与 REQ-014 的既有降级结论冲突，要么放走 S5 要拦的配置类问题 | §3 的适用范围表（按"能否在构造期/入口判定"切开） |
 

@@ -117,20 +117,21 @@
 
 ## Next Action
 
-0. **S4（下一步主线）**：作者 2026-10-04 给出"选择性批处理"的口径（两相共享一个 packed 张量、
+1. **S4（代码已落；真机验证待环境）**：作者 2026-10-04 给出"选择性批处理"的口径（两相共享一个 packed 张量、
    attention 按段分派、context token 必须在前），据此已出 **P2 级设计草案**：新建
    `p5_s4_interface_spec.md`（§11 列了 5 条待确认）+ design.md 的 D13 扩充 / S4 小节 / D14。
    **5 条已全部定**（4 条确认 + chunked prefill 立项为 S5），并已过 P3 增量复评（review.md）。
-   **下一步**：真机窗口内实现 S4（新图 + 新插件 + 打包/写回/采样适配 + 开关），
-   然后按 §9 的 7 条用例补 `test_plan.md`。
-1. **S5（chunked prefill，作者 2026-10-04 立项）**：设计已定稿并过**两轮** P3 复评 ——
+  **下一步**：真机窗口跑 S4 的用例（`LlmRunnerPackedTest.*` 8 条，代码已落、未编译验证）
+  并按 §9 的 7 条回填 `test_plan.md`。
+2. **S5（chunked prefill，作者 2026-10-04 立项）**：设计已定稿并过**两轮** P3 复评 ——
    `requirement` Included 8 / AC9；`design.md` D15/D16；`p5_s5_interface_spec.md`；`review.md` 的
    两节复评。第二遍复评把上一节的"P0 无"**改判为 BLOCK**（3 条 P0 + 3 条 P1），修订后作者同日确认：
    `graph_version` **bump 4 → 5**、术语**指针式登记**、三条缺口全部折入设计（见 `## Current Blockers`）。
    **子步进度（作者 2026-10-04 分三次点名）**：**S5-1 / S5-2 / S5-3 与 `step_limit` 修正全部已落码，
    全部未编译验证** —— 见 `## Implementation Plan` 的 P5-S5 小节。下一步是**真机窗口**：
-   编译（P5 Exit Gate）→ 跑 S4/S5 的用例 → 结果回填 `test_plan.md`（P6）。**进场前先看
-   `## Current Blockers` 的头条**：S5-2 的提交里有一处**编译错误**与三处缺陷（静态审查发现，未修）。
+  编译（P5 Exit Gate）→ 跑 S4/S5 的用例 → 结果回填 `test_plan.md`（P6）。**进场前先看
+  `## Current Blockers` 与 `## 判据对照`**：`TS-051` 六条 / `TS-052` 两条**均已修（未编译验证）**；
+  `TS-052` 发现 2 的修订（`chunk_limit` 取显式声明值）已落码（`5a43b6c`）——真机第一步就是编译它。
    **实现顺序（作者 2026-10-04 改判）**：S4 的真机测试先搁置、S5 的代码先做（共用同一张 packed 图）；
    真机窗口恢复后按 S4 → S5 一起验证。**交接用的 `next_session_prompt.md` 已按作者指令删除**，
    本节 + `review.md` 的两节复评即交接入口。
