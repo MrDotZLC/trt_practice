@@ -9,8 +9,13 @@ namespace mini_trt_llm {
 
 // 采样器公共参数（设备侧 API）。
 //
-// logits 与 token_ids 都是设备指针：Decode 自回归循环必须全程驻留显存，
-// 采样结果直接写回 device，不允许经过 host（AGENTS.md §3.A.3）。
+// **本结构体的所有指针字段都必须是设备可读地址**（kernel 直接解引用）。两个"显然"的：
+// `logits` 来自引擎输出、`token_ids` 是采样结果——Decode 自回归循环必须全程驻留显存，
+// 结果直接写回 device，不允许经过 host（AGENTS.md §3.A.3）。
+// 其余几个同样如此、但**容易被当成 host 数组**：`seeds` / `offsets` / `top_k` / `top_p` /
+// `eos_hit` 由 `LLMRunner` 上传到常驻设备缓冲（`UploadRowParams*` / 构造期的 `d_*`）后才交给
+// 采样器。传 host 数组的表现是真机 `illegal access`，或"读到垃圾随机流"这种不报错的错
+// （`TS-053` 的对账清单：这条原先没写明，2026-10-05 补上）。
 struct SamplerArgs {
     const void* logits = nullptr;  // [batch_size, vocab_size]，FP16 / FP32
     int32_t* token_ids = nullptr;  // [batch_size]，输出
@@ -21,20 +26,20 @@ struct SamplerArgs {
     // 这样测试可用固定 seed 复现，同时避免 host-device 频繁同步。
     uint64_t seed = 0;
     uint64_t offset = 0;
-    // **per-batch 的 seed（[batch_size]，调用方持有）**。
+    // **per-batch 的 seed（[batch_size]，调用方持有、设备缓冲）**。
     // 非空时 kernel 走 `Uniform01(seeds[row], offset, 0)`——**行号不进随机流**，于是同一请求
     // 无论落在批内哪一行、批次怎么组成，token 序列都逐位相同（AC1 对**所有**采样策略成立的前提，
     // 也是工业界的口径：随机性只由 (请求 seed, 步数) 决定）。
     // 为空时退化为旧的 `Uniform01(seed, offset, row)`，只服务单行 / 兼容路径。
     const uint64_t* seeds = nullptr;
-    // **per-batch 的随机步号（[batch_size]，调用方持有）**：非空时第 row 行用 `offsets[row]`，
+    // **per-batch 的随机步号（[batch_size]，调用方持有、设备缓冲）**：非空时第 row 行用 `offsets[row]`，
     // 为空则整批共用标量 `offset`。
     // 为什么必须逐行：连续批调度下，同一次引擎调用里各行的"已生成计数"不同（有的在采第 3 个
     // token、有的才第 0 个）。AC1 要求同一请求无论何时入批都逐位相同 → 随机流只能由
     // `(请求 seed, 该请求自己的步号)` 决定，批组成与行号都不许进哈希
     // （p5_s3_interface_spec.md §5；`BatchEqualsSequentialUnderScheduling` 的判据就是它）。
     const uint64_t* offsets = nullptr;
-    // 可选：设备侧"该行采到 EOS"的输出（`[batch_size]`，1 = 命中）。nullptr 表示不需要。
+    // 可选：设备缓冲里"该行采到 EOS"的输出（`[batch_size]`，1 = 命中）。nullptr 表示不需要。
     // 有了它，调度器每步只回读 batch_size 字节就能决定谁退出，不必把 token 拷回主机自己比 EOS
     // （见 design.md D12 与 p5_s3_interface_spec.md §4）。
     int8_t* eos_hit = nullptr;
@@ -45,11 +50,11 @@ struct SamplerArgs {
 // Top-K / Top-P 的 k 与 p 都是 per-batch tensor（Q7），以支持连续批处理中
 // 每个请求独立配置采样参数。
 struct TopKSamplerArgs : SamplerArgs {
-    const int32_t* top_k = nullptr;  // [batch_size]
+    const int32_t* top_k = nullptr;  // [batch_size]，设备缓冲（见 SamplerArgs 开头的可读侧说明）
 };
 
 struct TopPSamplerArgs : SamplerArgs {
-    const float* top_p = nullptr;  // [batch_size]
+    const float* top_p = nullptr;  // [batch_size]，设备缓冲（同上）
 };
 
 // Greedy：取 logits 最大值的下标，并列时取最小下标（与 torch.argmax 一致）。

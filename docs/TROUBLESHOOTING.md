@@ -3225,3 +3225,71 @@ grep '^file=' /tmp/mini_trt_llm_resnet18_onnx_fp32.engine.fingerprint   # 应变
      `n_positions` 真值（B1+A1）—— 校验条数不变，只有 ② 的来源变了。
 - **状态**：发现 1 与发现 2 **均已修**（发现 2 走的是"改设计契约"这条路：P2 文档 + P3 复评 + 代码），
   **全部未编译验证**；发现 1 的回归守卫 = `PagedKVCacheTest.AppendDecodeStepAdvancesMappedRowsOnly`。
+
+---
+
+## 53. [TS-053] REQ-016 静态自检：host 指针进设备侧的**全量对账**（0 处 P0；3 处契约/注释缺口已处理）
+
+- **日期**：2026-10-05
+- **类型**：**静态审查**（本机无编译器 / GPU）；作者点名"host 指针进设备 kernel 这一类 P0 的系统性扫查"。
+- **为什么要做这一轮**：`TS-052` 的发现 1 就是这一类（`AppendDecodeStep` 把 **host** `rows` 交给设备端
+  kernel → 真机 `illegal access`），而 S5 又改过三处 kernel 签名与四处调用点。真机上这类错误的表现
+  只有"illegal access / 结果随机"，每次往返都要重建引擎，所以值得在沙箱里用读代码的方式提前撞。
+- **判据（怎么判"该 host 还是该设备"）**：
+  1. 参数被 **kernel / enqueue / `SetTensorAddress`** 直接消费 → 必须是**设备可读**地址；
+  2. 参数只被 **host 代码**读（校验、host 镜像记账）→ 必须是 host 数组；
+  3. 参数在 host 侧被 `cudaMemcpyAsync(..., cudaMemcpyHostToDevice, stream)` **拷进常驻设备缓冲**、
+     之后交给 kernel → 传参时是 host 数组（**这正是最容易看错的一格**）。
+- **覆盖范围（做了哪些检查）**：`paged_kv_cache.{hpp,cpp}` 的三个写入口与其 kernel 实参、
+  `llm_runner.cpp` 的全部 `SetTensorAddress`（prefill / decode / packed 三处绑定）、
+  `LaunchFillPositionIds`、`SampleBatch` 的三个采样 launch、`PagedAttentionPlugin` /
+  `PackedAttentionPlugin` 的 `enqueue` 输入、以及建图期交给 TRT 的 host 权重指针。
+
+### 对账清单（`*` = 在 host 侧被 H2D 拷进设备缓冲）
+
+| 消费点 | 指针参数 | 期望侧 | 实际调用点 | 结论 |
+|---|---|---|---|---|
+| `WriteKVKernel` / `WriteKVPackedPrefillKernel` | `key` / `value` / `key_cache` / `value_cache` | 设备 | 引擎输出 `d_prefill_kv_` / cache 本体 | ✓ |
+| 同上 | `block_tables` / `context_lens` | 设备 | `kv_cache_->block_tables()` / `context_lens()` | ✓ |
+| 同上 | `rows` | 设备 | `rows_device_`（由 host 入参 `*rows` H2D 而来） | ✓ |
+| 同上 | `row_starts` | 设备 | `row_starts_device_`（由 `*row_starts` H2D 而来） | ✓ |
+| `LaunchAdvanceContextLens` | `rows` | 设备 | `rows_device_.data()`（`TS-052` 发现 1 的修法） | ✓ |
+| `LaunchFillPositionIds` | `context_lens` / `position_ids` | 设备 | `kv_cache_->context_lens()` / `d_position_` | ✓ |
+| 采样器三兄弟 | `logits` / `token_ids` / `seeds` / `offsets` / `eos_hit` / `top_k` / `top_p` | 设备 | 引擎输出 logits、`d_tokens_`/`d_step_tokens_`、`d_seeds_`、`d_offsets_`、`d_eos_hit_`、`d_top_k_`、`d_top_p_` | ✓ |
+| `Engine::SetTensorAddress`（prefill / decode / packed 共 3 组） | 全部输入输出 | 设备 | `d_*`（`DeviceBuffer`）、`kv_cache_->key_cache/value_cache`、`d_cu_seqlens_ctx_`、`d_context_seq_count_` | ✓ |
+| `PagedAttentionPlugin` / `PackedAttentionPlugin` 的 `enqueue` | 全部输入 + workspace | 设备 | TRT 给的张量地址 + workspace | ✓ |
+| `PagedKVCache::WritePrefillKV` / `AppendDecodeKV` / `AppendDecodeStep` 的 `*row_lengths` | `row_lengths` | **host** | 只参与 host 校验与 host 镜像记账，不进 kernel | ✓ |
+| 同上，入参 `*rows` / `*row_starts` | 同上 | **host** | 函数内部 H2D 到常驻缓冲后再给 kernel | ✓ |
+| 同上，入参 `cu_seqlens_ctx` | 同上 | **设备** | runner 传 `d_cu_seqlens_ctx_`（**不经 H2D**，直接给 kernel） | ✓ |
+| `addConstant` 的权重指针（`builder.cpp` / `gpt2_model_builder.cpp`） | `Weights.values` | host（**build 期契约允许**） | TRT 在 `buildSerializedNetwork` 期间拷贝；`attn_scale_value_` 存成成员正是为了让地址活到那时 | ✓ |
+| 其余 `cudaMemcpyAsync` | — | — | 全部显式带方向；循环内只有 D2D | ✓ |
+
+**表内没有任何一处"实际传错"**：0 处 P0。
+
+### 登记的缺口（都是注释 / 契约级，不是行为缺陷）—— **作者点名"先处理缺口"后已全部处理**
+
+1. **`llm_runner.cpp` 的注释与代码矛盾（S4 残留）**：`RunPackedMixedStep` 里
+   "目标行集 = 活跃表前缀（= 缓存前缀，走恒等映射）" 与**同一段上文**"S5：generation 段的行不再是
+   活跃前缀……所以显式给出目标 cache 行号"直接打架；代码传的是 `generation_rows_host`（由
+   `generation_active` 填），**代码是对的、注释是旧的**。这正是 `TS-051` 第 5 条的同一处。
+   **已改**：注释改为"目标行号 = `generation_rows_host[j]`（可能带洞），**不是** S4 的活跃表前缀 +
+   恒等映射"+ 一句"`rows` 是 host 数组、由 `AppendDecodeStep` 内部 H2D"。
+2. **同名参数在两层语义相反，公开入口的标注不全**：`rows` / `row_starts` 在
+   `paged_kv_cache_kernels.hpp`（`PagedKVWriteArgs`）里写的是"必须是设备可读地址"，而在
+   `paged_kv_cache.hpp` 的公开入口里它们是**host 数组**（函数内部 H2D）；`cu_seqlens_ctx` 反过来
+   （公开入口就是设备数组，kernel 直接读）。**复核时收窄了原判断**：`WritePrefillKV` 的 `rows`
+   其实**已经有**"host 数组"这句（旧注释第 113 行），真正缺标注的是 —— `WritePrefillKV` 的
+   `row_starts`（一个字都没写）与 `row_lengths`（没说明可读侧）、`AppendDecodeKV` / `AppendDecodeStep`
+   的 `rows`（没写）。当前所有调用点都对，但"读了一半文档、按另一层的意思传指针"会直接变成
+   `illegal access` —— 它就是 `TS-052` 发现 1 的土壤。**已改**：`WritePrefillKV` 的可读侧整段重写
+   （host: `rows`/`row_lengths`/`row_starts`；device: `cu_seqlens_ctx`；并点明与 kernel 层同名参数
+   的关系），`AppendDecodeKV` / `AppendDecodeStep` 各加一行指针侧说明（后者含"S5 分块下 `rows`
+   可能带洞、不再是活跃表前缀"）。
+3. **采样器的指针字段没写"设备可读"**：文件头原先只声明"`logits` 与 `token_ids` 都是设备指针"，
+   而 `seeds` / `offsets` / `top_k` / `top_p` / `eos_hit` 同样被 kernel 直接解引用却没写；
+   当前 5 个字段的调用点（`d_seeds_` / `d_offsets_` / `d_eos_hit_` / `d_top_k_` / `d_top_p_`）全对。
+   **已改**：把可读侧升成"**本结构体的所有指针字段都必须是设备可读地址**"的总则（并写明这几个
+   "容易被当成 host 数组"的字段由 `LLMRunner` 上传到常驻缓冲）+ 三个字段就地标"设备缓冲"。
+- **状态**：**0 处 P0**；三条缺口**已按作者 2026-10-05 的"先处理缺口"全部处理**，改动**纯注释**
+   （无行为变化，不影响 `graph_version` 与指纹）。改后用 `cpp-comment-style` 复核：公共 API 的参数
+   可读侧已写明、不留过时注释。

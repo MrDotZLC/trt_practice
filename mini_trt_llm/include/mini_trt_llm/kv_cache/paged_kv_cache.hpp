@@ -110,8 +110,13 @@ class PagedKVCache {
     // （源缓冲里真正有效的行数，不是 cache 已登记的序列数）。
     // **契约**：rows / row_lengths 必须非空、row_count > 0，rows[i] 落在 [0, batch_size())，
     // row_lengths[i] 落在 (0, tokens]。
-    // rows 是 host 数组；本函数把它拷进构造期备好的常驻设备缓冲，再交给 kernel
-    // （本函数只在 prefill 段被调用，不违反"解码循环内不得有 H2D"）。
+    // **指针的可读侧（别按 kernel 层的同名参数理解）**：`rows` / `row_lengths` / `row_starts`
+    // 是 **host 数组** —— `rows` 与 `row_starts` 由本函数拷进构造期备好的常驻设备缓冲再交给
+    // kernel，`row_lengths` 只参与 host 侧的校验与记账（不进 kernel）；而 **`cu_seqlens_ctx`
+    // 是设备数组**（kernel 直接读，不经 H2D）。kernel 层（`PagedKVWriteArgs`）把 `rows` /
+    // `row_starts` 写作"必须是设备可读地址" —— 那说的是**拷进去之后**的那一份。按错一侧传指针
+    // 的表现是真机 `illegal access`、只能靠重建引擎重跑（`TS-052` 发现 1 / `TS-053` 的对账清单）。
+    // （本函数只在 prefill 段被调用，不违反"解码循环内不得有 H2D"。）
     //
     // **为什么必须带映射**：S3 的活跃批下，本步要 prefill 的序列只是缓存已登记序列的一个子集
     // （B_new < 活跃序列数），按"已登记序列数"逐行写就会拿源缓冲里上一轮的残留行去覆盖
@@ -148,6 +153,7 @@ class PagedKVCache {
     // 按层推进会把它算成 n_layer 倍（真机上表现为第 3 个 token 就发散，
     // 因为第 1、2 个 token 只用到 prefill 写好的长度）。
     // `row_count`：本次只写前几行（引擎行 = 批内行）；S3 的生成段只有活跃表前缀有本步的 K/V。
+    // **指针侧**：`rows` 是 host 数组（本函数 H2D 后再交给 kernel），`cu_seqlens_ctx` 是设备数组。
     cudaError_t AppendDecodeKV(int32_t layer, const void* key, const void* value,
                                int32_t row_count, cudaStream_t stream,
                                const int32_t* cu_seqlens_ctx = nullptr,
@@ -160,6 +166,8 @@ class PagedKVCache {
     // **为什么需要 row_count**：S3 的生成段只装本步在跑的序列（活跃表前缀），本步刚入批的
     // context 行还没算出 decode 的 K/V —— 给它们也追加会写进**它们自己的块**、并把它们的语境
     // 长度多推一格（静默算错，p5_s3_interface_spec §3）。静态批传 batch_size() 即原行为。
+    // **指针侧**：`rows` 是 host 数组（内部 H2D；S5 分块下它是"本步能生成的行号，可能带洞"，
+    // 不再是活跃表前缀），`cu_seqlens_ctx` 是设备数组。
     cudaError_t AppendDecodeStep(const std::vector<const void*>& keys,
                                  const std::vector<const void*>& values, int32_t row_count,
                                  cudaStream_t stream,

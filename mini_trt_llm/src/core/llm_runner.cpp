@@ -1816,7 +1816,9 @@ bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
                 d_prefill_kv_[static_cast<size_t>(layer) * 2 + 1]->data();
         }
         // 源基址 = `cu_seqlens_ctx[B_ctx]`（= t_ctx），由 kernel 自己从设备读；
-        // 目标行集 = 活跃表前缀（= 缓存前缀，走恒等映射）。
+        // 目标行号 = `generation_rows_host[j]`（本步能生成的行在**活跃表**里的下标，可能带洞）——
+        // 这**不是** S4 的"活跃表前缀 + 恒等映射"：S5 下完成 prefill 的行可能被仍在分块的行隔开
+        // （见本段开头）。`rows` 是 host 数组，由 `AppendDecodeStep` 内部拷到设备后再交给 kernel。
         if (kv_cache_->AppendDecodeStep(
                 keys, values, packed_generation_rows_, nullptr,
                 static_cast<const int32_t*>(d_cu_seqlens_ctx_.data()), context_seq_count,

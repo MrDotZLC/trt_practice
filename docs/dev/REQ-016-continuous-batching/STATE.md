@@ -27,6 +27,21 @@
 
 ## Current Blockers
 
+- **【静态自检发现，0 处 P0；3 处缺口已按作者指令处理（纯注释）】`TS-053`：host 指针进设备侧的
+  全量对账**
+  （2026-10-05，作者点名"系统性扫查"；完整清单见 `docs/TROUBLESHOOTING.md` 的 `TS-053`）：
+  逐个核对"kernel launch 实参 / `SetTensorAddress` / 采样器 launch / 建图期权重指针"的**可读侧**，
+  **没有任何一处实际传错**（`TS-052` 发现 1 的修法在册）。三处**注释 / 契约级**缺口**已改**：
+  ① `llm_runner.cpp` 的 `RunPackedMixedStep` 里"目标行集 = 活跃表前缀（走恒等映射）"是 **S4 残留的
+  注释**，与同一段上文（以及代码传的 `generation_rows_host`）矛盾 —— 代码对、注释旧 → **已改成
+  "行号可能带洞、不是恒等映射"**；
+  ② `paged_kv_cache.hpp` 的公开入口里 `rows` / `row_starts` / `row_lengths` 是 **host 数组**
+  （内部 H2D），而 `cu_seqlens_ctx` 是**设备数组**，与 kernel 层（`PagedKVWriteArgs`）的同名参数
+  语义**相反** → **已把可读侧整段写明**（复核时收窄：`WritePrefillKV` 的 `rows` 原本已有这句，
+  真正缺的是 `row_starts` / `row_lengths` / `AppendDecodeKV` 与 `AppendDecodeStep` 的 `rows`）；
+  ③ 采样器的 `seeds` / `offsets` / `eos_hit` / `top_k` / `top_p` 被 kernel 直接解引用却没写设备侧
+  → **已升成"本结构体所有指针字段都必须是设备可读"的总则 + 就地标注**。
+  **三处改动都是纯注释、无行为变化**，不影响 `graph_version` 与指纹。
 - **【静态自检发现，**均已修**（未编译验证）】`TS-052`：1 处 P0 + 1 处 P1**（2026-10-05，REQ-016 静态自检包；
   本机无编译器 / GPU，纯读代码 + 机械配对；完整路径见 `docs/TROUBLESHOOTING.md` 的 `TS-052`）：
   1. **P0 —— `AppendDecodeStep` 把 host 的 `rows` 直接交给设备端 kernel**：`paged_kv_cache.cpp:440`
@@ -520,6 +535,11 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
   `gpt2_model_builder.cpp` 的整除硬失败、runner 读回与两项自检、两个夹具与 3 条新用例）。
   **不动建图 / profile → `graph_version` 保持 6**；指纹加项 → 带 `hyper_params.n_positions` 的模型的
   **全部 stage** 引擎各自重建一次（范围与理由见 `## Implementation Plan` 的"P5-S5 修订二"）
+- 2026-10-05: **`TS-053`（静态自检：host 指针进设备侧的全量对账）** —— 逐个核对 kernel 实参 /
+  `SetTensorAddress` / 采样器 launch / 建图期权重指针的可读侧：**0 处 P0**（`TS-052` 发现 1 的修法
+  在册）；登记三处**注释 / 契约级**缺口（S4 残留注释、公开入口里 `rows`/`row_starts` 是 host 而
+  `cu_seqlens_ctx` 是设备、采样器指针字段未标"设备可读"）→ **作者点名"先处理缺口"后三处均已改**
+  （纯注释，无行为变化；按 `cpp-comment-style` 复核）
 
 ---
 
