@@ -12,8 +12,9 @@
 2. 在以下操作前，必须停止并请求我的确认：删除文件、修改配置文件、执行 git commit（含任何形式的
    自动提交）与 git push、涉及外部网络的操作，以及下列两档文档与技能文件的修改。
    （AGENTS.md 本身仍按第 1 条的口令规则。）
-   - **提交口径**：需要提交时先提醒我并给出完整 commit msg 与文件清单，得到确认后才执行；
-     禁止 "add + commit" 连做（细则见技能的 Commit Rules）。
+   - **提交口径**：git commit 需先确认，**但我明确下令提交时可直接执行**（msg 与文件清单在**同一轮
+     回复**里给出，事后要改 msg 就 amend）；其余机制（禁止 "add + commit" 连做等）以技能的
+     Commit Rules 为唯一来源。
    - **文档口径（分级）**：**结构 / 契约类**——`requirement` / `analysis` / `design` / `review` /
      `*_interface_spec` / `PROGRESS`——**先确认再改**；
      **阶段状态回填类**——各 feature 的 `STATE` / `test_plan` / `benchmark*` / `summary` /
