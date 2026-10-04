@@ -179,7 +179,7 @@ packed 路径是 `T · V ≈ Σ L_i · V` —— 这正是"不等长批按真实
   （`cu_seqlens_ctx` + `context_seq_count`，默认 null/0 即现状），索引走 `row_base + batch` /
   `token_base + batch`，**workspace 槽位仍按段内 batch 下标**（归并 kernel 不用改）；
   本插件的 generation 段直接调 `LaunchPagedAttentionSplit`，`getWorkspaceSize` 改报 split-K 构建期上界。
-  **在改完之前，S4 不能当默认路径**（登记在 STATE.md 的 Current Blockers）。
+  **已落地（2026-10-04）**；真机编译窗口要重跑既有 decode 用例确认这次机械改动没动坏 S1/S2/S3 的 decode 路径。
 - A2：两个插件 + 图内按 `context_seq_count` 切片/合并。留作对照（若 A1 的 kernel 复杂度失控）。
 
 **profile**：packed 引擎的"token 维" `T ∈ [1, max_batch × max_prefill_seq_len]`，

@@ -19,7 +19,9 @@ inline constexpr char kPackedAttentionPluginVersion[] = "1";
 //
 // 一个 packed 张量里装两相，attention 按段分派两条 kernel：
 //   * context 段（前 B_ctx 条序列的**全部** token）→ varlen 因果自注意力（K/V 来自 packed 张量本身）；
-//   * generation 段（后 B_gen 行的 1 个 token）→ 分页注意力（K/V 来自分页缓存 + 当前 token 自包含）。
+//   * generation 段（后 B_gen 行的 1 个 token）→ 分页注意力（K/V 来自分页缓存 + 当前 token 自包含）；
+//     **复用 `PagedAttentionPlugin` 的 split-K**（REQ-014 的生产路径，见 `enqueue`），
+//     因此 `getWorkspaceSize` 报的是 split-K 的构建期上界，而不是 0。
 //
 // 输入（顺序即契约；全部 LINEAR）：
 //   0 query          [T, num_heads, head_size]        FP16 / FP32

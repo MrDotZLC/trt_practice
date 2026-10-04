@@ -42,11 +42,17 @@ __global__ void PagedAttentionDecodeKernel(
     const int32_t* __restrict__ context_lens, const T* __restrict__ key_new,
     const T* __restrict__ value_new, T* __restrict__ output, int32_t num_heads,
     int32_t num_kv_heads, int32_t head_size, int32_t block_size,
-    int32_t max_blocks_per_seq, float scale, bool has_current_token) {
+    int32_t max_blocks_per_seq, float scale, bool has_current_token,
+    const int32_t* __restrict__ cu_seqlens_ctx, int32_t context_seq_count) {
     __shared__ float reduce_scratch[kMaxWarps];
 
     const int32_t head = blockIdx.x;
     const int32_t batch = blockIdx.y;
+    // S4 混合批的索引基址：cu_seqlens_ctx 为空时基址为 0（S1/S2/S3 的 decode 路径，行为不变）；
+    // 非空时 generation 段排在 packed 张量的 context 段之后（见 PagedAttentionKernelArgs 的说明）。
+    const int32_t row_base = (cu_seqlens_ctx != nullptr) ? context_seq_count : 0;
+    const int32_t token_base =
+        (cu_seqlens_ctx != nullptr) ? cu_seqlens_ctx[context_seq_count] : 0;
     // GQA/MQA：一组 query head 共享同一个 kv head
     const int32_t kv_head = head / (num_heads / num_kv_heads);
 
@@ -54,14 +60,15 @@ __global__ void PagedAttentionDecodeKernel(
     const bool active = d < head_size;
 
     const T* query_row =
-        query + (static_cast<size_t>(batch) * num_heads + head) * head_size;
-    T* output_row = output + (static_cast<size_t>(batch) * num_heads + head) * head_size;
+        query + (static_cast<size_t>(token_base + batch) * num_heads + head) * head_size;
+    T* output_row =
+        output + (static_cast<size_t>(token_base + batch) * num_heads + head) * head_size;
 
     const float query_value = active ? ToFloat(query_row[d]) : 0.0f;
 
-    const int32_t context_len = context_lens[batch];
+    const int32_t context_len = context_lens[row_base + batch];
     const int32_t* block_table =
-        block_tables + static_cast<size_t>(batch) * max_blocks_per_seq;
+        block_tables + static_cast<size_t>(row_base + batch) * max_blocks_per_seq;
 
     float accumulator = 0.0f;
     float running_max = -CUDART_INF_F;
@@ -85,7 +92,7 @@ __global__ void PagedAttentionDecodeKernel(
         } else {
             // 当前 token 只有一份，不经过 block table
             const size_t kv_offset =
-                (static_cast<size_t>(batch) * num_kv_heads + kv_head) * head_size;
+                (static_cast<size_t>(token_base + batch) * num_kv_heads + kv_head) * head_size;
             key_row = key_new + kv_offset;
             value_row = value_new + kv_offset;
         }
@@ -133,7 +140,8 @@ __global__ void PagedAttentionSplitKernel(
     const T* __restrict__ value_new, float* __restrict__ workspace, int32_t num_heads,
     int32_t num_kv_heads, int32_t head_size, int32_t block_size,
     int32_t max_blocks_per_seq, float scale, bool has_current_token,
-    int32_t override_splits) {
+    int32_t override_splits, const int32_t* __restrict__ cu_seqlens_ctx,
+    int32_t context_seq_count) {
     __shared__ float reduce_scratch[kMaxWarps];
 
     const int32_t head = blockIdx.x;
@@ -143,7 +151,12 @@ __global__ void PagedAttentionSplitKernel(
     // 与 `PagedAttentionWorkspaceSlotOffset` 需要的 batch_size 同一来源，避免两处各传一份。
     const int32_t batch_size = gridDim.y;
 
-    const int32_t context_len = context_lens[batch];
+    // S4 混合批：行/token 基址（与单趟 kernel 同一套约定；workspace 槽位仍用段内 `batch`）
+    const int32_t row_base = (cu_seqlens_ctx != nullptr) ? context_seq_count : 0;
+    const int32_t token_base =
+        (cu_seqlens_ctx != nullptr) ? cu_seqlens_ctx[context_seq_count] : 0;
+
+    const int32_t context_len = context_lens[row_base + batch];
     const int32_t total_len = context_len + (has_current_token ? 1 : 0);
     const int32_t effective = PagedAttentionResolveSplits(total_len, override_splits);
     // 本 batch 不需要这么多片（或压根没有位置）→ 不读不写。stage-2 也只读 [0, effective)。
@@ -163,10 +176,10 @@ __global__ void PagedAttentionSplitKernel(
                                                                 batch_size, num_heads,
                                                                 head_size);
     const T* query_row =
-        query + (static_cast<size_t>(batch) * num_heads + head) * head_size;
+        query + (static_cast<size_t>(token_base + batch) * num_heads + head) * head_size;
     const float query_value = active ? ToFloat(query_row[d]) : 0.0f;
     const int32_t* block_table =
-        block_tables + static_cast<size_t>(batch) * max_blocks_per_seq;
+        block_tables + static_cast<size_t>(row_base + batch) * max_blocks_per_seq;
 
     float accumulator = 0.0f;
     float running_max = -CUDART_INF_F;
@@ -187,7 +200,7 @@ __global__ void PagedAttentionSplitKernel(
             value_row = value_cache + kv_offset;
         } else {
             const size_t kv_offset =
-                (static_cast<size_t>(batch) * num_kv_heads + kv_head) * head_size;
+                (static_cast<size_t>(token_base + batch) * num_kv_heads + kv_head) * head_size;
             key_row = key_new + kv_offset;
             value_row = value_new + kv_offset;
         }
@@ -234,15 +247,23 @@ __global__ void PagedAttentionMergeKernel(const float* __restrict__ workspace,
                                           const int32_t* __restrict__ context_lens,
                                           T* __restrict__ output, int32_t num_heads,
                                           int32_t head_size, bool has_current_token,
-                                          int32_t override_splits) {
+                                          int32_t override_splits,
+                                          const int32_t* __restrict__ cu_seqlens_ctx,
+                                          int32_t context_seq_count) {
     const int32_t head = blockIdx.x;
     const int32_t batch = blockIdx.y;
     const int32_t batch_size = gridDim.y;
     const int32_t d = threadIdx.x;
     const bool active = d < head_size;
 
-    T* output_row = output + (static_cast<size_t>(batch) * num_heads + head) * head_size;
-    const int32_t total_len = context_lens[batch] + (has_current_token ? 1 : 0);
+    // S4 混合批：workspace 槽位仍按段内 `batch`，只有**读 context_lens 与写 output** 要加基址
+    const int32_t row_base = (cu_seqlens_ctx != nullptr) ? context_seq_count : 0;
+    const int32_t token_base =
+        (cu_seqlens_ctx != nullptr) ? cu_seqlens_ctx[context_seq_count] : 0;
+
+    T* output_row =
+        output + (static_cast<size_t>(token_base + batch) * num_heads + head) * head_size;
+    const int32_t total_len = context_lens[row_base + batch] + (has_current_token ? 1 : 0);
     const int32_t effective = PagedAttentionResolveSplits(total_len, override_splits);
     if (effective <= 0) {
         // 与单趟 kernel 的兜底一致：没有任何位置可看时输出 0（那里是 `running_sum > 0` 判据）
@@ -345,7 +366,7 @@ cudaError_t LaunchPagedAttention(const PagedAttentionKernelArgs& args, cudaStrea
             static_cast<const __half*>(args.value_new),
             static_cast<__half*>(args.output), args.num_heads, args.num_kv_heads,
             args.head_size, args.block_size, args.max_blocks_per_seq, args.scale,
-            args.has_current_token);
+            args.has_current_token, args.cu_seqlens_ctx, args.context_seq_count);
     } else {
         PagedAttentionDecodeKernel<float><<<grid, block, 0, stream>>>(
             static_cast<const float*>(args.query),
@@ -355,7 +376,7 @@ cudaError_t LaunchPagedAttention(const PagedAttentionKernelArgs& args, cudaStrea
             static_cast<const float*>(args.value_new),
             static_cast<float*>(args.output), args.num_heads, args.num_kv_heads,
             args.head_size, args.block_size, args.max_blocks_per_seq, args.scale,
-            args.has_current_token);
+            args.has_current_token, args.cu_seqlens_ctx, args.context_seq_count);
     }
     return cudaGetLastError();
 }
@@ -399,11 +420,13 @@ cudaError_t LaunchPagedAttentionSplit(const PagedAttentionKernelArgs& args, void
             static_cast<const __half*>(args.value_new),
             static_cast<float*>(workspace), args.num_heads, args.num_kv_heads,
             args.head_size, args.block_size, args.max_blocks_per_seq, args.scale,
-            args.has_current_token, override_splits);
+            args.has_current_token, override_splits, args.cu_seqlens_ctx,
+            args.context_seq_count);
         PagedAttentionMergeKernel<__half><<<merge_grid, block, 0, stream>>>(
             static_cast<const float*>(workspace), args.context_lens,
             static_cast<__half*>(args.output), args.num_heads, args.head_size,
-            args.has_current_token, override_splits);
+            args.has_current_token, override_splits, args.cu_seqlens_ctx,
+            args.context_seq_count);
     } else {
         PagedAttentionSplitKernel<float><<<split_grid, block, 0, stream>>>(
             static_cast<const float*>(args.query),
@@ -413,11 +436,13 @@ cudaError_t LaunchPagedAttentionSplit(const PagedAttentionKernelArgs& args, void
             static_cast<const float*>(args.value_new),
             static_cast<float*>(workspace), args.num_heads, args.num_kv_heads,
             args.head_size, args.block_size, args.max_blocks_per_seq, args.scale,
-            args.has_current_token, override_splits);
+            args.has_current_token, override_splits, args.cu_seqlens_ctx,
+            args.context_seq_count);
         PagedAttentionMergeKernel<float><<<merge_grid, block, 0, stream>>>(
             static_cast<const float*>(workspace), args.context_lens,
             static_cast<float*>(args.output), args.num_heads, args.head_size,
-            args.has_current_token, override_splits);
+            args.has_current_token, override_splits, args.cu_seqlens_ctx,
+            args.context_seq_count);
     }
     return cudaGetLastError();
 }

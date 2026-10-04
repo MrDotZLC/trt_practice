@@ -46,6 +46,22 @@ struct PagedAttentionKernelArgs {
     float scale = 0.0f;  // 通常为 1/sqrt(head_size)
     bool is_half = false;
     bool has_current_token = false;
+    // **S4 混合批的索引基址（2026-10-04 加；默认值 = 加参数之前的行为）**。
+    //
+    // 为什么需要它：S4 把 context 段与 generation 段装进**同一个 packed 张量**，而 generation 段排在
+    // context 段之后 —— 于是这一段的行号不是 0：`row_base = context_seq_count`（按行输入的基准）、
+    // `token_base = cu_seqlens_ctx[context_seq_count]`（query / key_new / value_new / output 的 token 基准）。
+    // `token_base` 是**设备值**，宿主侧拿不到，所以只能由 kernel 自己读 ——
+    // 这也正是不能用"调用前把指针预先偏移"来解决的原因。
+    //
+    // 索引约定（三条 kernel 一致）：block_tables / context_lens / query / key_new / value_new / output
+    // 的行号都取 `base + batch`（`base` 取 row_base 或 token_base，见各 kernel 顶部）；
+    // **workspace 槽位仍按段内 `batch`**（混合调用里就是 `0..B_gen-1`）→ workspace 布局与归并的
+    // `batch_size` 口径都不变。
+    //
+    // 为 nullptr / 0 时与加参数之前**逐位一致**（S1/S2/S3 的 decode 路径就是这么用的）。
+    const int32_t* cu_seqlens_ctx = nullptr;
+    int32_t context_seq_count = 0;
 };
 
 // 启动 Decoding 阶段的 PagedAttention kernel。
