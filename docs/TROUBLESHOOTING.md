@@ -3345,3 +3345,35 @@ grep '^file=' /tmp/mini_trt_llm_resnet18_onnx_fp32.engine.fingerprint   # 应变
    `WritePrefillKVRejectsRowStartsWithoutPackedSource`（**反向**：带起点但无 packed 源 → 拒绝，
    且 host 记账与设备端长度都停在 0）。**改动不动图 / profile / 指纹**（`graph_version` 保持 6）。
 - **状态**：**0 处不满足**；1 处潜在陷阱**已修**（两道闸 + 两条用例），**未编译验证**。
+
+---
+
+## 55. [TS-055] REQ-016 静态自检：四节用例清单 ↔ 测试文件的"同名同序"核对（4/4 已对齐）
+
+- **日期**：2026-10-05
+- **类型**：**静态审查**（作者点名清单第 5 项）。触发：`test_plan.md` 的用例清单是 P6 回填的
+  打勾表，`STATE.md` 还写过"与 test_plan 的 S5 一节同名同序" —— 值得把这条当**可核性质**验一遍，
+  而不是只验 S5。
+- **核对对象与判据**：`test_plan.md` 的 S1 / S3 / S4 / S5 四节 ↔ 四个测试文件里的
+  `TEST(Suite, Name)`。三个量逐个比：**条数 / 名字集合 / 顺序**。文件侧只认
+  `^TEST\((\w+),\s*(\w+)\)`（即真正会被 gtest 收集的那些）。
+
+| 节 | 文件 | 条数 | 名字集合 | 顺序（核对前） | 处理 |
+|---|---|---|---|---|---|
+| S1 | `tests/test_llm_runner_batch.cpp` | 10 | 一致 | **不一致**：doc 把 `BatchEqualsSequentialWithTopP` 排第 2，文件里它是第 6 | doc 顺序对齐文件；顺手改掉陈旧的"（新建，8 条）"（S2 的 `FreeBlocks*` 两条早就列在表里了） |
+| S3 | `tests/test_llm_runner_scheduler.cpp` | 9 | 一致 | **不一致**：doc 把 `ContextSegmentOnlyCoversNewRows` 排第 3、`SequenceRetiresAndRowCompacts` 排第 4，文件里两者正好互换 | doc 顺序对齐文件 |
+| S4 | `tests/test_llm_runner_packed.cpp` | 8 | 一致 | **不一致**：`PackedWriteBackMapsCorrectly` 在 doc 里第 5、在文件里第 1 | doc 顺序对齐文件 |
+| S5 | `tests/test_llm_runner_chunked.cpp` | 12 | 一致 | 一致 ✓（12/12） | 无 |
+
+- **结论**：**名字集合与条数四节本来就全对**（S1 10 / S3 9 / S4 8 / S5 12）；差异只是**清单顺序**
+  与文件书写顺序不同。这不是缺陷（清单顺序不承载判据），但会让"逐个打勾"时来回翻，也不满足
+  "同名同序"这条性质 —— 所以**把顺序统一到文件**（文件是真正被执行的东西），并把这条性质写成
+  口径：`test_plan.md` 的 Integration Test 开头新增一段"清单顺序 = 文件里 `TEST` 的书写顺序；
+  名字/条数一一对应；真机按清单逐条打勾"，`Expected Result` 第 2 条也从"含 8 条新用例"改成
+  "按四节清单逐条打勾"。
+- **复核方式（可重放）**：用 `Select-String '^TEST\((\w+),\s*(\w+)\)'` 取文件顺序，与 `test_plan.md`
+  各节表格行反引号里的用例名逐位比较（本次四节 `条数一致/顺序一致` 全部为 True）。
+- **可选加固（未做）**：把这条比对做成 host 用例（读 `docs/dev/REQ-016-*/test_plan.md` + 测试源文件）。
+  本轮不做 —— 它要引入"测试依赖文档路径"这类新的脆弱点（`ctest` 的 CWD 与 `FindFile` 那套已经踩过
+  `TS-048`），收益与风险不成正比；当清单再增两节以上时再评估。
+- **状态**：**4/4 已对齐**；改动**纯文档**（不动代码、不动 `graph_version` 与指纹）。

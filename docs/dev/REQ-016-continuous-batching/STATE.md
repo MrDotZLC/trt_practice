@@ -27,6 +27,13 @@
 
 ## Current Blockers
 
+- **【静态自检：4/4 已对齐】`TS-055`：四节用例清单 ↔ 测试文件的"同名同序"核对**（2026-10-05，
+  作者点名清单第 5 项；完整表见 `docs/TROUBLESHOOTING.md` 的 `TS-055`）：`test_plan.md` 的
+  S1 / S3 / S4 / S5 四节 ↔ 四个测试文件的 `TEST` 名，按**条数 / 名字集合 / 顺序**逐位比：
+  名字与条数**本来就是一致的**（S1 10 / S3 9 / S4 8 / S5 12），差异只在**清单顺序**（S1 有 1 条位置、
+  S3 有 2 条互换、S4 有 1 条位置；S5 本来就一致）。已把**顺序统一到文件**并写成口径
+  （"清单顺序 = 文件里 `TEST` 的书写顺序；真机按清单逐条打勾"），同时改掉 `Expected Result` 里陈旧的
+  "含 8 条新用例"。**纯文档改动**，不碰代码 / `graph_version` / 指纹。
 - **【静态自检：0 处不满足；1 处潜在陷阱已按作者指令修复】`TS-054`：`rows` 的"默认恒等"全量对账**
   （2026-10-05，作者点名清单第 4 项；完整表见 `docs/TROUBLESHOOTING.md` 的 `TS-054`）：
   四处消费者（`WritePrefillKV` / `AppendDecodeKV` / `AppendDecodeStep` / `AdvanceContextLensKernel`）
@@ -558,6 +565,10 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
   （`row_starts` 在非 packed 路径被静默忽略）→ **作者点名"先修潜在陷阱"后已修**：两道闸
   （`WritePrefillKV` 入口拒绝 + `LaunchWriteKV` 兜底）+ 两条用例（正向首次覆盖 `row_starts`、反向拒绝），
   **未编译验证**
+- 2026-10-05: **`TS-055`（静态自检：四节用例清单的"同名同序"核对）** —— S1/S3/S4/S5 四节 ↔ 四个测试
+  文件的 `TEST` 名逐位比对：名字与条数本来就一致（10/9/8/12），**顺序**在 S1/S3/S4 三节不同 →
+  把清单顺序统一到文件，并在 `test_plan.md` 的 Integration Test 写明这条口径（另修掉 `Expected Result`
+  里陈旧的"8 条"）；**纯文档改动**
 
 ---
 

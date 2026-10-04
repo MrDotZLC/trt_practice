@@ -54,16 +54,20 @@ runner 侧用例更早能验）。用例清单以该文件为准，这里只登�
 
 ## Integration Test
 
-`tests/test_llm_runner_batch.cpp`（新建，8 条）：
+> **三节清单的口径（2026-10-05 核对，见 `TROUBLESHOOTING.md` 的 `TS-055`）**：下面各节的**顺序 =
+> 对应测试文件里 `TEST` 的书写顺序**，名字与条数与文件一一对应（S1 10 条 / S3 9 条 / S4 8 条 /
+> S5 12 条）。真机按本清单逐条打勾即可，不必回文件里对顺序；P6 的回填也按这张表。
+
+`tests/test_llm_runner_batch.cpp`（新建；本节列出 10 条，其中 `FreeBlocks*` 两条属 S2）：
 
 | 用例 | 判据 |
 |---|---|
 | `BatchEqualsSequential` | 批量与逐条单跑**逐 token 逐位相同**（贪心，AC1） |
-| `BatchEqualsSequentialWithTopP` | 同上但走 Top-P 随机路径——锁死"随机流与批位置无关"（AC1） |
 | `BatchSingleRowMatchesGenerate` | B=1 时 `GenerateBatch` == `Generate`（AC5） |
 | `RejectsUnequalPromptLengths` | 不等长整批拒绝（D2=A） |
 | `RejectsBatchOverMaxBatch` | 超 `max_batch` 由入口拦下 |
 | `RejectsMixedSamplingStrategy` | 批内混策略被拒（S1 收窄） |
+| `BatchEqualsSequentialWithTopP` | 同上但走 Top-P 随机路径——锁死"随机流与批位置无关"（AC1） |
 | `RejectsTopKOverFastMax` | `top_k > kTopKFastMaxK` 被拒，**不出现 token = -1** |
 | `RejectsDuplicateSeqId` | `seq_id` 批内重复被拒 |
 | `FreeBlocksReturnAfterBatch`（S2） | 一次批量调用后空闲块数**回到调用前水位**（AC3） |
@@ -78,8 +82,8 @@ runner 侧用例更早能验）。用例清单以该文件为准，这里只登�
 |---|---|
 | `ContextPassDoesNotTouchInactiveSequences` | 只映射到第 1 行的写回，第 0 行**逐字节不变**（cache 层）；反向自证"确实写了第 1 行" |
 | `WriteBackRowsMapCorrectly` | `RowOf()` 与行映射一致；`rows = {2}` 时 K/V 落到 seq 11 自己的块，未映射行的长度不动 |
-| `ContextSegmentOnlyCoversNewRows` | `context_rows == 2 && prefill_calls == 2`（整批跑会变成 3）—— 守门用例的 runner 层同伴 |
 | `SequenceRetiresAndRowCompacts` | 3 条 / `max_batch = 2` → 必须"退出→准入"；结果逐位等于单跑；块全归还 |
+| `ContextSegmentOnlyCoversNewRows` | `context_rows == 2 && prefill_calls == 2`（整批跑会变成 3）—— 守门用例的 runner 层同伴 |
 | `UnequalPromptLengthsInFlight` | AC2：长度 4 与 6 同批（右填充），逐条与单跑逐位相同 |
 | `EosRetiresImmediately` | `max_batch = 1`，同一组请求跑两遍自校准：`steps(设 EOS) + 4 ≤ steps(不设 EOS)`（差值下界给异步回读留余量），且两遍的第二条 token 逐位相同；EOS 不进结果 |
 | `DeterminismWithArrivalSteps` | 换一组 `arrival_step`（Top-P 随机流）→ 逐条逐位相同（锁 per-row 随机步号） |
@@ -95,11 +99,11 @@ runner 侧用例更早能验）。用例清单以该文件为准，这里只登�
 
 | 用例 | 判据 |
 |---|---|
+| `PackedWriteBackMapsCorrectly` | cache 层：packed 源（**行长不等**）+ 行映射的写回落到各自序列自己的块，逐行长度正确 |
 | `PackedEqualsSequential` | AC1 在 packed 路径内部成立：packed 批跑 == 单请求跑（Top-P 随机流也逐位相同） |
 | `MixedStepContextAndGeneration` | **核心场景**：同一步里既有新入批的 context 行、又有在跑的 generation 行，两者结果都对 |
 | `ContextTokensPrecedeGeneration` | 打包顺序（context token 在前）；由构造保证，用对顺序敏感的场景兜住 |
 | `CuSeqlensBoundaryCases` | `context_seq_count == 0`（纯 generation）与首步纯 context 两种极端都发生过且结果对 |
-| `PackedWriteBackMapsCorrectly` | cache 层：packed 源（**行长不等**）+ 行映射的写回落到各自序列自己的块，逐行长度正确 |
 | `PackedMetadataFollowsPackedOrder` | `block_tables` / `context_lens` 按 packed 行序重建（照 S3 直传镜像会让 generation 行读到别人的块） |
 | `PackedShortSequenceNotPenalized` | AC7 的可观测部分：同批长度差很大时短序列结果不受影响（代价那条属 P4/P7） |
 | `FallbackSwitchKeepsResults` | AC8：回退到 `kPaddedTwoPhase` 后仍各自成立（不要求跨路径逐位相同） |
@@ -193,7 +197,8 @@ design.md 的 5 条不变量，逐条对到当前代码（2026-10-03 静态核�
 ## Expected Result
 
 1. 沙箱：静态检查全过（已完成）——**不等于能编译**。
-2. 真机：`cmake --build build -j` 通过、无新增 warning；`mini_trt_llm_tests` 全绿（含 8 条新用例）。
+2. 真机：`cmake --build build -j` 通过、无新增 warning；`mini_trt_llm_tests` 全绿，并按本文件
+   S1 / S3 / S4 / S5 四节的清单逐条打勾（清单与测试文件名、条数、顺序已对齐，见 `TS-055`）。
 3. 不变量 1 / 2 / 4 的待补项落地后，对应断言在真机通过。
 
 ## Actual Result
