@@ -11,15 +11,6 @@
 
 namespace mini_trt_llm {
 
-// **测试专用**：覆盖 chunked prefill（S5）的 `chunk_limit`。`<= 0` 表示不覆盖（生产路径的默认值）。
-//
-// 为什么需要它：`chunk_limit` 由引擎 profile 推导、**不暴露给调用方**（design.md D16 /
-// `p5_s5_interface_spec.md` §2），而 AC9 的用例要在"1 / 中间值 / ≥ prompt_len"三种切法下
-// 对拍同一条 prompt。约定与 `SetPagedAttentionNumSplitsOverride` 一致：**生产路径从不设置**，
-// 测试侧用 RAII 守卫设置与恢复（见 test_plan.md 的 S5 节）。
-void SetChunkLimitOverride(int32_t chunk_limit) noexcept;
-int32_t ChunkLimitOverride() noexcept;
-
 // LLM 自回归生成 Runner：Prefill → Decode 循环 → 采样。
 //
 // 只做 token-id 级别的生成（收 token id、还 token id），因此**不依赖 tokenizer**——
@@ -59,6 +50,18 @@ class LLMRunner {
         // `0` = 未声明：**packed 模式下构造期直接拒绝**（"不许猜默认值"）；padding 两段式路径下
         // 不检查（那条路径的 S 由引擎 profile 兜住：越界时 `SetInputShape` 会显式失败）。
         int32_t max_positions = 0;
+        // 单步每序列最多送多少 token（= 建图时的 `EngineBuilder::Config::max_prefill_seq_len`，
+        // **两处必须给同一个值**）。S5 的 `chunk_limit` 就是它 —— **唯一来源**（不再从 profile
+        // 反推；见 `p5_s5_interface_spec.md` §2 的 2026-10-05 修订）。
+        //
+        // **只在 packed 模式下有语义**：非 packed 路径（`kPaddedTwoPhase`）**必须留 0** —— runner
+        // 不读也不校验它，填非 0 值没有任何效果（写明是为了避免"填了值却没效果"的困惑）。
+        // packed 模式下**必填**，并过五条交叉校验（构造期，任一条不过即拒绝并打印实际值与上界）：
+        // ① ≥ 1；② ≤ `max_positions`；③ `L × block_tables.dim0.max ≤ input_ids.dim1.max`
+        // （保证每步 Σ 每行 chunk 不越出引擎 profile 的 T 上界）；④ ≤ 插件上限
+        // `kPackedAttentionMaxContextSeqLen`；⑤ profile 查询必须成功（引擎是上界的裁决者）。
+        // 完整口径（含"单一来源 = 下游单一、声明侧两处"）见 spec §2。
+        int32_t max_prefill_seq_len = 0;
         // 与引擎激活精度一致；不一致时 PagedAttention 会按错误宽度读 cache。
         bool is_half = false;
         // 单次批量调用的最大序列数（S1：静态批）。
@@ -269,9 +272,9 @@ class LLMRunner {
     DeviceBuffer d_packed_block_tables_;   // [max_batch, max_blocks_per_seq] int32（**按 packed 行序**）
     DeviceBuffer d_packed_context_lens_;   // [max_batch] int32（同上，**推进前**的值）
     // ---- S5 chunked prefill ----
-    // 每步最多送多少 prompt token（**由引擎 profile 推导，不暴露给调用方**；构造期定，之后只读）。
-    // 只在 `prefill_mode == kPackedMixed` 时有意义；推导失败或越界时构造期直接拒绝（`valid_ = false`）。
-    // 测试可通过 `SetChunkLimitOverride` 覆盖（见文件头的说明）。
+    // 每步最多送多少 prompt token（构造期从 `Config::max_prefill_seq_len` 抄一份，之后只读）。
+    // 只在 `prefill_mode == kPackedMixed` 时有意义；该字段未声明 / 越界 / 交叉校验不过时构造期直接
+    // 拒绝（`valid_ = false` —— 见构造期那五条的注释与 spec §2）。
     int32_t chunk_limit_ = 0;
     // 本步 packed 的两段行数（由 `RunPackedMixedStep` 填，供 `SchedulerStats` 与结果落位读）。
     // S5 之后两段**不再按活跃表前缀切**：context 段 = 本步拿到 chunk 的行，generation 段 = 本步

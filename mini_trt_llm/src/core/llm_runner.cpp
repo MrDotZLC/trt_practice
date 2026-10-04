@@ -48,14 +48,7 @@ class SequenceScope {
     std::vector<int32_t> ids_;
 };
 
-// **测试专用**的 chunk_limit 覆盖值（说明见 hpp）：生产路径恒为 0（= 不覆盖，用引擎 profile 推导）。
-int32_t g_chunk_limit_override = 0;
-
 }  // namespace
-
-void SetChunkLimitOverride(int32_t chunk_limit) noexcept { g_chunk_limit_override = chunk_limit; }
-
-int32_t ChunkLimitOverride() noexcept { return g_chunk_limit_override; }
 
 LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engine,
                      std::shared_ptr<Engine> decode_engine,
@@ -191,29 +184,57 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
         }
     }
 
-    // ---- S5：chunked prefill 的 chunk_limit（构造期从引擎 profile 推导，不暴露给调用方）----
-    // 取 prefill 的 token 维上界：packed 图的 `input_ids` 是 [1, T]，所以是第 1 维的 kMAX。
-    // **为什么不从 Config 要一个字段**：那会与真实建的图漂移；项目既有纪律是"按对方查询、
-    // 不按配置假定"（workspace 版见 `paged_attention_split.hpp` 与 `PROGRESS.md` §2.15）。
-    // 推导失败或越界一律**构造期拒绝**（兜底纪律：不许静默退到慢路径，也不许猜一个默认值）。
+    // ---- S5：chunk 上限 = **调用方声明的单步 per-row 上界**（2026-10-05 修订）----
+    // `chunk_limit` 不再从 profile 反推，而是取 `Config::max_prefill_seq_len`（与建图侧同名同值）；
+    // profile 查询降级为**校验**：引擎是上界的裁决者，调用方只表达意图 —— 依据
+    // `p5_s5_interface_spec.md` §2 的五条交叉校验（①～⑤）。
     if (config_.prefill_mode == Config::PrefillMode::kPackedMixed) {
-        const int32_t from_profile = prefill_engine_->GetProfileDim(
+        // ① 未声明（`0` 是"未声明"的哨兵，不是合法值）→ 拒绝，不猜默认值。
+        if (config_.max_prefill_seq_len <= 0) {
+            MINI_TRT_LOG_ERROR("LLMRunner: packed mode requires Config::max_prefill_seq_len"
+                               " (单步每序列 token 上界) —— 未声明就拒绝，不猜默认值");
+            return;
+        }
+        // ② 不能超过位置表上界（否则分块后的绝对位置会越过 `n_positions`）。
+        if (config_.max_prefill_seq_len > config_.max_positions) {
+            MINI_TRT_LOG_ERROR("LLMRunner: Config::max_prefill_seq_len "
+                               << config_.max_prefill_seq_len << " exceeds Config::max_positions "
+                               << config_.max_positions);
+            return;
+        }
+        // ④ 插件侧上界（kernel 的 `__shared__ s_scores[]` 大小，见 spec §2）。
+        if (config_.max_prefill_seq_len > kPackedAttentionMaxContextSeqLen) {
+            MINI_TRT_LOG_ERROR("LLMRunner: Config::max_prefill_seq_len "
+                               << config_.max_prefill_seq_len
+                               << " exceeds the plugin bound "
+                               << kPackedAttentionMaxContextSeqLen);
+            return;
+        }
+        // ⑤ profile 查询失败 → 拒绝（不许退回猜测的默认值）。
+        const int32_t tokens_max = prefill_engine_->GetProfileDim(
             "input_ids", nvinfer1::OptProfileSelector::kMAX, 1);
-        if (from_profile <= 0) {
-            MINI_TRT_LOG_ERROR("LLMRunner: cannot derive chunk_limit from the prefill profile "
-                               "(input_ids dim 1 = " << from_profile << ")");
+        const int32_t rows_max = prefill_engine_->GetProfileDim(
+            "block_tables", nvinfer1::OptProfileSelector::kMAX, 0);
+        if (tokens_max <= 0 || rows_max <= 0) {
+            MINI_TRT_LOG_ERROR("LLMRunner: cannot query the packed profile bounds"
+                               " (input_ids dim 1 = " << tokens_max << ", block_tables dim 0 = "
+                                                      << rows_max << ")");
             return;
         }
-        const int32_t declared = ChunkLimitOverride();
-        if (declared > from_profile) {
-            MINI_TRT_LOG_ERROR("LLMRunner: chunk_limit override " << declared
-                               << " exceeds the engine profile bound " << from_profile);
+        // ③ 每步 Σ 每行 chunk ≤ 引擎 profile 的 T 上界（"多行同批不越出形状"的充分条件）。
+        const int64_t worst_step_tokens =
+            static_cast<int64_t>(config_.max_prefill_seq_len) * rows_max;
+        if (worst_step_tokens > tokens_max) {
+            MINI_TRT_LOG_ERROR("LLMRunner: Config::max_prefill_seq_len "
+                               << config_.max_prefill_seq_len << " × rows_max " << rows_max
+                               << " = " << worst_step_tokens
+                               << " exceeds the profile token bound " << tokens_max);
             return;
         }
-        chunk_limit_ = declared > 0 ? declared : from_profile;
+        chunk_limit_ = config_.max_prefill_seq_len;
         MINI_TRT_LOG_INFO("LLMRunner: chunk_limit = " << chunk_limit_
-                        << (declared > 0 ? " (test override)" : " (from engine profile)")
-                        << ", profile bound = " << from_profile);
+                        << " (declared); profile bounds: T_max = " << tokens_max
+                        << ", rows_max = " << rows_max);
     }
     valid_ = true;
 }

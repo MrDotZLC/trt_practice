@@ -26,8 +26,8 @@ using test_support::kVocab;
 // S5-3 用例（chunked prefill：长 prompt 跨多步分批）。
 //
 // **为什么单独一个文件**（而不是并进 `test_llm_runner_packed.cpp`）：
-//   ① 这里的夹具是"一个引擎文件 + **每个切法一个 runner**"——`chunk_limit` 只在 `LLMRunner`
-//      构造期被读一次，AC9 的三种切法没法在同一个 runner 上跑；packed 文件的夹具只有单 runner。
+//   ① 这里的夹具是"一个引擎文件 + **每个切法一个 runner**"——切法 = `Config::max_prefill_seq_len`
+//      （**构造期**字段，之后只读），AC9 的三种切法没法在同一个 runner 上跑；packed 文件的夹具只有单 runner。
 //   ② `test_plan.md` 已把这组登记成 `LlmRunnerChunkedTest.*`，文件与用例名一一对应最省心。
 //   ③ `tests/CMakeLists.txt` 用 `file(GLOB *.cpp)` 收源文件，新增文件不需要改构建脚本。
 //
@@ -44,18 +44,6 @@ constexpr int32_t kMaxBatch = 4;
 // 单序列能容纳的 token 数（每序列块数 × 块大小）。用例拿它当"池容量"上界：
 // prompt_len + max_new 超过它的请求永远装不下，入口就该拒。
 constexpr int32_t kTokensPerSeq = kBlocksPerSeq * kBlockSize;  // 16
-
-// `SetChunkLimitOverride` 是**进程级**状态，且只在 `LLMRunner` 构造期被读一次：一个用例要跑多种
-// 切法就得建多个 runner，构造时各拿各的值。这个守卫保证构造完立刻复位，值不泄漏给同进程的
-// 下一条用例（先例：`paged_attention_test_support.hpp` 的 `ScopedSplitsOverride`）。
-class ScopedChunkLimitOverride {
- public:
-    explicit ScopedChunkLimitOverride(int32_t limit) { SetChunkLimitOverride(limit); }
-    ~ScopedChunkLimitOverride() { SetChunkLimitOverride(0); }
-
-    ScopedChunkLimitOverride(const ScopedChunkLimitOverride&) = delete;
-    ScopedChunkLimitOverride& operator=(const ScopedChunkLimitOverride&) = delete;
-};
 
 struct ChunkedFixture {
     Logger logger;
@@ -88,7 +76,8 @@ ChunkedFixture MakeChunkedFixture(const std::string& name, int32_t max_batch) {
     return fixture;
 }
 
-LLMRunner::Config ChunkedRunnerConfig(int32_t max_batch, int32_t max_positions) {
+LLMRunner::Config ChunkedRunnerConfig(int32_t max_batch, int32_t max_prefill_seq_len,
+                                      int32_t max_positions) {
     LLMRunner::Config config;
     config.num_layers = kLayers;
     config.num_kv_heads = kHeads;
@@ -99,20 +88,22 @@ LLMRunner::Config ChunkedRunnerConfig(int32_t max_batch, int32_t max_positions) 
     config.is_half = false;
     config.vocab_size = kVocab;
     config.max_batch = max_batch;
-    // packed 模式下必给（runner 查不到位置表长度，见 Config::max_positions）。
+    // packed 模式下两个值都必给（runner 都查不到）：位置表长度 + 单步 per-row 上界（= 切法）。
     config.max_positions = max_positions;
+    config.max_prefill_seq_len = max_prefill_seq_len;
     config.prefill_mode = LLMRunner::Config::PrefillMode::kPackedMixed;
     return config;
 }
 
-// 在**指定切法**下造一个 runner。`chunk_limit` 只在构造期从覆盖值读入，之后只读。
+// 在**指定切法**下造一个 runner。切法 = `Config::max_prefill_seq_len`（构造期字段，之后只读；
+// 2026-10-05 起取代了原先的 `SetChunkLimitOverride` 进程级钩子，见 `p5_s5_interface_spec.md` §2）。
 // `max_positions` 默认就是本夹具的位置表长度；只有 `ChunkLimitRejectedConfigs` 会故意给别的值。
 std::unique_ptr<LLMRunner> MakeRunner(const ChunkedFixture& fixture, int32_t max_batch,
-                                      int32_t chunk_limit, int32_t max_positions = kPositions) {
-    ScopedChunkLimitOverride scope(chunk_limit);
+                                      int32_t max_prefill_seq_len,
+                                      int32_t max_positions = kPositions) {
     auto engine = std::make_shared<Engine>(fixture.engine_path, fixture.logger);
-    return std::make_unique<LLMRunner>(ChunkedRunnerConfig(max_batch, max_positions), engine,
-                                       engine, nullptr);
+    return std::make_unique<LLMRunner>(
+        ChunkedRunnerConfig(max_batch, max_prefill_seq_len, max_positions), engine, engine, nullptr);
 }
 
 LLMRunner::GenerateOptions GreedyOptions(int32_t max_new_tokens) {
@@ -258,9 +249,9 @@ TEST(LlmRunnerChunkedTest, ChunkedPositionsAreAbsolute) {
     const int32_t kMaxNew = 3;
     const std::vector<int64_t> prompt = MakePrompt(kPromptLen);
 
-    std::unique_ptr<LLMRunner> chunked = MakeRunner(fixture, /*max_batch=*/1, /*chunk_limit=*/1);
+    std::unique_ptr<LLMRunner> chunked = MakeRunner(fixture, /*max_batch=*/1, /*max_prefill_seq_len=*/1);
     std::unique_ptr<LLMRunner> whole =
-        MakeRunner(fixture, /*max_batch=*/1, /*chunk_limit=*/kPositions);
+        MakeRunner(fixture, /*max_batch=*/1, /*max_prefill_seq_len=*/kPositions);
     ASSERT_TRUE(chunked->ok());
     ASSERT_TRUE(whole->ok());
 
@@ -296,7 +287,7 @@ TEST(LlmRunnerChunkedTest, ChunkBoundaryDoesNotDisturbOthers) {
     ChunkedFixture fixture = MakeChunkedFixture("chunked_boundary", kMaxBatch);
     ASSERT_TRUE(fixture.ok);
 
-    std::unique_ptr<LLMRunner> runner = MakeRunner(fixture, /*max_batch=*/2, /*chunk_limit=*/2);
+    std::unique_ptr<LLMRunner> runner = MakeRunner(fixture, /*max_batch=*/2, /*max_prefill_seq_len=*/2);
     ASSERT_TRUE(runner->ok());
 
     std::vector<LLMRunner::SchedulerRequest> requests;
@@ -328,8 +319,8 @@ TEST(LlmRunnerChunkedTest, ChunkedShortPromptsUnchanged) {
     requests.push_back(MakeRequest(MakePrompt(kPromptLen), GreedyOptions(kMaxNew), 0));
     requests.push_back(MakeRequest(MakePrompt(kPromptLen, /*base=*/15), GreedyOptions(kMaxNew), 0));
 
-    std::unique_ptr<LLMRunner> whole = MakeRunner(fixture, /*max_batch=*/2, /*chunk_limit=*/8);
-    std::unique_ptr<LLMRunner> chunked = MakeRunner(fixture, /*max_batch=*/2, /*chunk_limit=*/2);
+    std::unique_ptr<LLMRunner> whole = MakeRunner(fixture, /*max_batch=*/2, /*max_prefill_seq_len=*/8);
+    std::unique_ptr<LLMRunner> chunked = MakeRunner(fixture, /*max_batch=*/2, /*max_prefill_seq_len=*/2);
     ASSERT_TRUE(whole->ok());
     ASSERT_TRUE(chunked->ok());
 
@@ -413,7 +404,7 @@ TEST(LlmRunnerChunkedTest, ChunkedSamplingRowSetIsCompacted) {
     ChunkedFixture fixture = MakeChunkedFixture("chunked_sample_rows", kMaxBatch);
     ASSERT_TRUE(fixture.ok);
 
-    std::unique_ptr<LLMRunner> runner = MakeRunner(fixture, /*max_batch=*/2, /*chunk_limit=*/2);
+    std::unique_ptr<LLMRunner> runner = MakeRunner(fixture, /*max_batch=*/2, /*max_prefill_seq_len=*/2);
     ASSERT_TRUE(runner->ok());
 
     std::vector<LLMRunner::SchedulerRequest> requests;
@@ -440,7 +431,7 @@ TEST(LlmRunnerChunkedTest, ChunkedRetireAndBlocks) {
     ChunkedFixture fixture = MakeChunkedFixture("chunked_blocks", kMaxBatch);
     ASSERT_TRUE(fixture.ok);
 
-    std::unique_ptr<LLMRunner> runner = MakeRunner(fixture, /*max_batch=*/2, /*chunk_limit=*/2);
+    std::unique_ptr<LLMRunner> runner = MakeRunner(fixture, /*max_batch=*/2, /*max_prefill_seq_len=*/2);
     ASSERT_TRUE(runner->ok());
     const int32_t free_before = runner->NumFreeKvBlocks();
     ASSERT_GT(free_before, 0);
@@ -468,9 +459,14 @@ TEST(LlmRunnerChunkedTest, ChunkedRetireAndBlocks) {
 
 // 三组判据：① 非法 Config 在构造期（任何引擎 / 显存动作之前）就被拒 —— 这一段**不需要 GPU**，
 // 沙箱里也真的跑过（放在 skip 之前，且用 ASSERT：失败会直接以"红"收场，不会被后面的 skip 吞掉）；
-// ② 真机段 · 构造期拒绝：`chunk_limit` 越界、`max_positions` 没给 / 越界 —— 覆盖值 = 上界必须
-// **接受**（自证"拒绝的是越界，不是覆盖本身"）；③ 真机段 · 入口拒绝：请求需要的位置超过
-// `max_positions` 时必须失败。判据是"**没有静默换路**"，错误信息带实际值与上界（日志不进判据）。
+// ② 真机段 · 构造期拒绝：`max_prefill_seq_len`（切法）**未声明** / 越界、`max_positions` 未声明 /
+// 越界 —— 声明值 = 上界必须**接受**（自证"拒绝的是越界，不是字段本身"）；③ 真机段 · 入口拒绝：
+// 请求需要的位置超过 `max_positions` 时必须失败。判据是"**没有静默换路**"，错误信息带实际值与上界。
+//
+// **本夹具的覆盖说明（诚实登记）**：交叉校验 ③（`L × rows_max ≤ T_max`）在本夹具里**无法独立触发**
+// —— rows_max = `max_batch` = 4、T_max = 4 × 16 = 64 ⇒ ③ 等价于 `L ≤ 16`，而 `max_positions` 的
+// 上界（池容量 16）先把它拦下（② 先报）。要独立触发 ③ 需要 `n_positions ≠ max_prefill_seq_len` 的
+// 真实配置（留到 P6 的真机窗口）；这里只断言"越界被拒 + 边界值被接受"。
 TEST(LlmRunnerChunkedTest, ChunkLimitRejectedConfigs) {
     // ① 非法 Config（全 0）：构造期第一道校验就拒绝，不碰引擎、不碰显存。
     LLMRunner::Config bogus;
@@ -481,38 +477,41 @@ TEST(LlmRunnerChunkedTest, ChunkLimitRejectedConfigs) {
     ChunkedFixture fixture = MakeChunkedFixture("chunked_reject", kMaxBatch);
     ASSERT_TRUE(fixture.ok);
 
-    // 上界从引擎自己查（不写死数值）：`input_ids` 第 1 维的 kMAX 就是"每步 token 数"的上界，
-    // runner 推导 `chunk_limit` 用的正是它。
-    Engine probe(fixture.engine_path, fixture.logger);
-    const int32_t bound = probe.GetProfileDim("input_ids", nvinfer1::OptProfileSelector::kMAX, 1);
-    ASSERT_GT(bound, 0) << "查不到 profile 上界 —— 用例失去判据（实现也不该静默继续）";
+    // ②-a 切法**未声明**（`0` 只是"未声明"的哨兵）→ 构造期拒绝。
+    std::unique_ptr<LLMRunner> undeclared =
+        MakeRunner(fixture, kMaxBatch, /*max_prefill_seq_len=*/0);
+    EXPECT_FALSE(undeclared->ok()) << "packed 模式下未声明 max_prefill_seq_len 必须构造期拒绝";
 
-    // ② 覆盖值 = 上界：必须**接受**（自证"拒绝的是越界，不是覆盖本身"）。
-    std::unique_ptr<LLMRunner> accepted = MakeRunner(fixture, kMaxBatch, bound);
-    EXPECT_TRUE(accepted->ok()) << "chunk_limit = profile 上界 " << bound << " 被误拒";
+    // ②-b 声明值 = 位置表上界（本夹具 = 单序列容量 16）：必须**接受**（自证拒绝的是越界）。
+    std::unique_ptr<LLMRunner> on_bound =
+        MakeRunner(fixture, kMaxBatch, /*max_prefill_seq_len=*/kPositions);
+    EXPECT_TRUE(on_bound->ok()) << "max_prefill_seq_len = " << kPositions << " 被误拒";
 
-    // ③ 覆盖值 = 上界 + 1：构造期必须拒绝（不许猜一个默认值继续跑）。
-    std::unique_ptr<LLMRunner> rejected = MakeRunner(fixture, kMaxBatch, bound + 1);
-    EXPECT_FALSE(rejected->ok()) << "chunk_limit 越界 (" << (bound + 1) << " > " << bound
-                                 << ") 必须构造期拒绝";
+    // ②-c 声明值 = 上界 + 1：构造期必须拒绝（本夹具里 ②（≤ `max_positions`）先报）。
+    std::unique_ptr<LLMRunner> over_bound =
+        MakeRunner(fixture, kMaxBatch, /*max_prefill_seq_len=*/kPositions + 1);
+    EXPECT_FALSE(over_bound->ok())
+        << "max_prefill_seq_len 越界（" << (kPositions + 1) << " > " << kPositions
+        << "）必须构造期拒绝";
 
-    // ④ `max_positions` 没给（默认 0）：packed 模式下必须构造期拒绝 —— 这个值引擎侧查不到
-    //    （只剩 `ceil(n_positions/block_size)` 这个上界），"猜一个默认值"就是留下越界读的隐患。
-    std::unique_ptr<LLMRunner> missing_positions =
-        MakeRunner(fixture, kMaxBatch, bound, /*max_positions=*/0);
+    // ②-d `max_positions` 没给（默认 0）：packed 模式下必须构造期拒绝 —— 这个值引擎侧查不到
+    //      （只剩 `ceil(n_positions/block_size)` 这个上界），"猜一个默认值"就是留下越界读的隐患。
+    std::unique_ptr<LLMRunner> missing_positions = MakeRunner(
+        fixture, kMaxBatch, /*max_prefill_seq_len=*/kPositions, /*max_positions=*/0);
     EXPECT_FALSE(missing_positions->ok()) << "packed 模式下 max_positions 未声明必须构造期拒绝";
 
-    // ⑤ `max_positions` 比引擎侧上界还大（自相矛盾：池/块表根本装不下那么多位置）→ 拒绝。
-    std::unique_ptr<LLMRunner> oversized_positions =
-        MakeRunner(fixture, kMaxBatch, bound, kTokensPerSeq + 4);
+    // ②-e `max_positions` 比引擎侧上界还大（自相矛盾：池/块表根本装不下那么多位置）→ 拒绝。
+    std::unique_ptr<LLMRunner> oversized_positions = MakeRunner(
+        fixture, kMaxBatch, /*max_prefill_seq_len=*/kPositions, kTokensPerSeq + 4);
     EXPECT_FALSE(oversized_positions->ok())
         << "max_positions 超过 cache/块表容量（" << kTokensPerSeq << "）必须构造期拒绝";
 
-    // ⑥ 入口拒绝：`max_positions` 取 8（**小于**池容量 16，所以"装不下池"那条检查会放行），
-    //    请求需要位置 11 —— 只有那条位置表检查能拦下它。正向对照：同一 runner 上 prompt 8 + 1 个
-    //    新 token（最大位置 7）必须能跑完。
+    // ③ 入口拒绝：`max_positions` 取 8（**小于**池容量 16，所以"装不下池"那条检查会放行），
+    //    请求需要位置 11 —— 只有那条位置表检查能拦下它。切法给 8（= 声明的上界，合法）。
+    //    正向对照：同一 runner 上 prompt 8 + 1 个新 token（最大位置 7）必须能跑完。
     const int32_t kSmallPositions = 8;
-    std::unique_ptr<LLMRunner> runner = MakeRunner(fixture, kMaxBatch, bound, kSmallPositions);
+    std::unique_ptr<LLMRunner> runner =
+        MakeRunner(fixture, kMaxBatch, kSmallPositions, kSmallPositions);
     ASSERT_TRUE(runner->ok());
     const std::vector<LLMRunner::SchedulerRequest> too_long = {
         MakeRequest(MakePrompt(12), GreedyOptions(1), 0)};

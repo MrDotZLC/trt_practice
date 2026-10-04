@@ -196,6 +196,8 @@ PackedFixture MakePackedFixture(const std::string& engine_prefix, int32_t max_ba
     // S5：packed 模式下 runner 必须知道位置表长度（引擎侧查不到，见 Config::max_positions）；
     // 本夹具的模型就是 kPositions 个位置。
     runner_config.max_positions = kPositions;
+    // S5：同理必填 —— 单步每序列的 token 上界（= 建图时的 max_prefill_seq_len，本夹具也是 kPositions）。
+    runner_config.max_prefill_seq_len = kPositions;
     runner_config.prefill_mode = LLMRunner::Config::PrefillMode::kPackedMixed;
     fixture.runner = std::make_unique<LLMRunner>(runner_config, fixture.engine, fixture.engine,
                                                  nullptr);
