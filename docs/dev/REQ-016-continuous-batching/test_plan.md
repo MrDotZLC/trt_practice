@@ -93,14 +93,16 @@ S1 没有新增单元级用例（改动集中在 runner 与采样器的接口层
 > **两条已知局限（写下来免得后人高估这一组）**：
 > ① **结果侧断言本身不能证明"真的分了块"** —— 切法被静默忽略时结果也会与不分块相同，所以每条都
 > 配了形状侧断言（`SchedulerStats::context_rows == ceil(prompt_len/chunk_limit)`）；
-> ② 因此这组用例依赖 `context_rows`，而 packed 路径的 `SchedulerStats` 目前会把最后一步的计数
-> **重复累加一遍**（`RunPackedMixedStep` 早退不清零，缺陷见 `STATE.md` 的 Current Blockers）——
-> 该缺陷只影响 `generation_rows` 一类"最后一步非零"的量，本组只断言 `context_rows`（末步为
-> generation 步时为 0，不受影响）；缺陷修好后应把被它挡住的那半也补上。
+> ② 所以这组依赖 `SchedulerStats` 的 `context_rows`。packed 路径的 stats 曾把最后一步的计数
+> **重复累加一遍**（`RunPackedMixedStep` 早退不清零，`TS-051` 第 2 条）——**2026-10-04 已修**，
+> `ChunkedEqualsWholePrompt` / `ChunkedShortPromptsUnchanged` 因此补上了 `generation_rows` 断言
+> （= `max_new - 1` 的形态），作为该缺陷的回归守卫。
 > ③ **"逐位相同"是一个待真机确认的假设**：不同切法会让每一步的 token 数 T 不同（T=1 vs T=prompt_len），
 > 若 TRT 为不同 T 选了不同的 tactic，per-token 的投影结果可能有末位差异，进而让某个 token 变红。
 > 真机上若真出现这种红：按 AGENTS §7 **先诊断**（比 logits / 找第一个分叉位置），**不要**直接把
 > "逐位相同"降级成"前缀相同"或加容差——那正是掩盖静默算错的做法。
+> ④ **真机前提**：S5 收口把 `cu_seqlens_ctx` 的 profile 行维范围改成 `[1, max_prefill_batch + 1]`
+> 并把 `kPackedPrefillGraphVersion` 提到 **6**，所以首次跑这组用例前 packed 引擎会重建一次。
 
 > **`chunk_limit` 在用例里怎么变（2026-10-04 定，作者可否决）**：设计定了它**不暴露给调用方**
 > （由引擎 profile 推导），而 AC9 要跑"1 / 中间值 / ≥ prompt_len"三种切法。口径取**测试专用覆盖钩子** ——

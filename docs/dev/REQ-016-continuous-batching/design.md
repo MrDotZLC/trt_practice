@@ -481,12 +481,21 @@ varlen 自注意力、之后的走分页注意力（含当前 token）——**�
   **`Engine` 的只读 profile 查询接口**（查 `getProfileShape`），**不新增 `LLMRunner::Config` 字段** ——
   依据是项目既有的"按对方查询、不按配置假定"（workspace 版见 `paged_attention_split.hpp` 与
   `PROGRESS.md` §2.15）。查询失败必须**构造期报错**，不许退回猜测的默认值。
+  **例外（2026-10-04 作者点名"一并修掉"后补）**：`n_positions` **查不到** —— 引擎里没有任何张量
+  带着它（只剩 `ceil(n_positions / block_size)` 这个上界），所以只能由调用方给：新增
+  `Config::max_positions`（packed 模式必填 + 两条上界检查），入口按 `prompt_len + max_new - 1`
+  拒绝。少了它，`prompt_len + max_new - 1 > n_positions` 会让 wpe 的 gather 越界读且**不报错**
+  （`TS-051` 第 4 条）。细则见 `p5_s5_interface_spec.md` §2 末。
 - **图与引擎（`graph_version`）**：方案 A 让 I/O 契约与 `getWorkspaceSize` **都不变**，所以存在
   "复用旧引擎"的理论可能；但 `engine_cache.hpp` 的规则是"**任何改动建图 / 精度 / 插件行为的代码变更
   都要 +1**"（先例：1 → 2 正是 `PagedAttentionPlugin::getWorkspaceSize` 从 0 变正数），
   而 S5 改的正是插件对同一绑定的计算语义。**作者 2026-10-04 复核确认：
   `kPackedPrefillGraphVersion` 4 → 5**（代价是真机首次重建 packed 引擎，分钟级；不再保留"沿用 4 +
   写豁免条件"的分支）。
+- **同日再 `graph_version` 5 → 6（S5 收口）**：`cu_seqlens_ctx` 的行维 profile 上界从
+  `max_prefill_batch` 改成 `max_prefill_batch + 1`（它的长度是 `B_ctx + 1`，比行维多一格；沿用行维
+  范围会让"整批都是 context 行"的首步 `setInputShape` 失败，`TS-051` 第 6 条）。profile 区间同样
+  进不了指纹，所以必须再 bump 一次（真机需重建一次 packed 引擎）。
 - **兜底纪律（作者 2026-10-04 定；第二遍复评补全检查对象与适用范围）**：分界是"**能否在构造期 /
   入口判定**"——配置 / 形状类（`n_positions > 1024`、`prompt_len > n_positions`、推导不出
   `chunk_limit`、profile 查询失败）**显式拒绝**，错误信息带上实际值与上界；运行期资源类

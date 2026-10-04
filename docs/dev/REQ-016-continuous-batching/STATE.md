@@ -27,30 +27,32 @@
 
 ## Current Blockers
 
-- **【静态审查发现，待作者定夺，未改代码】S5-2 提交的 `llm_runner.cpp` 有 1 处编译错误 + 3 处缺陷**
-  （2026-10-04：写 S5-3 用例时逐行读代码发现；本沙箱无编译器，以下全是人工核对 + 推演，**未真机复现**；
-  定位路径见 `docs/TROUBLESHOOTING.md` 的 `TS-051`）：
-  1. **编译错误（P0）**：`llm_runner.cpp:1141` 在 `if (packed_mode)` 分支里用了 `new_rows`，而它的声明在
-     `else` 分支内（`:1151`）—— packed 分支看不到这个标识符，**这份代码现在编不过**。
-     修法与下面第 3 条同源：`cu_seqlens_ctx` 的声明形状应改用 `packed_context_rows_ + 1`，那个形参
-     就不再被用到（删掉形参即可一并消掉编译错误）。
-  2. **空活跃表的越界访问 + stats 重复累加（P0，每次 packed 调用都走到）**：最后一条序列在**轮首** retire
-     被移除后，同一轮会继续跑到 ⑤；而 `RunPackedMixedStep` 在 `b_total <= 0` 时**早退且不清**
-     `sample_active_indices_` / `packed_context_rows_` / `packed_generation_rows_` → ⑤ 拿上一步的行号对
-     **空的 `active`** 做 `active[row]`，并把 token 写到 `d_result_tokens_[result_slot*max_new + generated]`
-     （一行容量的**界外**）。同一根因还让 `SchedulerStats` 把最后一步的计数再累加一遍 —— S4 的
-     `CuSeqlensBoundaryCases`（断言 `generation_rows == 2*(kMaxNew-1)`）会因此变红。
-     修法：早退路径把这三个成员清零（或 ⑤ 加 `!active.empty()` 守卫）。
-  3. **`cu_seqlens_ctx` 的声明形状偏小（P1）**：`:1611` 用 `new_rows + 1`（S4 口径），但 S5 里"仍在分块中
-     的行"也算 context 行（`packed_context_rows_ >= new_rows`）→ 声明形状小于 kernel 实际读的
-     `cu_seqlens_ctx[0..B_ctx]`（越界读发生在同一块设备缓冲内，所以它是"合约违规 + 取决于分配"，
-     不是马上报错）。修法：改用 `packed_context_rows_ + 1`。
-  4. **缺 `prompt_len <= n_positions` 的入口拒绝（P1）**：spec §3 的适用范围表与
-     `packed_attention_plugin.cu` 的注释都假定 runner 入口已有这条检查，**代码里没有**。小夹具里它恰好
-     被"池容量 = n_positions"兜住（不显形）；真实模型上池可以更大 → `prompt_len > n_positions` 会让
-     wpe 的 gather 越界读（TRT 未定义行为）。`ChunkLimitRejectedConfigs` 的第 ④ 段只锁"确实被拒"，
-     并在注释里写明拦下它的是池预算检查、不是那条专用检查。
-  **这四条都不在"step_limit + S5-3 用例"的授权范围内 → 未动产品代码**，等作者点名后再修。
+- **`TS-051` 的 1 处编译错误 + 5 处缺陷：已修（2026-10-04，作者点名"一并修掉"，提交 `a4dee90`；
+  未编译验证）** —— 发现路径见 `docs/TROUBLESHOOTING.md` 的 `TS-051`。逐条（括号里是修法）：
+  1. **编译错误（P0）**：`llm_runner.cpp` 的 packed 分支引用 `new_rows`，而声明在 `else` 分支内；
+     根因是 `RunPackedMixedStep` 的两个形参（`generation_rows` / `new_rows`）属于 S4 的"generation 行 =
+     活跃表前缀"前提，S5 下既无用也不成立（**删掉两个形参**，调用点同步）。
+  2. **空活跃表的越界写 + stats 重复累加（P0，每次 packed 调用都走到）**：最后一条序列在**轮首**
+     retire 之后，同一轮仍会跑到 ⑤；而早退路径（`b_total <= 0`）不复位
+     `sample_active_indices_` / `packed_context_rows_` / `packed_generation_rows_` → ⑤ 拿上一步的行号
+     索引**空的 `active`**，并把 token 写到 `d_result_tokens_` 界外（`TS-051` 第 2 条）
+     （**函数开头先复位**，`record_token` 再加一道显式越界失败：UB → 报错）。
+  3. **`cu_seqlens_ctx` 的声明形状偏小（P1）**：用 S4 的"新入批行数 + 1"，而 S5 里"仍在分块中的行"
+     也是 context 行（**改用 `packed_context_rows_ + 1`**）。
+  4. **缺 `prompt_len <= n_positions` 的入口拒绝（P1）**：spec §3 与插件注释都假定有，代码里没有
+     （**新增 `Config::max_positions`** + packed 模式必填 + 两条上界检查 + 入口按
+     `prompt_len + max_new - 1` 拒绝；见下面"偏离设计一处"）。
+  5. **收口时新查出**：generation token 的逐行搬运按"活跃表前缀"取行（S4 写法），分块下取错行 ——
+     `generated == 0` 时 `src_index = -1`（读结果缓冲之外）并把别人的 token 喂错行
+     （**改按 `generation_active` 取行**）。
+  6. **收口时新查出**：`cu_seqlens_ctx` 的 profile 行维上界是 `max_prefill_batch`，但它的长度是
+     `B_ctx + 1` —— "整批都是 context 行"的首步 `setInputShape` 直接失败
+     （**拆出独立范围 `[1, max_prefill_batch + 1]`**；profile 区间进不了指纹 →
+     `kPackedPrefillGraphVersion` **5 → 6**，真机首次跑 packed 用例要重建一次引擎）。
+  **偏离设计一处**：spec §2 原写"`chunk_limit` 不新增 `Config` 字段"，第 4 条新增了
+  `Config::max_positions` —— 理由是 `n_positions` 引擎侧**查不到**（只剩 `ceil(n_positions/block_size)`），
+  已在 spec §2 末 / §4 表 / §8 表 3 与 `design.md` D16 记为"唯一例外"。
+  六条**全部未编译验证**；真机窗口第一步是编译 + 重建 packed 引擎。
 - **S4 的 generation 段已改为复用 split-K（2026-10-04 作者指出 → 当日修完，待编译验证）**：
   原先我在新插件里自写了一份**单趟** generation kernel，而 `paged_attention_plugin.cu` 的
   **生产路径早就是 split-K**（REQ-014 交付；单趟只是 A/B 参考与 workspace 缺失时的兜底）——
@@ -300,6 +302,22 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
   放宽它只会白白损失对死循环的敏感度）。守门用例是 `ChunkedEqualsWholePrompt` 的 `limit=1` 分支
   （12 个分块步 vs 老上界 9 步 —— 老上界下这条用例会以 `scheduler step limit exceeded` 收场）。
 
+### P5-S5 收口（**作者点名"一并修掉"，提交 `a4dee90`；未编译验证**）
+
+**当前修改模块**：packed 路径的边界（逐行状态复位 / 结果缓冲不越界）与 profile 区间
+（`cu_seqlens_ctx` 的行维范围），外加位置表上界的入口拒绝。
+
+| 文件 | 实际改动 |
+|---|---|
+| `include/.../core/llm_runner.hpp` | `Config::max_positions`（位置表长度；packed 模式必填）；`RunPackedMixedStep` 去掉 `generation_rows` / `new_rows` 两个形参 |
+| `src/core/llm_runner.cpp` | 构造期 `max_positions` 校验（必填 + ≤ 池/块表容量 + ≤ 插件上限）；入口按 `prompt_len + max_new - 1` 拒绝；`RunPackedMixedStep` 开头复位逐行状态；`record_token` 越界显式失败；generation token 按 `generation_active` 取行；`cu_seqlens_ctx` 形状用 `packed_context_rows_ + 1` |
+| `src/core/builder.cpp` | `cu_seqlens_ctx` 的 profile 范围拆出 `[1, max_prefill_batch + 1]`；`kPackedPrefillGraphVersion` **5 → 6** |
+| `tests/test_llm_runner_packed.cpp` | 夹具补 `max_positions = kPositions`（接口变更的机械后果） |
+| `tests/test_llm_runner_chunked.cpp` | 夹具带 `max_positions`；`ChunkLimitRejectedConfigs` 扩成四组（含"未声明 / 越界"与入口拒绝的正反对照）；`ChunkedEqualsWholePrompt`、`ChunkedShortPromptsUnchanged` 补 `generation_rows` 断言（`TS-051` 第 2 条的回归守卫） |
+
+**测试方式**：同 S5-3 —— 本环境只做静态自检（括号逐行深度、符号成对、最长行、CRLF 无 BOM）；
+真机窗口 `cmake --build` + 跑 S4/S5 用例。**新增真机前提**：packed 引擎按 `graph_version = 6` 重建。
+
 ---
 
 ## Phase History
@@ -383,6 +401,11 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
   + 3 处缺陷（空活跃表越界写 + stats 重复累加、`cu_seqlens_ctx` 声明形状偏小、缺
   `prompt_len <= n_positions` 入口拒绝）**，按 §0.7 **未改产品代码**，登记进 `## Current Blockers`
   与 `docs/TROUBLESHOOTING.md` 的 `TS-051`，等作者定夺
+- 2026-10-04: **作者点名"一并修掉"** → 收口 `TS-051`：删 `RunPackedMixedStep` 的两个 S4 形参
+  （消掉编译错误 + 修掉"按活跃表前缀取 generation token"）、逐行状态每步先复位（消掉空活跃表
+  越界写 + stats 重复累加）、`cu_seqlens_ctx` 形状与 profile 行维范围（`[1, max_prefill_batch + 1]`）、
+  新增 `Config::max_positions` + 入口位置上界拒绝。`kPackedPrefillGraphVersion` **5 → 6**；
+  S5-3 用例补 `generation_rows` 回归断言与 `max_positions` 的拒绝对照。**全部未编译验证**
 
 ---
 

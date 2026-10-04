@@ -65,7 +65,7 @@
 | `TS-048` | 48 | 引擎缓存把"模型路径写法"算进指纹 → 换调用方式就重建（已修复，真机已验证） | 已修复（真机已验证） |
 | `TS-049` | 49 | 资产闸门自证项"应当跳过"那条**继承了环境的 `MINI_TRT_REQUIRE_ASSETS`** → 真机验收时自己变红（已修复） | 已修复（沙箱可复现并验证） |
 | `TS-050` | 50 | 新的 ctest 项写在了 `find_package(Python3)` **之前** → 变量未定义、**静默不注册**（configure 成功、条数不变） | 已修复（沙箱验证：268 条） |
-| `TS-051` | 51 | S5-2 的提交里有 1 处编译错误 + 3 处缺陷（逐行读代码发现，未修） | 待作者定夺 |
+| `TS-051` | 51 | S5-2 的提交里有 1 处编译错误 + 5 处缺陷（逐行读代码发现；作者点名"一并修掉"后全部修复） | 已修复（未编译验证） |
 
 > 索引用 `TS-NNN`；旧写法 `#NN` 仍可用（同号）。**正文只增不改**，新记录追加在末尾。
 
@@ -3115,7 +3115,26 @@ grep '^file=' /tmp/mini_trt_llm_resnet18_onnx_fp32.engine.fingerprint   # 应变
      `cu_seqlens_ctx[0..B_ctx]`（同缓冲内的越界读，取决于分配，不会马上报错）。
   4. **缺 `prompt_len <= n_positions` 的入口拒绝**：spec §3 的适用范围表与
      `packed_attention_plugin.cu` 的注释都假定 runner 入口已有这条，代码里没有。
-- **为什么没顺手修**：AGENTS §0.7 ——「已经点名的范围就是上限」。本轮作者只点名了
+- **为什么当时没顺手修**：AGENTS §0.7 ——「已经点名的范围就是上限」。当时作者只点名了
   "step_limit 计入分块步数"与"S5-3 用例"，这四条都不在该范围内，所以只登记 + 等定夺
   （真机窗口第一次编译就会先撞上第 1 条）。
-- **状态**：未修复，待作者定夺。
+- **收口时又查出两条**（第 5、6 条，都在上面"收口"一节里一并修掉）：
+  5. generation token 的逐行搬运按"活跃表前缀"取行（`generated == 0` → `src_index = -1`，
+     读结果缓冲之外）；6. `cu_seqlens_ctx` 的 profile 行维上界太小（长度是 `B_ctx + 1`）。
+- **收口（作者 2026-10-04 点名"一并修掉"，提交 `a4dee90`；**未编译验证**）**：
+  1. **删掉 `RunPackedMixedStep` 的两个形参**（`generation_rows` / `new_rows`）—— 编译错误随之消失；
+     generation token 改为**按 `generation_active` 取行**（顺带修掉收口时新查出的第 5 条：旧写法在
+     `generated == 0` 时 `src_index = -1`，读结果缓冲之外，并把别人的 token 喂给这一行）。
+  2. **函数开头复位逐行状态**（`packed_context_rows_` / `packed_generation_rows_` /
+     `sample_active_indices_`），并在 `record_token` 加一道显式越界失败 —— 空活跃表那轮不再越界，
+     stats 也不再重复累加。
+  3. `cu_seqlens_ctx` 的声明形状改用 `packed_context_rows_ + 1`；**同时把它从行维 profile 范围拆出**
+     （`[1, max_prefill_batch + 1]`，收口时新查出的第 6 条）—— 否则"整批都是 context 行"的首步
+     `setInputShape` 就失败。profile 区间进不了指纹 → `kPackedPrefillGraphVersion` **5 → 6**。
+  4. 新增 **`Config::max_positions`**（位置表长度）：引擎侧查不到，只能由调用方声明；packed 模式必填
+     + 两条上界检查（≤ 池/块表容量、≤ 插件上限 1024）+ 入口按 `prompt_len + max_new - 1` 拒绝。
+     这是 spec §2"不新增 `Config` 字段"的**唯一例外**（已记入 spec §2 末 / §4 / §8 表 3 与 design D16）。
+- **状态**：已修复（`a4dee90`）；**未编译验证**（本沙箱无 nvcc / cmake / TRT）。真机第一步是编译 +
+  按 `graph_version = 6` 重建一次 packed 引擎。回归守卫：S5-3 的 `ChunkedEqualsWholePrompt` /
+  `ChunkedShortPromptsUnchanged` 断言 `generation_rows`，`ChunkLimitRejectedConfigs` 断言
+  `max_positions` 的三种拒绝形态。

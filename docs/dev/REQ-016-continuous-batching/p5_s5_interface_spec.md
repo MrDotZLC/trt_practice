@@ -72,6 +72,17 @@ chunk 的第二段之后必须**读缓存**里前面已经写好的 prompt K/V �
   **构造期直接拒绝并打印实际值**（见 §3 的兜底纪律），不静默换慢路径。
 - 若 profile 查询拿不到（接口不可用 / 张量名不符），同样在**构造期**报错，**不允许**退回一个
   猜测的默认值 —— 那等于把"建图和运行时的口径不一致"变成静默错。
+- **`n_positions` 的来源 —— "不新增 Config 字段"的唯一例外（2026-10-04 作者点名"一并修掉"后补，
+  `TS-051` 第 4 条）**：与 `chunk_limit` **相反**，它**查不到** —— 引擎里没有任何张量带着
+  `n_positions`（只留下 `ceil(n_positions / block_size)`：cache 第 0 维 / `block_tables` 第 1 维），
+  而 runner 也看不到 `config.json`。所以只能由调用方声明：`LLMRunner::Config::max_positions`
+  （与 `block_size` / `num_blocks` 属于同一类"runner 推不出来"的几何参数）。
+  packed 模式下**必填**（`<= 0` → 构造期拒绝），并做两条一致性检查（`<=` cache/块表容量、
+  `<=` 插件上限 `kPackedAttentionMaxContextSeqLen`）；入口按
+  `prompt_len + max_new - 1 <= max_positions` 拒绝（prompt 与随后 `max_new` 个生成 token 用到的
+  最大位置是 `prompt_len + max_new - 2`）。**为什么不能省**：S5 的分块让 `prompt_len` 超过单步形状
+  上界成为正常路径，而 `n_positions` 是位置编码查表（`addGather(wpe, position_ids)`）的**真实**
+  上界 —— 越过它 wpe 的 gather 越界读，且**不报错**。两条来源的分工是"查得到 / 查不到"，不是口径反复。
 - "非末块对齐、末块按实际长度"是**同一条规则的两半**：非末块一律 `chunk_limit`（对齐 → 形状与 kernel
   假设稳定），末块是该序列剩余的实际长度（允许更短，按 `cu_seqlens` 分段处理，**不是回退**）。
 
@@ -147,7 +158,7 @@ mask  = 因果（chunk 内）+ 按 cu_seqlens_ctx 分段（不同序列不互相
 
 | 类别 | 例子 | 要求 |
 |---|---|---|
-| **配置 / 形状类**（可判定） | `n_positions > 1024`、`prompt_len > n_positions`、推导不出 `chunk_limit`、profile 查询失败 | **显式拒绝**，错误信息里带上实际值与上界；禁止静默换路 |
+| **配置 / 形状类**（可判定） | `n_positions > 1024`、`prompt_len > n_positions`（由 `Config::max_positions` 守，见 §2 末）、推导不出 `chunk_limit`、profile 查询失败 | **显式拒绝**，错误信息里带上实际值与上界；禁止静默换路 |
 | **运行期资源类**（不可判定） | TRT 没给 workspace（现有 paged / packed 插件会退单趟 + WARN，`paged_attention_plugin.cu` 的兜底注释） | 保留既有降级，但必须满足：① 只影响速度、不影响正确性；② 打一次 WARN 说明原因；③ **S5 新增的路径不得引入新的这类静默降级** |
 
 写这条分界的理由：两条既有降级（paged / packed 的 split-K → 单趟）是 REQ-014 交付时定的，
@@ -166,14 +177,16 @@ mask  = 因果（chunk 内）+ 按 cu_seqlens_ctx 分段（不同序列不互相
 | cache 记账 | host 侧从"赋值"改成"**累加**"（`context_lens_host_[row] += row_lengths[i]`、`Sequence::length` 同）；预留量校验改用**累计长度** —— 只改 kernel 不改这两处 = 第二块起静默错 |
 | 采样 | 只有 `prompt_done == prompt_len` 的行参与采样；行集用**显式行列表 + 紧凑暂存**，不动 `SampleBatch` 签名与行号纪律（§2） |
 | 退出判据 | `max_new` 计时从 prefill 完成起（§2） |
-| `Engine`（新增只读接口） | 加一个 profile 查询（`getProfileShape`）供 runner 在构造期推导 `chunk_limit` 与做入口拒绝；**不新增 `LLMRunner::Config` 字段**（§2） |
+| `Engine`（新增只读接口） | 加一个 profile 查询（`getProfileShape`）供 runner 在构造期推导 `chunk_limit` 与做入口拒绝；**`chunk_limit` 不新增 `Config` 字段**（§2；`n_positions` 是唯一例外，见下一行） |
+| `LLMRunner::Config`（新增 `max_positions`） | 位置表长度 `n_positions`：引擎侧查不到（只留 `ceil(n_positions/block_size)`），只能由调用方声明；packed 模式下必填 + 两条上界检查，入口按 `prompt_len + max_new - 1` 拒绝（§2 末、§3 的适用范围表） |
+| 图 / profile（`builder.cpp`） | `cu_seqlens_ctx` 的行维上界从 `max_prefill_batch` 改成 `max_prefill_batch + 1`（它的长度是 `B_ctx + 1`；用行维范围会让"整批都是 context 行"的首步 `setInputShape` 失败，`TS-051` 第 6 条） |
 | 测试专用钩子 | `SetChunkLimitOverride` / `ChunkLimitOverride`（声明在 `llm_runner.hpp`，生产路径恒不设置）：给 S5-3 的三种切法用例用；先例 `SetPagedAttentionNumSplitsOverride`（§6） |
-| 图版本 | **已定（作者 2026-10-04）：`kPackedPrefillGraphVersion` bump 4 → 5**。依据：`engine_cache.hpp` 的"任何改动插件行为的代码变更都要 +1"与 `builder.cpp` 记的 1 → 2 先例（`PagedAttentionPlugin::getWorkspaceSize` 从 0 变正数）。代价：真机首次重建 packed 引擎 |
+| 图版本 | **已定（作者 2026-10-04）：bump 4 → 5**，依据 `engine_cache.hpp` 的"任何改动插件行为的代码变更都要 +1"与 1 → 2 的先例；**同日收口再 5 → 6**：`cu_seqlens_ctx` 的 profile 区间变了（上一行），而 profile 区间同样进不了指纹。代价：真机需要重建 packed 引擎（版本 5 的缓存作废） |
 | 判据/用例 | 见 §6（新增一组，不改 S4/S3 的既有用例） |
 
 **不改的东西**：打包顺序（context 在前）、段边界与下标纪律、split-K 的复用（generation 段照旧）、
 块映射与不变量 4 的口径、`prefill_mode` 开关（S5 是 packed 路径内部的能力，不新增开关 —— 见 §8）；
-packed 插件的输入个数与顺序、profile 区间。
+packed 插件的输入个数与顺序、**其余** profile 区间（`cu_seqlens_ctx` 的行维范围那一处例外见 §5）。
 
 **"下标纪律"的精确口径（2026-10-04 按方案 A 修正）**：不变量 4 要求的是"**引擎行 ↔ cache 行同源**"，
 不是"必须恒等映射"。S3/S4 的 generation 段之所以用恒等行号，是因为那时"能生成的行恰好是活跃前缀"
@@ -193,6 +206,10 @@ packed 插件的输入个数与顺序、profile 区间。
 - `chunk_limit` = 从引擎 profile **查出来**的单序列上限（`input_ids` / `position_ids` 第 1 维 `.max`，
   不是 `config_` 里的字段 —— `LLMRunner::Config` 没有这个字段，见 §2）。它是**数据**不是形状，
   只决定"每步送多少"，不需要进 profile。
+- **`cu_seqlens_ctx` 的行维范围 = `[1, max_prefill_batch + 1]`**（2026-10-04 收口修正）：它的长度是
+  `B_ctx + 1`（最后一项是段内 token 总数，插件也靠 `dim[0] - 1` 推 `B_ctx`），比 `block_tables` /
+  `context_lens` 的行维**多一格**。沿用行维范围时，`B_ctx = max_prefill_batch` 的首步（整批都是
+  context 行）会直接 `setInputShape` 失败（`TS-051` 第 6 条）。
 - **真实的形状约束只有三条**（第二遍复评替换了原稿"支持集合"的笼统说法）：
   ① `chunk_limit >= 1`（否则切不动）；
   ② `chunk_limit <= profile 的行上界`（切出来的 chunk 不能越出形状）；
@@ -221,7 +238,7 @@ packed 插件的输入个数与顺序、profile 区间。
 | `ChunkedRetireAndBlocks` | 分块跨步时的块记账与退出归还正确（AC3 在分块下的形态） |
 | `ChunkedPositionsAreAbsolute` | 第二块起的 `position_ids` 是 `prompt_done + i`（不是段内 `i`）；这条单独锁住，因为它错了也只会表现为 token 逐位不同 |
 | `ChunkedSamplingRowSetIsCompacted` | 同一批里"分块中的长 prompt"排在"本步完成的短 prompt"**之前**时，完成的那行仍被正确采样、未完成的行不出 token（显式行列表的紧凑暂存） |
-| `ChunkLimitRejectedConfigs` | 配置 / 形状类不可用（推导不出 `chunk_limit`、`chunk_limit` 越界、`prompt_len > n_positions`）被**显式拒绝**，错误信息里带上实际值与上界；反向断言"没有静默换路"（构造期部分可在沙箱用 host 用例判，入口部分要真机） |
+| `ChunkLimitRejectedConfigs` | 配置 / 形状类不可用被**显式拒绝**，错误信息里带上实际值与上界；反向断言"没有静默换路"：① 非法 `Config`（沙箱可判）；② `chunk_limit` 越界；③ `max_positions` 未声明 / 超过引擎侧上界；④ 请求需要的位置超过 `max_positions`（入口拒绝，用 `max_positions = 8 < 池容量 16` 把"池装不下"那条检查排除掉，再加正向对照） |
 
 ## 7. 风险
 
@@ -257,6 +274,13 @@ packed 插件的输入个数与顺序、profile 区间。
 | 6 | "分块"的术语口径 | **指针式登记**：`analysis.md` 的 Terminology 表里登记条目，但定义**不复制正文**，指向本节 §2（`p5_s5_interface_spec.md` §2 是唯一来源） |
 | 7 | 第二遍复评查出的三条缺口 | **全部折进设计**：① `chunk_limit` 的来源 = `Engine` 的 profile 查询（不新增 `Config` 字段）；② 入口拒绝要带上实际值与上界；③ 兜底纪律按"能否在构造期 / 入口判定"分适用范围（§2/§3） |
 
+**第三轮确认（作者 2026-10-04 点名"一并修掉"，收口 `TS-051`）**：
+
+| # | 事项 | 结论 |
+|---|---|---|
+| 8 | `n_positions` 的来源 | 引擎侧**查不到** → 新增 `LLMRunner::Config::max_positions`（"不新增 `Config` 字段"的唯一例外）；packed 模式必填 + 两条上界检查 + 入口拒绝（§2 末） |
+| 9 | `cu_seqlens_ctx` 的 profile 上界 | 从行维范围拆出，改成 `[1, max_prefill_batch + 1]`；`kPackedPrefillGraphVersion` **5 → 6**（真机需重建一次 packed 引擎） |
+
 **下一步**：设计修订已出（本文件 + `design.md` D15/D16 + `analysis.md` 的术语登记），
 Gate-A 重开待作者确认；确认后按 `review.md` 的 S5 用例清单开始 S5-1 的实现。
 
@@ -282,3 +306,10 @@ P1 三条在此收口），逐节修订：
 ② §3 补兜底纪律的适用范围表（按"能否在构造期 / 入口判定"切开，与 REQ-014 的既有降级并存）；
 ③ §4/§5 把 `graph_version` 从"待复核"改成"确定 bump 4 → 5"；另在 §6/§7 增
 `ChunkLimitRejectedConfigs` 用例与两条风险。依据：作者 2026-10-04 的第二轮确认（§8 表 2）。
+
+**2026-10-04（作者点名"一并修掉"后）**：收口 `TS-051` 的六条（1 处编译错误 + 5 处缺陷）。本文件
+改动：§2 末新增"`n_positions` 的来源"（唯一新增 `Config` 字段 `max_positions`）；§3 的适用范围表
+注明它由谁守；§4 的改动面表新增两行（`Config::max_positions`、`builder.cpp` 的 `cu_seqlens_ctx`
+行维范围）并把图版本改成 4 → 5 → 6；§5 写清 `cu_seqlens_ctx` 的行维范围是 `[1, B + 1]`；
+§6 的 `ChunkLimitRejectedConfigs` 判据扩成四组。依据：作者 2026-10-04 的"一并修掉"指令
+（`TS-051` 的四条 + 收口时新查出的两条）。
