@@ -249,18 +249,27 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
     真机窗口先编译再跑。
   - **边界**：**不动**输入个数与顺序、不动 `getWorkspaceSize`、不动 profile；`chunk_limit` 的推导与
     入口拒绝属 S5-2（runner 侧），插件只保留建图期的 `n_positions <= 1024` 校验。
-- **S5-2（进行中）**
-  - **S5-2a 已落码（未编译验证）**：`Engine` 加只读 profile 查询（`GetProfileDims` / `GetProfileDim`）；
-    `LLMRunner` 构造期从 `input_ids` 第 1 维的 `kMAX` 推导 `chunk_limit_`（**不新增 Config 字段**），
-    并加**测试专用** `SetChunkLimitOverride` / `ChunkLimitOverride`（默认 0 = 不覆盖，生产路径不设置）；
-    推导失败、值 <= 0、或覆盖值超过 profile 上界 → **构造期直接拒绝**（`valid_ = false`）。
-    文件：`core/engine.{hpp,cpp}`、`core/llm_runner.{hpp,cpp}`。
-  - **S5-2b（未开工，有一处设计缺口待作者裁决）**：`RunPackedMixedStep` 切 chunk、写**绝对位置**
-    （`prompt_done + i`）、写回**累加**记账、采样行集紧凑暂存。**缺口**：本步完成 prefill 的行可能被
-    未完成的行隔开（设计已承认"会出现洞"），但**下一步它必须进 generation 段前缀** —— 而
-    `AppendDecodeStep` 用恒等行表（cache 行 0..g-1）、`LaunchAdvanceContextLens` 也只推进前 g 行。
-    两条出路：**A** 把显式行映射贯通 generation 段（`rows` 数组可选，nullptr = 恒等 → S1/S2/S3 行为不变）；
-    **B** 加行序置换 API（把完成的行换到前面）。已向作者报备，等裁决。
+- **S5-2（**已落码，未编译验证**；已提交 `120bbe0` + `fc2a973`）**
+  - **S5-2a**：`Engine` 加只读 profile 查询（`GetProfileDims` / `GetProfileDim`）；`LLMRunner` 构造期从
+    `input_ids` 第 1 维 `kMAX` 推导 `chunk_limit_`（**不新增 Config 字段**）；加**测试专用**
+    `SetChunkLimitOverride`（默认 0 = 不覆盖）；推导失败 / 值 <= 0 / 覆盖值超 profile 上界 →
+    **构造期直接拒绝**。
+  - **S5-2b**：`RunPackedMixedStep` 按 **cache 已写入长度**分类（`written >= prompt_len` ⇒ generation 段，
+    不新增 `prompt_done` 字段）→ `chunk_len = min(prompt_len - written, chunk_limit_)` → 写**绝对位置**
+    （`written + i`）→ 写回带 `row_starts = written`（第 2 块起从 `prompt_done` 续写；cache 层同步把
+    host 记账改成累加、预留量按累计末端校验）→ **采样行集紧凑暂存** `sample_active_indices_`
+    （槽位 = 数组下标，升序活跃行号）→ 结果落位 / EOS 回读 / `SchedulerStats` 三处同口径。
+  - **原设计缺口（"完成的行被未完成的行隔开时怎么进 generation 段"）按作者选定的方案 A 收口**：
+    `AppendDecodeKV` / `AppendDecodeStep` / 推进 `context_lens` 的 kernel 都接受显式 `rows`
+    （`nullptr` = 恒等 → S1/S2/S3 行为与开销不变），**不改行序**；文档同步在 `d232d05`。
+- **S5 剩余（P6 之前）**：① **S5-3 用例** —— 8 条，见 `test_plan.md` 的 S5 一节（`ChunkedEqualsWholePrompt`
+  / `ChunkedPositionsAreAbsolute` / `ChunkBoundaryDoesNotDisturbOthers` / `ChunkedShortPromptsUnchanged` /
+  `ChunkProgressStateIsCorrect` / `ChunkedSamplingRowSetIsCompacted` / `ChunkedRetireAndBlocks` /
+  `ChunkLimitRejectedConfigs`），需先定用例文件放哪（新建 `tests/test_llm_runner_chunked.cpp` 或并入
+  packed 用例文件，二选一并说明理由）；② **`step_limit` 未计入分块步数** ——
+  防呆上界还是 `max_arrival + max_new*request_count + request_count + 4`，长 prompt + 小 `chunk_limit`
+  需要 `ceil(prompt_len/chunk_limit)` 步，可能撞上它而**误报 bug**；修法是把 `max_prompt × request_count`
+  计进去（一行）。**① 与 ② 都还没做**。
 - **S5-3（最后，用例）**：`ChunkedEqualsWholePrompt` / `ChunkBoundaryDoesNotDisturbOthers` /
   `ChunkedShortPromptsUnchanged` / `ChunkProgressStateIsCorrect` / `ChunkedRetireAndBlocks` /
   `ChunkedPositionsAreAbsolute` / `ChunkedSamplingRowSetIsCompacted` / `ChunkLimitRejectedConfigs`，
@@ -336,6 +345,12 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
   `kPackedPrefillGraphVersion` **4 → 5**。**全部未编译验证**（本环境无 nvcc / cmake / TRT）；
   用例留在 S5-3。自检：花括号 / 圆括号 / 方括号平衡，最长行 101 < 200，CRLF 无 BOM，
   `PackedContextAttentionKernel` 定义与两处调用成对
+- 2026-10-04: **作者按序点名"完成 1、2"**（① test_plan 补 S5 用例 + 定 `chunk_limit` 注入口径；
+  ② 做 S5-2）→ 全部落码并**分三笔提交**：`d232d05`（文档：test_plan S5 一节 + 下标纪律精确化）、
+  `120bbe0`（runner 侧：Engine profile 查询、`chunk_limit_` 推导与测试钩子、切 chunk、绝对位置、
+  采样行集紧凑暂存）、`fc2a973`（cache 层：`row_starts` 写回起点 + generation 段显式行映射）。
+  **原设计缺口由作者选定方案 A 收口**（显式行映射，不改行序）。**全部未编译验证**；
+  剩余：S5-3 用例、`step_limit` 计入分块步数（见 P5-S5 节的"S5 剩余"）
 
 ---
 
