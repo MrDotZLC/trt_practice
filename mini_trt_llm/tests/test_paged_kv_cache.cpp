@@ -408,4 +408,98 @@ TEST(PagedKVCacheTest, FreeSequenceCompactsRemainingRows) {
     }
 }
 
+// **`TS-052` 发现 1 的回归守卫**：`AppendDecodeStep` 的 `rows` 是 **host 数组**，而"推进语境长度"
+// 那一步的 kernel 要按**设备地址**读同一份映射 —— 传 host 指针会让内核对 host 地址做设备解引用
+// （非法访存，或按垃圾行号推进 `context_lens`）。这条用**非前缀、带洞**的映射把它钉住。
+//
+// 场景：3 条序列（行 0/1/2，prefill 长度 5/3/4），本步只给两行发 decode token，映射故意乱序
+// （`rows = {2, 0}`，跳过第 1 行）。判据三件：
+//   ① 被映射的两行在**设备端** `context_lens` 各 +1（读回设备值，而不是只信 host 镜像）；
+//   ② 没被映射的第 1 行一个字节都不动（host 与设备都验）；
+//   ③ 追加进去的 K/V 落在**各自行**的位置上（源行 0 → 目标行 2、源行 1 → 目标行 0）。
+// 少了 ①，"rows 只进了 host 记账、没进设备"这类错会漏；少了 ③，块表寻址写错行也会漏。
+TEST(PagedKVCacheTest, AppendDecodeStepAdvancesMappedRowsOnly) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    PagedKVCache cache(MakeConfig());
+    ASSERT_TRUE(cache.valid());
+    ASSERT_TRUE(cache.AllocateSequence(/*seq_id=*/7, /*max_tokens=*/8));   // 行 0
+    ASSERT_TRUE(cache.AllocateSequence(/*seq_id=*/9, /*max_tokens=*/8));   // 行 1
+    ASSERT_TRUE(cache.AllocateSequence(/*seq_id=*/11, /*max_tokens=*/8));  // 行 2
+
+    // 三条各写一段 prefill：长度故意不同（5 / 3 / 4），"谁被推进"从长度上就能看出来。
+    constexpr int32_t kStride = 5;
+    const std::vector<int32_t> rows = {0, 1, 2};
+    const std::vector<int32_t> lengths = {5, 3, 4};
+    const std::vector<float> prefill = MakeKV(/*batch=*/3, /*tokens=*/kStride, 10.0f);
+    DeviceBuffer d_prefill(prefill.size() * sizeof(float));
+    ASSERT_TRUE(d_prefill.Allocate(prefill.size() * sizeof(float)));
+    CUDA_CHECK(cudaMemcpy(d_prefill.data(), prefill.data(), d_prefill.size(),
+                          cudaMemcpyHostToDevice));
+    ASSERT_EQ(cache.WritePrefillKV(/*layer=*/0, d_prefill.data(), d_prefill.data(), kStride,
+                                   rows.data(), 3, lengths.data(), nullptr),
+              cudaSuccess);
+    // 块表每步都要重建并上传（引擎读的是设备端那一份），这里也照做，否则 ③ 会拿旧表自证。
+    CUDA_CHECK(cache.UploadMetadata(nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    ASSERT_EQ(cache.SequenceLength(9), 3);
+
+    // 本步的 decode token：段内 2 行（源行 0 / 1），目标行由 `rows` 映射。
+    const std::vector<float> step = MakeKV(/*batch=*/2, /*tokens=*/1, 700.0f);
+    std::vector<DeviceBuffer> d_key(2);
+    std::vector<DeviceBuffer> d_value(2);
+    std::vector<const void*> key_ptrs(2);
+    std::vector<const void*> value_ptrs(2);
+    for (int32_t layer = 0; layer < 2; ++layer) {
+        ASSERT_TRUE(d_key[layer].Allocate(step.size() * sizeof(float)));
+        ASSERT_TRUE(d_value[layer].Allocate(step.size() * sizeof(float)));
+        CUDA_CHECK(cudaMemcpy(d_key[layer].data(), step.data(), d_key[layer].size(),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_value[layer].data(), step.data(), d_value[layer].size(),
+                              cudaMemcpyHostToDevice));
+        key_ptrs[layer] = d_key[layer].data();
+        value_ptrs[layer] = d_value[layer].data();
+    }
+    const std::vector<int32_t> append_rows = {2, 0};  // 乱序 + 带洞：跳过第 1 行
+    ASSERT_EQ(cache.AppendDecodeStep(key_ptrs, value_ptrs, /*row_count=*/2, nullptr,
+                                     /*cu_seqlens_ctx=*/nullptr, /*context_seq_count=*/0,
+                                     append_rows.data()),
+              cudaSuccess);
+    // 若内核对 host 指针做设备解引用，这一步会以 illegal access 报错（而不是悄悄算错）。
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // ① / ②：host 记账
+    EXPECT_EQ(cache.SequenceLength(11), 5) << "源行 0 映射到第 2 行";
+    EXPECT_EQ(cache.SequenceLength(7), 6) << "源行 1 映射到第 0 行";
+    EXPECT_EQ(cache.SequenceLength(9), 3) << "没被映射的行长度必须不变";
+
+    // ① / ②：设备端 context_lens（引擎真正读的那一份）
+    std::vector<int32_t> lens(3, -1);
+    CUDA_CHECK(cudaMemcpy(lens.data(), cache.context_lens(), lens.size() * sizeof(int32_t),
+                          cudaMemcpyDeviceToHost));
+    EXPECT_EQ(lens[0], 6);
+    EXPECT_EQ(lens[1], 3) << "没被映射的行在设备端也必须不变";
+    EXPECT_EQ(lens[2], 5);
+
+    // ③：K/V 落点（读设备端块表镜像，按"块表 + 块内槽位"独立算偏移，不复用产品代码）
+    std::vector<int32_t> mirror(static_cast<size_t>(cache.batch_size()) * kMaxBlocksPerSeq, -1);
+    ASSERT_EQ(cudaMemcpy(mirror.data(), cache.block_tables(), mirror.size() * sizeof(int32_t),
+                         cudaMemcpyDeviceToHost),
+              cudaSuccess);
+    const std::vector<float> key_cache =
+        ReadBack(cache.key_cache(0), cache.bytes_per_layer() / sizeof(float));
+    for (int32_t h = 0; h < kKvHeads; ++h) {
+        for (int32_t d = 0; d < kHeadSize; ++d) {
+            const size_t src_row0 = static_cast<size_t>(h * kHeadSize + d);
+            const size_t src_row1 =
+                static_cast<size_t>(kKvHeads * kHeadSize + h * kHeadSize + d);
+            EXPECT_FLOAT_EQ(key_cache[ExpectedOffset(mirror, /*b=*/2, /*t=*/4, h, d)],
+                            step[src_row0])
+                << "源行 0 的 token 必须落到目标行 2 的第 4 个位置";
+            EXPECT_FLOAT_EQ(key_cache[ExpectedOffset(mirror, /*b=*/0, /*t=*/5, h, d)],
+                            step[src_row1])
+                << "源行 1 的 token 必须落到目标行 0 的第 5 个位置";
+        }
+    }
+}
+
 }  // namespace mini_trt_llm

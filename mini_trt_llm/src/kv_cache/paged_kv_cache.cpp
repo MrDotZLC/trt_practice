@@ -437,8 +437,13 @@ cudaError_t PagedKVCache::AppendDecodeStep(const std::vector<const void*>& keys,
     }
     // 推进必须发生在所有写入之后，所以独立成一个 kernel（同一 stream 上串行）；
     // 且**只推进这一批（前 row_count 行）一次**。
+    // **`rows` 是 host 数组**（契约见 hpp），而 kernel 要按**设备地址**读同一份映射 ——
+    // `AppendDecodeKV` 刚把它拷进 `rows_device_`（同 stream、在本 kernel 之前），这里直接复用；
+    // 传 host 指针会让内核对 host 地址做设备解引用（`TS-052` 发现 1：非法访存，或按垃圾行号推进长度）。
+    const int32_t* rows_device =
+        (rows != nullptr) ? static_cast<const int32_t*>(rows_device_.data()) : nullptr;
     const cudaError_t err = LaunchAdvanceContextLens(
-        const_cast<int32_t*>(context_lens()), row_count, /*tokens=*/1, stream, rows);
+        const_cast<int32_t*>(context_lens()), row_count, /*tokens=*/1, stream, rows_device);
     if (err != cudaSuccess) {
         return err;
     }
