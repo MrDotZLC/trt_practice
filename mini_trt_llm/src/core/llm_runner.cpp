@@ -1003,8 +1003,17 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
     int32_t eos_pending_steps = 0;
     constexpr int32_t kMaxEosPendingSteps = 4;
     // 防呆上界：正常每步都至少推进一件事；超了说明有 bug，宁可报错也不要挂住。
+    // S5 的分块让"一条 prompt 分多步送"成为正常路径（每步最多推进 chunk_limit 个 prompt token，
+    // 而 chunk_limit 最小为 1 = 逐 token 一步），所以分块步数最多 ceil(prompt_len / chunk_limit)。
+    // 上界里必须把这部分算进去，否则"长 prompt + 小 chunk_limit"会撞上限，把正常结果误报成 bug。
+    // 取 Σ ceil(prompt_len_i / chunk_limit) ≤ max_prompt × request_count（松上界，与 chunk_limit
+    // 取值无关、永远够用）；分块只在 packed 路径发生（S3 两段式一步就送完整条 prompt），所以只在
+    // packed 下放宽 —— 保住 S3 那条对死循环的敏感度。
+    const int64_t chunk_step_slack =
+        packed_mode ? static_cast<int64_t>(max_prompt) * request_count : 0;
     const int64_t step_limit = static_cast<int64_t>(max_arrival) +
-                               static_cast<int64_t>(max_new) * request_count + request_count + 4;
+                               static_cast<int64_t>(max_new) * request_count + request_count + 4 +
+                               chunk_step_slack;
 
     while (!active.empty() || next_waiting < request_count) {
         if (active.empty() && next_waiting < request_count) {
