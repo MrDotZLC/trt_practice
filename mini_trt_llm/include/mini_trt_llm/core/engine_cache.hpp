@@ -21,6 +21,14 @@ namespace mini_trt_llm {
 //
 // **已知限制**（写在这里，免得下一个人以为是 bug）：源文件身份取的是 `size + mtime`，
 // 若用"保留 mtime"的方式覆盖模型文件，指纹不会变——此时需要显式删引擎或 bump graph_version。
+//
+// **2026-10-05 起 sidecar 多一个用途：运行期读取图属性**。`n_positions` 会作为
+// `numeric_params` 的一项写进规范化文本（`WriteEngineFingerprint` 的 `---` 之后那一段），
+// runner 构造期用 `ReadEngineSidecarField(engine_path, "num.model.n_positions")` 读回它
+// （`key` 是**完整行键** —— 规范化文本写的字面量是 `num.<名字>=<值>`，见 `CanonicalFingerprintText`；
+// 见 `p5_s5_interface_spec.md` §2 的 A1）。**缺文件 / 缺字段 / 解析失败一律视为"不可信"**：
+// 调用方必须**拒绝启动**，不许猜默认值（与 `ReadEngineFingerprint` 返回空串的语义一致）。
+// **行为变更**：单独拷贝 `.engine` 而不带 `.fingerprint` 不再可用。
 struct EngineFingerprintInputs {
     // 建的是哪一问切面：single / prefill / decode（不同切面是不同图）。
     std::string stage;
@@ -57,6 +65,12 @@ bool WriteEngineFingerprint(const std::string& engine_path, const std::string& f
 
 // 读回指纹；文件不存在或读不出 → 返回空串（**空串表示"不可信"，调用方必须重建**）。
 std::string ReadEngineFingerprint(const std::string& engine_path);
+
+// 读 sidecar 规范化文本里的某个 `key=value`（`ReadEngineFingerprint` 读的是第一行的指纹哈希，
+// 本函数读 `---` 之后的正文）。`key` 是**完整行键**（如 `num.model.n_positions`，
+// 数值项在正文里的字面量是 `num.<名字>`）。找不到 key / 文件读不出 → 返回**空串**；
+// 调用方按"不可信"处理（**拒绝启动**，不猜默认值）。
+std::string ReadEngineSidecarField(const std::string& engine_path, const std::string& key);
 
 // 缓存是否可复用：引擎文件存在**且** sidecar 指纹与当前指纹相同。
 // 缺 sidecar 一律视为不可复用——"旧引擎没有指纹"是常态（本功能之前建的），不能默认信任。

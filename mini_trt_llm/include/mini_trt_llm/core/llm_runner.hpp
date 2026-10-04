@@ -34,22 +34,11 @@ class LLMRunner {
         int32_t max_blocks_per_seq = 0;
         // 物理块池大小（能同时容纳多少 token 的 K/V）。
         int32_t num_blocks = 0;
-        // 位置表长度 n_positions（= config.json 的 `n_positions`，也 = 建图时给 PagedAttention /
-        // PackedAttention 插件的 `max_seq_len`）。
-        //
-        // **为什么必须由调用方给**：它不是任何输入张量的形状 —— 引擎侧只留下
-        // `ceil(n_positions / block_size)`（cache 的第 0 维 / block_tables 的第 1 维）这个**上界**，
-        // 而 runner 看不到 config.json。与本结构体开头那句"Runner 自己推不出来，所以要求调用方
-        // 显式给出"同一口径。
-        //
-        // **谁用它**：`prompt_len + max_new - 1 > max_positions` 时入口直接拒绝（见 RunScheduler
-        // 的入口校验）。少了这道闸，位置编码的 `addGather(wpe, position_ids)` 会越界读 ——
-        // TRT **不报错**，只会拿位置表以外的数据算出无意义的 logits（`docs/TROUBLESHOOTING.md`
-        // 的 `TS-051`）。S5 的分块让"prompt_len 超过单步形状上界"成为正常路径，这条闸不可省。
-        //
-        // `0` = 未声明：**packed 模式下构造期直接拒绝**（"不许猜默认值"）；padding 两段式路径下
-        // 不检查（那条路径的 S 由引擎 profile 兜住：越界时 `SetInputShape` 会显式失败）。
-        int32_t max_positions = 0;
+        // **注意：位置表长度 `n_positions` 不是本结构体的字段**（2026-10-05 作者裁决 B1+A1，
+        // 原先那份调用方声明已删除）。它虽然是"runner 推不出来"的几何量，但引擎侧**查得到真值** ——
+        // 建图期把它写进引擎侧车（`<engine>.fingerprint` 的 `num.model.n_positions`），构造期读回
+        // 到 `n_positions_` 并做一致性自检。留一个"可被填错"的声明字段等于把第二份事实与
+        // 静默越界窗口一并带回来。口径见 `p5_s5_interface_spec.md` §2 的 A1。
         // 单步每序列最多送多少 token（= 建图时的 `EngineBuilder::Config::max_prefill_seq_len`，
         // **两处必须给同一个值**）。S5 的 `chunk_limit` 就是它 —— **唯一来源**（不再从 profile
         // 反推；见 `p5_s5_interface_spec.md` §2 的 2026-10-05 修订）。
@@ -57,7 +46,7 @@ class LLMRunner {
         // **只在 packed 模式下有语义**：非 packed 路径（`kPaddedTwoPhase`）**必须留 0** —— runner
         // 不读也不校验它，填非 0 值没有任何效果（写明是为了避免"填了值却没效果"的困惑）。
         // packed 模式下**必填**，并过五条交叉校验（构造期，任一条不过即拒绝并打印实际值与上界）：
-        // ① ≥ 1；② ≤ `max_positions`；③ `L × block_tables.dim0.max ≤ input_ids.dim1.max`
+        // ① ≥ 1；② ≤ `n_positions_`（侧车真值）；③ `L × block_tables.dim0.max ≤ input_ids.dim1.max`
         // （保证每步 Σ 每行 chunk 不越出引擎 profile 的 T 上界）；④ ≤ 插件上限
         // `kPackedAttentionMaxContextSeqLen`；⑤ profile 查询必须成功（引擎是上界的裁决者）。
         // 完整口径（含"单一来源 = 下游单一、声明侧两处"）见 spec §2。
@@ -276,6 +265,11 @@ class LLMRunner {
     // 只在 `prefill_mode == kPackedMixed` 时有意义；该字段未声明 / 越界 / 交叉校验不过时构造期直接
     // 拒绝（`valid_ = false` —— 见构造期那五条的注释与 spec §2）。
     int32_t chunk_limit_ = 0;
+    // 位置表真值（= 建图时的 `hyper_params.n_positions` / 给插件的 `max_seq_len`），构造期从
+    // 引擎侧车读回（**A1**：`Config` 里不再有对应字段，见上面 `Config` 的注释）。
+    // 用途：入口位置上界（`prompt_len + max_new - 1`）与构造期两条一致性自检；只在
+    // `prefill_mode == kPackedMixed` 时被填 —— 那时读不到 / 与引擎不自洽一律构造期拒绝启动。
+    int32_t n_positions_ = 0;
     // 本步 packed 的两段行数（由 `RunPackedMixedStep` 填，供 `SchedulerStats` 与结果落位读）。
     // S5 之后两段**不再按活跃表前缀切**：context 段 = 本步拿到 chunk 的行，generation 段 = 本步
     // 能喂 token 的行（= prefill 已完成的行，可能夹在未完成的行后面）。

@@ -116,6 +116,36 @@ std::string ReadEngineFingerprint(const std::string& engine_path) {
     return line.substr(prefix.size());
 }
 
+std::string ReadEngineSidecarField(const std::string& engine_path, const std::string& key) {
+    if (key.empty()) return {};
+    std::ifstream in(EngineFingerprintPath(engine_path));
+    if (!in) return {};
+    // 与 `ReadEngineFingerprint` 的解析风格一致：逐行比对**完整行键**（`num.` 前缀也是键的一部分，
+    // 见 CanonicalFingerprintText），不做前缀模糊匹配 —— 模糊匹配会让 `prefill.max_seq` 命中
+    // `num.prefill.max_seq_extra` 这类未来的键。`---` 之前是机器读的那一段，正文只从它之后开始。
+    std::string line;
+    bool in_body = false;
+    while (std::getline(in, line)) {
+        // 行尾的 `\r` 要去掉：文本模式写出的 CRLF 会让键比较失配（Linux 上通常看不到，但别依赖）。
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (!in_body) {
+            if (line == "---") {
+                in_body = true;
+            }
+            continue;
+        }
+        const std::string prefix = key + '=';
+        if (line.rfind(prefix, 0) != 0) {
+            continue;
+        }
+        return line.substr(prefix.size());
+    }
+    // 文件不存在 / 缺 `---` / 缺该键：一律返回空串（调用方按"不可信"处理，见头文件注释）。
+    return {};
+}
+
 bool EngineCacheIsFresh(const std::string& engine_path, const std::string& fingerprint) {
     std::error_code error;
     if (!std::filesystem::exists(engine_path, error)) return false;

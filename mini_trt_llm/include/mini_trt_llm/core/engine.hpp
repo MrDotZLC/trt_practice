@@ -62,11 +62,20 @@ class Engine {
     nvinfer1::ICudaEngine* GetCudaEngine() const { return engine_.get(); }
     nvinfer1::IExecutionContext* GetContext() const { return context_.get(); }
 
+    // 反序列化用的引擎文件路径（构造期记下）。
+    //
+    // **为什么要有这个接口**：运行时要在构造期定位**引擎旁的 sidecar**（`<engine>.fingerprint`）
+    // 读回图属性（`n_positions` —— 引擎查不到，见 `p5_s5_interface_spec.md` §2 的 A1）。
+    // `ICudaEngine` 与 `IExecutionContext` 都不携带文件路径，而 `Engine` 是唯一知道它的对象，
+    // 所以路径只在这里取——调用方各自拼路径会漏掉"用哪个路径建的"这条信息。
+    const std::string& Path() const { return engine_path_; }
+
  private:
     Logger& logger_;
     std::unique_ptr<nvinfer1::IRuntime> runtime_;
     std::unique_ptr<nvinfer1::ICudaEngine> engine_;
     std::unique_ptr<nvinfer1::IExecutionContext> context_;
+    std::string engine_path_;
 };
 
 }  // namespace mini_trt_llm

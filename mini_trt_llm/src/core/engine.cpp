@@ -9,7 +9,10 @@
 
 namespace mini_trt_llm {
 
-Engine::Engine(const std::string& engine_path, Logger& logger) : logger_(logger) {
+// `engine_path` 除了解序列化，还要**留在成员里**：runner 构造期靠 `Path()` 去读引擎旁的
+// sidecar（`<engine>.fingerprint`，图属性 `n_positions` 的真值来源 —— 见 `Engine::Path()` 的注释）。
+Engine::Engine(const std::string& engine_path, Logger& logger)
+    : logger_(logger), engine_path_(engine_path) {
     auto buffer = ReadFile(engine_path);
 
     runtime_.reset(nvinfer1::createInferRuntime(logger));

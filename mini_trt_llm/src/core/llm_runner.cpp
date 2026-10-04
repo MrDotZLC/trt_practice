@@ -1,5 +1,6 @@
 #include "mini_trt_llm/core/llm_runner.hpp"
 
+#include "mini_trt_llm/core/engine_cache.hpp"
 #include "mini_trt_llm/core/llm_runner_kernel.hpp"
 #include "mini_trt_llm/plugins/packed_attention_plugin.hpp"
 #include "mini_trt_llm/sampler/sampler_common.hpp"
@@ -10,9 +11,11 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 
 namespace mini_trt_llm {
@@ -47,6 +50,26 @@ class SequenceScope {
     PagedKVCache* cache_;
     std::vector<int32_t> ids_;
 };
+
+// 侧车正文里的数值是**十进制字符串**（写侧 = `CanonicalFingerprintText` 的 `num.<名字>=<值>`）。
+// 只接受"整串都是十进制、且落在正 int32 范围内"的形态：`"16abc"` / `"0"` / `"-4"` / 空串
+// 一律算**不可信** —— 解析半边或按 0 继续都会把"侧车坏了"变成静默的越界读（调用方直接拒绝启动）。
+bool ParsePositiveInt32(const std::string& text, int32_t* out) {
+    if (text.empty() || out == nullptr) {
+        return false;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const long long value = std::strtoll(text.c_str(), &end, 10);
+    if (errno != 0 || end == text.c_str() || *end != '\0') {
+        return false;
+    }
+    if (value <= 0 || value > std::numeric_limits<int32_t>::max()) {
+        return false;
+    }
+    *out = static_cast<int32_t>(value);
+    return true;
+}
 
 }  // namespace
 
@@ -160,25 +183,45 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
 
     // 采样器的 per-batch 参数（k / p）在整个请求里是常量，所以在这里上传一次，
     // 不放进解码循环——循环里只允许有"已经备好"的设备侧动作。
-    // ---- S5：位置表上界（`Config::max_positions`）----
-    // 与 `chunk_limit` 不同，**它查不到**：引擎侧只留了 `ceil(n_positions / block_size)`
-    // （cache 第 0 维 / block_tables 第 1 维）这个上界，runner 也看不到 config.json —— 所以只能
-    // 由调用方声明（见 hpp 的字段说明）。packed 模式下"没声明"与"声明得比引擎侧上界还大（自相矛盾）"
-    // 都在这里拒绝：少了这道闸，`prompt_len + max_new - 1 > n_positions` 会让 wpe 的 gather
-    // 越界读，而且**不报错**（`TS-051` 的第 4 条）。
+    // ---- S5（A1）：位置表真值来自**引擎侧车**（2026-10-05 作者裁决 B1+A1）----
+    // `n_positions` 是图属性（wpe 的行数、插件的 `max_seq_len`），而引擎只声明了
+    // `ceil(n_positions / block_size)` 这个**上界**（cache 第 0 维 / `block_tables` 第 1 维）——
+    // 真值查不到，所以建图期把它写进 `<engine>.fingerprint` 的规范化文本，这里读回来。
+    // **缺文件 / 缺字段 / 解析失败 / 与引擎不自洽 → 拒绝启动**（不猜默认值、不取 min），与
+    // `EngineCacheIsFresh` 的"缺 sidecar 一律不可信"同一纪律；**行为变更**：单独拷贝 `.engine`
+    // 而不带 `.fingerprint` 不再可用。少了这道闸，`prompt_len + max_new - 1 > n_positions`
+    // 会让 `addGather(wpe, position_ids)` 越界读且**不报错**（`TS-051` 第 4 条）。
     if (config_.prefill_mode == Config::PrefillMode::kPackedMixed) {
-        const int64_t pool_tokens =
-            static_cast<int64_t>(config_.max_blocks_per_seq) * config_.block_size;
-        if (config_.max_positions <= 0) {
-            MINI_TRT_LOG_ERROR("LLMRunner: packed mode requires Config::max_positions"
-                               " (n_positions) —— 推导不出来就拒绝，不猜默认值");
+        const std::string sidecar_positions =
+            ReadEngineSidecarField(prefill_engine_->Path(), "num.model.n_positions");
+        if (!ParsePositiveInt32(sidecar_positions, &n_positions_)) {
+            MINI_TRT_LOG_ERROR("LLMRunner: cannot read n_positions from the engine sidecar ("
+                               << EngineFingerprintPath(prefill_engine_->Path())
+                               << ", key num.model.n_positions = '" << sidecar_positions
+                               << "') —— 引擎必须与 .fingerprint 同行；拒绝启动，不猜默认值");
             return;
         }
-        if (config_.max_positions > pool_tokens ||
-            config_.max_positions > kPackedAttentionMaxContextSeqLen) {
-            MINI_TRT_LOG_ERROR("LLMRunner: Config::max_positions "
-                               << config_.max_positions << " exceeds the engine-side bounds: "
-                               << "cache/块表容量 " << pool_tokens << " tokens, 插件上限 "
+        // 自检 ①（B1 的几何校验）：整除约束（建图期硬失败，见 `gpt2_model_builder.cpp`）下
+        // "每序列池容量 == n_positions"，而引擎把每序列块数钉成 `ceil(n_positions / block_size)`
+        // （`block_tables` 第 1 维，网络里是静态维 —— 直接读张量形状，不依赖 profile 对静态维的行为）。
+        // 两者不符 ⇒ 侧车与引擎**不是同一次建图的产物**（或其中一个被人改过）→ 拒绝。
+        const nvinfer1::ICudaEngine* cuda_engine = prefill_engine_->GetCudaEngine();
+        const nvinfer1::Dims blocks_dims =
+            cuda_engine == nullptr ? nvinfer1::Dims{} : cuda_engine->getTensorShape("block_tables");
+        const int32_t blocks_in_engine = blocks_dims.nbDims == 2 ? blocks_dims.d[1] : -1;
+        const int32_t blocks_expected =
+            (n_positions_ + config_.block_size - 1) / config_.block_size;
+        if (blocks_in_engine != blocks_expected) {
+            MINI_TRT_LOG_ERROR("LLMRunner: sidecar n_positions "
+                               << n_positions_ << " implies " << blocks_expected
+                               << " blocks/seq but the engine declares " << blocks_in_engine
+                               << " (block_tables dim 1) —— 侧车与引擎不是同一次建图的产物");
+            return;
+        }
+        // 自检 ②：插件上限（kernel 的 `__shared__ s_scores[...]`，spec §2 的外部约束）。
+        if (n_positions_ > kPackedAttentionMaxContextSeqLen) {
+            MINI_TRT_LOG_ERROR("LLMRunner: engine n_positions "
+                               << n_positions_ << " exceeds the plugin bound "
                                << kPackedAttentionMaxContextSeqLen);
             return;
         }
@@ -195,11 +238,12 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
                                " (单步每序列 token 上界) —— 未声明就拒绝，不猜默认值");
             return;
         }
-        // ② 不能超过位置表上界（否则分块后的绝对位置会越过 `n_positions`）。
-        if (config_.max_prefill_seq_len > config_.max_positions) {
+        // ② 不能超过位置表真值（侧车读回；否则分块后的绝对位置会越过 `n_positions`）。
+        if (n_positions_ > 0 && config_.max_prefill_seq_len > n_positions_) {
             MINI_TRT_LOG_ERROR("LLMRunner: Config::max_prefill_seq_len "
-                               << config_.max_prefill_seq_len << " exceeds Config::max_positions "
-                               << config_.max_positions);
+                               << config_.max_prefill_seq_len
+                               << " exceeds the engine-side n_positions " << n_positions_
+                               << " (sidecar)");
             return;
         }
         // ④ 插件侧上界（kernel 的 `__shared__ s_scores[]` 大小，见 spec §2）。
@@ -914,15 +958,15 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
                                                      << " has an empty prompt or max_new_tokens <= 0");
             return {};
         }
-        // **位置表上界**（S5 起必须显式守）：prompt 与随后 `max_new` 个生成 token 用到的最大位置是
-        // `len + max_new - 2`；越过 `n_positions - 1` 就是位置编码查表的越界读 —— TRT 不报错，
+        // **位置表上界**（S5 起必须显式守；真值来自引擎侧车，构造期已读回并自检）：
+        // prompt 与随后 `max_new` 个生成 token 用到的最大位置是 `len + max_new - 2`；
+        // 越过 `n_positions - 1` 就是位置编码查表的越界读 —— TRT 不报错，
         // 只会用位置表以外的数据算出无意义的 logits（见 `TS-051` 第 4 条）。
-        if (config_.max_positions > 0 &&
-            len + r.options.max_new_tokens - 1 > config_.max_positions) {
+        if (n_positions_ > 0 && len + r.options.max_new_tokens - 1 > n_positions_) {
             MINI_TRT_LOG_ERROR("LLMRunner: request " << i << " needs position "
                                << (len + r.options.max_new_tokens - 2)
-                               << " but the position table holds " << config_.max_positions
-                               << " (Config::max_positions)");
+                               << " but the position table holds " << n_positions_
+                               << " (engine sidecar)");
             return {};
         }
         if (r.options.temperature != 1.0f) {

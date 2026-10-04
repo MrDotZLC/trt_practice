@@ -7,7 +7,10 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -82,8 +85,7 @@ ChunkedFixture MakeChunkedFixture(const std::string& name, int32_t max_batch,
     return fixture;
 }
 
-LLMRunner::Config ChunkedRunnerConfig(int32_t max_batch, int32_t max_prefill_seq_len,
-                                      int32_t max_positions) {
+LLMRunner::Config ChunkedRunnerConfig(int32_t max_batch, int32_t max_prefill_seq_len) {
     LLMRunner::Config config;
     config.num_layers = kLayers;
     config.num_kv_heads = kHeads;
@@ -94,8 +96,8 @@ LLMRunner::Config ChunkedRunnerConfig(int32_t max_batch, int32_t max_prefill_seq
     config.is_half = false;
     config.vocab_size = kVocab;
     config.max_batch = max_batch;
-    // packed 模式下两个值都必给（runner 都查不到）：位置表长度 + 单步 per-row 上界（= 切法）。
-    config.max_positions = max_positions;
+    // packed 模式下这里必给的是**单步 per-row 上界**（= 切法）。位置表长度**不用给**：
+    // 它由建图期写进引擎侧车、构造期读回（B1+A1，见 `p5_s5_interface_spec.md` §2）。
     config.max_prefill_seq_len = max_prefill_seq_len;
     config.prefill_mode = LLMRunner::Config::PrefillMode::kPackedMixed;
     return config;
@@ -103,13 +105,11 @@ LLMRunner::Config ChunkedRunnerConfig(int32_t max_batch, int32_t max_prefill_seq
 
 // 在**指定切法**下造一个 runner。切法 = `Config::max_prefill_seq_len`（构造期字段，之后只读；
 // 2026-10-05 起取代了原先的 `SetChunkLimitOverride` 进程级钩子，见 `p5_s5_interface_spec.md` §2）。
-// `max_positions` 默认就是本夹具的位置表长度；只有 `ChunkLimitRejectedConfigs` 会故意给别的值。
 std::unique_ptr<LLMRunner> MakeRunner(const ChunkedFixture& fixture, int32_t max_batch,
-                                      int32_t max_prefill_seq_len,
-                                      int32_t max_positions = kPositions) {
+                                      int32_t max_prefill_seq_len) {
     auto engine = std::make_shared<Engine>(fixture.engine_path, fixture.logger);
-    return std::make_unique<LLMRunner>(
-        ChunkedRunnerConfig(max_batch, max_prefill_seq_len, max_positions), engine, engine, nullptr);
+    return std::make_unique<LLMRunner>(ChunkedRunnerConfig(max_batch, max_prefill_seq_len), engine,
+                                       engine, nullptr);
 }
 
 LLMRunner::GenerateOptions GreedyOptions(int32_t max_new_tokens) {
@@ -463,17 +463,20 @@ TEST(LlmRunnerChunkedTest, ChunkedRetireAndBlocks) {
 // ⑧ 配置 / 形状类不可用必须显式拒绝
 // ---------------------------------------------------------------------------
 
-// 三组判据（**分组用 (A)/(B)/(C)**；`①②③④⑤` 在本文件里只留给 spec §2 的交叉校验编号）：
+// 两组判据（**分组用 (A)/(B)**；`①②③④⑤` 在本文件里只留给 spec §2 的交叉校验编号）：
 //   (A) 非法 Config 在构造期（任何引擎 / 显存动作之前）就被拒 —— 这一段**不需要 GPU**，沙箱里也真的
 //       跑过（放在 skip 之前，且用 ASSERT：失败会直接以"红"收场，不会被后面的 skip 吞掉）；
-//   (B) 真机段 · 构造期拒绝：`max_prefill_seq_len`（切法）**未声明** / 越界、`max_positions` 未声明 /
-//       越界 —— 声明值 = 上界必须**接受**（自证"拒绝的是越界，不是字段本身"）；
-//   (C) 真机段 · 入口拒绝：请求需要的位置超过 `max_positions` 时必须失败。
+//   (B) 真机段 · 构造期拒绝：`max_prefill_seq_len`（切法）**未声明** / 越界 —— 声明值 = 上界
+//       必须**接受**（自证"拒绝的是越界，不是字段本身"）。
 // 判据是"**没有静默换路**"，错误信息带实际值与上界（日志不进判据）。
+//
+// **原先的 (C)（入口位置上界）已并入池容量检查**（2026-10-05 B1+A1 修订）：`n_positions` 现在来自
+// 引擎侧车且 B1 要求整除 ⇒ "池容量 == `n_positions`" ⇒ 位置越界与池装不下是**同一个条件**，
+// 单列会制造"两条独立判据"的错觉。入口拒绝 + 水位不变的断言仍在（见上面那条装不下的用例）。
 //
 // **本夹具的覆盖说明（诚实登记）**：**spec §2 的交叉校验 ③**（`L × rows_max ≤ T_max`）在本夹具里
 // **无法独立触发** —— rows_max = `max_batch` = 4、T_max = 4 × 16 = 64 ⇒ 交叉校验 ③ 等价于 `L ≤ 16`，
-// 而 `max_positions` 的上界（池容量 16）先把它拦下（**交叉校验 ②** 先报）。要独立触发它需要
+// 而交叉校验 ② 的上界（`n_positions` = 16）先把它拦下（**② 先报**）。要独立触发它需要
 // `n_positions ≠ max_prefill_seq_len` 的配置 —— 见下面第 ⑨ 条用例
 // （`ChunkLimitCrossCheckRejectsOverStepBudget`）；这里只断言"越界被拒 + 边界值被接受"。
 TEST(LlmRunnerChunkedTest, ChunkLimitRejectedConfigs) {
@@ -491,47 +494,21 @@ TEST(LlmRunnerChunkedTest, ChunkLimitRejectedConfigs) {
         MakeRunner(fixture, kMaxBatch, /*max_prefill_seq_len=*/0);
     EXPECT_FALSE(undeclared->ok()) << "packed 模式下未声明 max_prefill_seq_len 必须构造期拒绝";
 
-    // (B-b) 声明值 = 位置表上界（本夹具 = 单序列容量 16）：必须**接受**（自证拒绝的是越界）。
+    // (B-b) 声明值 = 位置表真值（本夹具 = 侧车里的 16）：必须**接受**（自证拒绝的是越界）。
     std::unique_ptr<LLMRunner> on_bound =
         MakeRunner(fixture, kMaxBatch, /*max_prefill_seq_len=*/kPositions);
     EXPECT_TRUE(on_bound->ok()) << "max_prefill_seq_len = " << kPositions << " 被误拒";
 
-    // (B-c) 声明值 = 上界 + 1：构造期必须拒绝（本夹具里 **spec §2 交叉校验 ②**（≤ `max_positions`）先报）。
+    // (B-c) 声明值 = 上界 + 1：构造期必须拒绝（本夹具里 **spec §2 交叉校验 ②**（≤ n_positions）先报）。
     std::unique_ptr<LLMRunner> over_bound =
         MakeRunner(fixture, kMaxBatch, /*max_prefill_seq_len=*/kPositions + 1);
     EXPECT_FALSE(over_bound->ok())
         << "max_prefill_seq_len 越界（" << (kPositions + 1) << " > " << kPositions
         << "）必须构造期拒绝";
-
-    // (B-d) `max_positions` 没给（默认 0）：packed 模式下必须构造期拒绝 —— 这个值引擎侧查不到
-    //      （只剩 `ceil(n_positions/block_size)` 这个上界），"猜一个默认值"就是留下越界读的隐患。
-    std::unique_ptr<LLMRunner> missing_positions = MakeRunner(
-        fixture, kMaxBatch, /*max_prefill_seq_len=*/kPositions, /*max_positions=*/0);
-    EXPECT_FALSE(missing_positions->ok()) << "packed 模式下 max_positions 未声明必须构造期拒绝";
-
-    // (B-e) `max_positions` 比引擎侧上界还大（自相矛盾：池/块表根本装不下那么多位置）→ 拒绝。
-    std::unique_ptr<LLMRunner> oversized_positions = MakeRunner(
-        fixture, kMaxBatch, /*max_prefill_seq_len=*/kPositions, kTokensPerSeq + 4);
-    EXPECT_FALSE(oversized_positions->ok())
-        << "max_positions 超过 cache/块表容量（" << kTokensPerSeq << "）必须构造期拒绝";
-
-    // (C) 入口拒绝：`max_positions` 取 8（**小于**池容量 16，所以"装不下池"那条检查会放行），
-    //    请求需要位置 11 —— 只有那条位置表检查能拦下它。切法给 8（= 声明的上界，合法）。
-    //    正向对照：同一 runner 上 prompt 8 + 1 个新 token（最大位置 7）必须能跑完。
-    const int32_t kSmallPositions = 8;
-    std::unique_ptr<LLMRunner> runner =
-        MakeRunner(fixture, kMaxBatch, kSmallPositions, kSmallPositions);
-    ASSERT_TRUE(runner->ok());
-    const std::vector<LLMRunner::SchedulerRequest> too_long = {
-        MakeRequest(MakePrompt(12), GreedyOptions(1), 0)};
-    const int32_t free_before = runner->NumFreeKvBlocks();
-    EXPECT_TRUE(runner->RunScheduler(too_long).empty())
-        << "prompt 12 + 1 个新 token 需要位置 11 > max_positions(8)，必须入口拒绝";
-    EXPECT_EQ(runner->NumFreeKvBlocks(), free_before) << "被拒路径不该留下块";
-    const std::vector<LLMRunner::GenerateResult> fits =
-        runner->RunScheduler({MakeRequest(MakePrompt(kSmallPositions), GreedyOptions(1), 0)});
-    ASSERT_EQ(fits.size(), 1u) << "正向对照：位置放得下的请求必须照常跑完";
-    EXPECT_EQ(fits[0].tokens.size(), 1u);
+    // B1 的不变量（本夹具成立）：`n_positions == 单序列池容量`（`kBlocksPerSeq × kBlockSize`）——
+    // 这正是"位置越界与池装不下是同一个条件"的前提，(B-c) 同时守住两者。
+    static_assert(kPositions == kTokensPerSeq,
+                  "夹具里 n_positions 必须等于单序列池容量（B1 的前提）");
 }
 
 // ⑨ **spec §2 交叉校验 ③ 的独立触发**（`p5_s5_interface_spec.md` §2 的第 ③ 条）：
@@ -539,14 +516,14 @@ TEST(LlmRunnerChunkedTest, ChunkLimitRejectedConfigs) {
 // 的 T 上界"，即"多行同批不越出形状"的充分条件。
 //
 // **为什么需要单独一条**：本文件其它用例里 `max_prefill_seq_len` 与 `n_positions` 相等（都是 16），
-// 于是**交叉校验 ③** 等价于 `L ≤ 16`，会被**交叉校验 ②**（≤ `max_positions`）先拦下 —— 拿不到
+// 于是**交叉校验 ③** 等价于 `L ≤ 16`，会被**交叉校验 ②**（≤ 侧车真值 `n_positions`）先拦下 —— 拿不到
 // "**③ 自己拦人**"的证据。这条把**建图侧的 per-row 上界**降到 8（模型 `n_positions` 仍是 16，
 // 即 S5 的真实形态），于是 `rows_max = 4`、`T_max = 4 × 8 = 32` ⇒ 交叉校验 ③ 的合法上界 =
-// `32 ÷ 4 = 8`，而交叉校验 ② 的合法上界仍是 `max_positions = 16` —— 两者不再重合。
+// `32 ÷ 4 = 8`，而交叉校验 ② 的合法上界仍是 `n_positions = 16` —— 两者不再重合。
 //
 // 判据（只到"构造期拒绝 + 边界值接受"；错误信息的文案不进判据）：
 //   * `L = 8`（= `T_max ÷ rows_max`，恰在交叉校验 ③ 的边界上）→ **接受**（正向对照）；
-//   * `L = 9`（> 交叉校验 ③ 的上界，但 ≤ `max_positions`）→ **拒绝**：交叉校验 ② 放它过去，
+//   * `L = 9`（> 交叉校验 ③ 的上界，但 ≤ `n_positions`）→ **拒绝**：交叉校验 ② 放它过去，
 //     只有交叉校验 ③ 能拦。
 TEST(LlmRunnerChunkedTest, ChunkLimitCrossCheckRejectsOverStepBudget) {
     MINI_TRT_SKIP_IF_NO_CUDA();
@@ -557,17 +534,127 @@ TEST(LlmRunnerChunkedTest, ChunkLimitCrossCheckRejectsOverStepBudget) {
 
     // `L = 8`：`8 × 4 = 32 = T_max` —— 恰好压在交叉校验 ③ 的边界上，必须接受。
     std::unique_ptr<LLMRunner> on_cross_bound =
-        MakeRunner(fixture, kMaxBatch, kBuilderPerRowCap, /*max_positions=*/kPositions);
+        MakeRunner(fixture, kMaxBatch, kBuilderPerRowCap);
     EXPECT_TRUE(on_cross_bound->ok())
         << "L = T_max ÷ rows_max（" << kBuilderPerRowCap << "）应当接受";
 
-    // `L = 9`：交叉校验 ②（≤ max_positions 16）不拦，只有交叉校验 ③（9 × 4 = 36 > 32）能拦 →
+    // `L = 9`：交叉校验 ②（≤ n_positions 16）不拦，只有交叉校验 ③（9 × 4 = 36 > 32）能拦 →
     // 这就是"③ 自己拦人"的独立证据。
     std::unique_ptr<LLMRunner> over_step_budget =
-        MakeRunner(fixture, kMaxBatch, kBuilderPerRowCap + 1, /*max_positions=*/kPositions);
+        MakeRunner(fixture, kMaxBatch, kBuilderPerRowCap + 1);
     EXPECT_FALSE(over_step_budget->ok())
         << "L = " << (kBuilderPerRowCap + 1) << " 超过 T_max ÷ rows_max（" << kBuilderPerRowCap
-        << "）：交叉校验 ② 不拦（≤ max_positions），必须由 spec §2 交叉校验 ③ 拒绝";
+        << "）：交叉校验 ② 不拦（≤ n_positions），必须由 spec §2 交叉校验 ③ 拒绝";
+}
+
+// ---------------------------------------------------------------------------
+// ⑩ n_positions 的真值来源 = 引擎侧车（B1+A1）：缺 / 不可信必须在构造期拒绝
+// ---------------------------------------------------------------------------
+
+// `n_positions` 只从 `<engine>.fingerprint` 读（引擎侧没有别的**精确**载体，只剩
+// `ceil(n_positions / block_size)` 这个上界）—— 所以侧车缺了或被改过，就必须**拒绝启动**，
+// 不能猜默认值、也不能"取 min"。两条都落在构造期（`Engine` 反序列化照常成功，拒绝发生在
+// `LLMRunner` 的构造期校验里）。
+TEST(LlmRunnerChunkedTest, MissingFingerprintSidecarRejected) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    ChunkedFixture fixture = MakeChunkedFixture("chunked_sidecar_missing", kMaxBatch);
+    ASSERT_TRUE(fixture.ok);
+
+    // 只拷 `.engine`（不带 `.fingerprint`）—— 正是"单独拷贝引擎"的那种用法，行为已变更。
+    const std::string bare_engine = fixture.directory.EnginePath("bare.engine");
+    std::error_code copy_error;
+    std::filesystem::copy_file(fixture.engine_path, bare_engine, copy_error);
+    ASSERT_FALSE(copy_error) << "拷贝引擎失败：" << copy_error.message();
+    ASSERT_FALSE(std::filesystem::exists(bare_engine + ".fingerprint"))
+        << "这个副本本来就不该带侧车（带上了用例就不成立）";
+
+    auto engine = std::make_shared<Engine>(bare_engine, fixture.logger);
+    LLMRunner runner(ChunkedRunnerConfig(kMaxBatch, kPositions), engine, engine, nullptr);
+    EXPECT_FALSE(runner.ok()) << "缺 .fingerprint 侧车时必须构造期拒绝启动（不猜默认值）";
+}
+
+TEST(LlmRunnerChunkedTest, SidecarPositionsMismatchRejected) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    ChunkedFixture fixture = MakeChunkedFixture("chunked_sidecar_mismatch", kMaxBatch);
+    ASSERT_TRUE(fixture.ok);
+
+    // 把 `.engine` 与它的侧车**一起**拷走：先做**正对照**（只拷贝、不改内容必须照常接受），
+    // 再改侧车里的那一行。正对照把"拷贝"与"侧车不可信"两个原因分开，免得失败时归因错。
+    const std::string copy_engine = fixture.directory.EnginePath("mismatch.engine");
+    std::error_code copy_error;
+    std::filesystem::copy_file(fixture.engine_path, copy_engine, copy_error);
+    ASSERT_FALSE(copy_error) << "拷贝引擎失败：" << copy_error.message();
+    std::filesystem::copy_file(fixture.engine_path + ".fingerprint",
+                               copy_engine + ".fingerprint", copy_error);
+    ASSERT_FALSE(copy_error) << "拷贝侧车失败：" << copy_error.message();
+    {
+        auto engine = std::make_shared<Engine>(copy_engine, fixture.logger);
+        LLMRunner runner(ChunkedRunnerConfig(kMaxBatch, kPositions), engine, engine, nullptr);
+        EXPECT_TRUE(runner.ok()) << "正对照：引擎与侧车一起拷贝（内容未改）必须照常接受";
+    }
+
+    // 只改侧车里的真值：16 → 12。`12 % 4 == 0`（仍然整除，走不到 B1 那条建图期约束），但
+    // `ceil(12 / 4) = 3` ≠ `block_tables` 的 dim1 = 4 → 构造期自检必须拒绝（不取 min、不静默）。
+    const std::string fingerprint_path = copy_engine + ".fingerprint";
+    const std::string from = "num.model.n_positions=16";
+    const std::string to = "num.model.n_positions=12";
+    std::string text;
+    {
+        std::ifstream in(fingerprint_path);
+        ASSERT_TRUE(in.good()) << "读不到侧车：" << fingerprint_path;
+        text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const size_t at = text.find(from);
+    ASSERT_NE(at, std::string::npos) << "侧车里没有 '" << from << "'（写侧格式变了？请同步本用例）";
+    text.replace(at, from.size(), to);
+    {
+        std::ofstream out(fingerprint_path, std::ios::trunc);
+        ASSERT_TRUE(out.good()) << "写不回侧车：" << fingerprint_path;
+        out << text;
+    }
+
+    auto engine = std::make_shared<Engine>(copy_engine, fixture.logger);
+    LLMRunner runner(ChunkedRunnerConfig(kMaxBatch, kPositions), engine, engine, nullptr);
+    EXPECT_FALSE(runner.ok())
+        << "侧车 n_positions=12 与引擎 block_tables（4 块/序列）不自洽 —— 必须构造期拒绝启动";
+}
+
+// **建图期**的硬失败（B1）：`n_positions % block_size != 0` 时拒绝建 packed 图。
+// 只改 `block_size`（4 → 3），`n_positions` 仍是 16 ⇒ `ceil(16 / 3) = 6`、池容量 18 ≠ 16：
+// 窗口 `16 < L <= 18` 会被静默放行，正是 B1 要挡的形态。
+TEST(LlmRunnerChunkedTest, NonDivisibleBlockSizeRejected) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    test_support::ModelDirectory directory =
+        test_support::ModelDirectory::Create("chunked_non_divisible");
+    ASSERT_TRUE(directory.valid());
+    std::string config_json = test_support::SmallGpt2ConfigJson();
+    const std::string from = "\"block_size\": 4";
+    const std::string to = "\"block_size\": 3";
+    const size_t at = config_json.find(from);
+    ASSERT_NE(at, std::string::npos) << "夹具 JSON 里没有 '" << from << "'（写法变了？请同步本用例）";
+    config_json.replace(at, from.size(), to);
+    ASSERT_TRUE(directory.WriteConfig(config_json));
+    ASSERT_TRUE(directory.WriteWeights(test_support::SmallGpt2Weights()));
+
+    Logger logger;
+    EngineBuilder::Config packed_config = test_support::SmallGpt2BuilderConfig(kMaxBatch);
+    packed_config.max_prefill_seq_len = 8;
+    packed_config.packed_mixed_prefill = true;
+    EngineBuilder packed_builder(logger, packed_config);
+    EXPECT_FALSE(packed_builder.BuildFromConfig(
+        directory.path(), directory.EnginePath("non_divisible_packed.engine"),
+        BuildStage::kPrefill))
+        << "n_positions = 16、block_size = 3（不整除）必须让 packed 建图硬失败";
+
+    // 反向对照：整除约束**只加在 packed 建图**上 —— padding 路径每步把 prompt 一次装下，
+    // 越界由 `SetInputShape` 响亮拦住，所以同一份配置建 padding 引擎必须成功。
+    EngineBuilder::Config padded_config = test_support::SmallGpt2BuilderConfig(kMaxBatch);
+    padded_config.max_prefill_seq_len = 8;
+    EngineBuilder padded_builder(logger, padded_config);
+    EXPECT_TRUE(padded_builder.BuildFromConfig(
+        directory.path(), directory.EnginePath("non_divisible_padded.engine"),
+        BuildStage::kPrefill))
+        << "整除约束只限 packed 建图；padding 路径必须照常建图";
 }
 
 }  // namespace

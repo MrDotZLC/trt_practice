@@ -135,6 +135,36 @@ bool HasDynamicInputDim(nvinfer1::INetworkDefinition* network) {
     return false;
 }
 
+// 取图属性 `n_positions`（`config.json` 的 `hyper_params.n_positions`）——**A1 的真值来源**。
+//
+// 为什么要在这里单独解析一次：`MakeFingerprintInputs` 在 `ModelConfig::Load` **之前**调用
+// （缓存检查要排在任何昂贵动作前面），而 `n_positions` 是建图期才知道的图属性（它决定 wpe 的行数
+// 与插件的 `max_seq_len`），必须进指纹才能让 runner 通过侧车把它读回来（spec §2 的 A1）。
+// 读不出 / 该模型没有这个字段 → 返回 false，**不往指纹里加这一项**：那个引擎的 runner 会因为
+// "侧车缺字段"拒绝启动（不猜默认值）。真正要建图时下面的 `ModelConfig::Load` 会先报同一个错，
+// 所以不会落一个缺项的引擎。
+bool TryGetModelPositions(const std::string& model_dir, int64_t* out) {
+    try {
+        // 直接读 `config.json` 而不走 `ModelConfig::Load`：这里只想要一个可选字段，
+        // 而 `Load` 会在缺 `model_type` / `architecture` 时报错 —— 那会让"缓存检查"这一步
+        // 先打一条**会误导排查方向**的错误日志（真正的诊断在后面的 `Load`）。
+        std::string config_path = model_dir;
+        if (!config_path.empty() && config_path.back() != '/') {
+            config_path += '/';
+        }
+        const JsonValue json = LoadJson(config_path + "config.json");
+        const JsonValue hyper_params = json["hyper_params"];
+        if (!hyper_params.IsObject() || !hyper_params.Has("n_positions") ||
+            !hyper_params["n_positions"].IsNumber()) {
+            return false;
+        }
+        *out = static_cast<int64_t>(hyper_params["n_positions"].AsInt());
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 }  // namespace
 
 EngineBuilder::EngineBuilder(Logger& logger, const Config& config)
@@ -248,6 +278,15 @@ EngineFingerprintInputs EngineBuilder::MakeFingerprintInputs(const std::string& 
         {"decode.opt_seq", config_.opt_decode_seq_len},
         {"decode.max_seq", config_.max_decode_seq_len},
     };
+    // **图属性也要进指纹**（A1，2026-10-05）：`n_positions` 决定 wpe 的行数与插件的 `max_seq_len`，
+    // 而 runner 侧只能靠它当位置表上界 —— 引擎查不到（只剩 `ceil(n_positions / block_size)` 这个
+    // 上界），所以真值由建图期写进侧车、runner 构造期读回（见 `p5_s5_interface_spec.md` §2 的 A1）。
+    // 解析不出这一项就不写（那个引擎的 runner 会因为"侧车缺字段"拒绝启动，不猜默认值）。
+    // 副作用：指纹内容变 → 现有引擎自动失效、首次跑重建一次（分钟级；**不是** `graph_version` bump）。
+    int64_t model_positions = 0;
+    if (TryGetModelPositions(model_dir, &model_positions)) {
+        inputs.numeric_params.emplace_back("model.n_positions", model_positions);
+    }
     inputs.flags = {
         {"export_diagnostics", config_.export_diagnostics},
         {"detailed_profiling", config_.detailed_profiling},

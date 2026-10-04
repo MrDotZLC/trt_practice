@@ -350,6 +350,37 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
         MINI_TRT_LOG_ERROR("GPT-2 build: packed_mixed is only supported for the prefill stage");
         return false;
     }
+    // **B1：packed 建图要求 `n_positions % block_size == 0`**（外部约束，见
+    // `p5_s5_interface_spec.md` §5 / `design.md` D16）。理由：`num_blocks() = ceil(n_positions /
+    // block_size)`，整除时"每序列池容量 = `num_blocks × block_size`"才**恰好等于** `n_positions`，
+    // 运行期才能拿池容量当位置表上界的独立几何校验。不整除时上界只能取 `ceil × bs`，于是
+    // `n_positions < L <= ceil × bs` 这段窗口被静默放行（宽度 = `block_size − n_positions % block_size`），
+    // 落进去的 prompt 会让绝对位置越过 wpe 表 —— **越界读且不报错**。
+    // 只写文档挡不住"下次有人换 block_size / n_positions 时静默产生非整除配置"，所以在建图期硬失败。
+    // **只限 packed**：padding 路径每步把 prompt 一次装下，越界由 `setInputShape` 响亮拦住。
+    if (is_packed && cfg.n_positions % cfg.block_size != 0) {
+        const int32_t remainder = cfg.n_positions % cfg.block_size;
+        const int64_t rounded = static_cast<int64_t>(cfg.num_blocks()) * cfg.block_size;
+        // 建议因数：`n_positions` 的因子（上限 64 —— 只用来给一条可照抄的提示，不必求全部因子）。
+        std::string divisors;
+        for (int32_t d = 1; d <= cfg.n_positions && d <= 64; ++d) {
+            if (cfg.n_positions % d != 0) {
+                continue;
+            }
+            if (!divisors.empty()) {
+                divisors += ", ";
+            }
+            divisors += std::to_string(d);
+        }
+        MINI_TRT_LOG_ERROR("GPT-2 build: packed graph requires n_positions % block_size == 0, got "
+                           << cfg.n_positions << " % " << cfg.block_size << " = " << remainder
+                           << ". Without it the engine would silently allow positions up to "
+                           << rounded << " (window width " << (cfg.block_size - remainder)
+                           << " above n_positions) and would read past the wpe table."
+                           << " Suggested block_size: a divisor of " << cfg.n_positions << " ("
+                           << divisors << ")");
+        return false;
+    }
     // prefill 与 decode 都要把每层的 K/V 导出：前者用来写 cache，
     // 后者是"下一轮追加"的数据来源。
     const bool export_kv = options.stage != BuildStage::kSingle;
