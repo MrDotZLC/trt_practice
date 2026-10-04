@@ -104,11 +104,13 @@ S1 没有新增单元级用例（改动集中在 runner 与采样器的接口层
 > ④ **真机前提**：S5 收口把 `cu_seqlens_ctx` 的 profile 行维范围改成 `[1, max_prefill_batch + 1]`
 > 并把 `kPackedPrefillGraphVersion` 提到 **6**，所以首次跑这组用例前 packed 引擎会重建一次。
 
-> **`chunk_limit` 在用例里怎么变（2026-10-04 定，作者可否决）**：设计定了它**不暴露给调用方**
-> （由引擎 profile 推导），而 AC9 要跑"1 / 中间值 / ≥ prompt_len"三种切法。口径取**测试专用覆盖钩子** ——
-> 照 `SetPagedAttentionNumSplitsOverride` + 测试侧 RAII `ScopedSplitsOverride`
-> （`tests/paged_attention_test_support.hpp`）的先例，生产路径恒不设置；**不走**"为三种切法建三个引擎"
-> 那条路（同一用例里要建三次引擎、对拍三遍，成本明显更高）。
+> **`chunk_limit` 在用例里怎么变（2026-10-05 修订，取代"测试专用覆盖钩子"那版）**：AC9 要跑
+> "1 / 中间值 / ≥ prompt_len"三种切法 → **直接在构造期给 `Config::max_prefill_seq_len`**（每个切法一个
+> runner，共用同一份引擎文件、各自反序列化 —— 见 `test_llm_runner_chunked.cpp` 的夹具）；
+> 原先的 `SetChunkLimitOverride` 钩子随 `TS-052` 发现 2 的修订**退役**（一个机制，而不是"字段 +
+> 进程级覆盖"两套）。**不走**"为三种切法建三个引擎"那条路（成本明显更高）。
+> 新增的构造期拒绝判据：`max_prefill_seq_len` 未声明 / 越界 / 违反交叉校验（`p5_s5_interface_spec.md`
+> §2 的 ①～⑤）—— 见 `ChunkLimitRejectedConfigs`。
 > **packed 路径的"逐条单跑"参考**同样是单请求 `RunScheduler`（同 S4）。
 
 | 用例 | 判据 |

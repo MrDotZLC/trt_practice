@@ -473,22 +473,19 @@ varlen 自注意力、之后的走分页注意力（含当前 token）——**�
   （`context_lens_host_[row] += row_lengths[i]`、`Sequence::length` 同）；预留量校验改用**累计长度**。
 - **chunk 期间不出 token**：序列在 prompt 全部 prefill 完成前不参与采样，`max_new` 从那时开始计时，
   否则"分块"会改变可见的生成语义。
-- **切法是确定性的**：`chunk_limit` = 引擎 profile 的**单序列上限**（`input_ids` / `position_ids`
-  第 1 维 `.max`），**不暴露给调用方**；非末块对齐（恒为 `chunk_limit`）、末块按剩余的实际长度。
-  不做"按队列长度自适应"那类调度层策略（那一条仍在 Excluded 里）—— AC1/AC9 的逐位对拍依赖确定性。
-- **`chunk_limit` 的来源（2026-10-04 作者授权折入）**：`LLMRunner::Config` 里**没有**
-  `max_prefill_seq_len`，`Engine` 类也不暴露 profile 查询，所以"由 profile 推导"必须先补一个
-  **`Engine` 的只读 profile 查询接口**（查 `getProfileShape`），**不新增 `LLMRunner::Config` 字段** ——
-  依据是项目既有的"按对方查询、不按配置假定"（workspace 版见 `paged_attention_split.hpp` 与
-  `PROGRESS.md` §2.15）。查询失败必须**构造期报错**，不许退回猜测的默认值。
-  **例外（2026-10-04 作者点名"一并修掉"后补）**：`n_positions` **查不到** —— 引擎里没有任何张量
-  带着它（只剩 `ceil(n_positions / block_size)` 这个上界），所以只能由调用方给：新增
-  `Config::max_positions`（packed 模式必填 + 两条上界检查），入口按 `prompt_len + max_new - 1`
-  拒绝。少了它，`prompt_len + max_new - 1 > n_positions` 会让 wpe 的 gather 越界读且**不报错**
-  （`TS-051` 第 4 条）。细则见 `p5_s5_interface_spec.md` §2 末。
-  **该来源尚未定案（2026-10-05）**："调用方声明"vs"建图侧注入（`n_positions` 是图属性）"要走
-  独立决策流程（见 `STATE.md` 的 Recovery Notes / Next Action 第 6 条），**不要**以"是否撞 spec §2"
-  为判据；定案后在这里落最终形态。
+- **切法是确定性的（2026-10-05 修订）**：`chunk_limit` = **调用方声明的
+  `Config::max_prefill_seq_len`**（与建图侧同名同值）；非末块对齐（恒为 `chunk_limit`）、末块按剩余
+  的实际长度。不做"按队列长度自适应"那类调度层策略（仍在 Excluded 里）—— AC1/AC9 的逐位对拍依赖
+  确定性。**该声明值只在 packed 模式有语义**：非 packed 路径必须留 0（不读也不校验）。
+- **`chunk_limit` / `max_prefill_seq_len` / `n_positions` 三条来源（2026-10-05 作者采纳"显式配置 +
+  交叉校验"后统一口径）**：三者同属"**引擎查不到 → 调用方声明 + 引擎交叉校验**"这一类
+  （`Config` 里那句"Runner 自己推不出来，所以要求调用方显式给出"）：
+  - `max_prefill_seq_len`：建图侧与运行侧**各声明一次**（同一个语义值），profile 查询**只做校验**
+    （`L × block_tables.dim0.max ≤ input_ids.dim1.max` 等五条，见 `p5_s5_interface_spec.md` §2）；
+  - `n_positions`：同一模式（packed 模式必填 + 上界检查 + 入口按 `prompt_len + max_new - 1` 拒绝，
+    `TS-051` 第 4 条）；**它的"调用方声明 vs 建图侧注入"待决策项不由本轮结案**（见 STATE）。
+  原先"由 profile 推导 `chunk_limit`、不新增 `Config` 字段"的写法由此**作废**：`chunk_limit` 是
+  **策略量**，不该是形状上界的副产品（旧写法的两个后果见 `TS-052` 发现 2）。
 - **图与引擎（`graph_version`）**：方案 A 让 I/O 契约与 `getWorkspaceSize` **都不变**，所以存在
   "复用旧引擎"的理论可能；但 `engine_cache.hpp` 的规则是"**任何改动建图 / 精度 / 插件行为的代码变更
   都要 +1**"（先例：1 → 2 正是 `PagedAttentionPlugin::getWorkspaceSize` 从 0 变正数），
@@ -500,10 +497,22 @@ varlen 自注意力、之后的走分页注意力（含当前 token）——**�
   范围会让"整批都是 context 行"的首步 `setInputShape` 失败，`TS-051` 第 6 条）。profile 区间同样
   进不了指纹，所以必须再 bump 一次（真机需重建一次 packed 引擎）。
 - **兜底纪律（作者 2026-10-04 定；第二遍复评补全检查对象与适用范围）**：分界是"**能否在构造期 /
-  入口判定**"——配置 / 形状类（`n_positions > 1024`、`prompt_len > n_positions`、推导不出
-  `chunk_limit`、profile 查询失败）**显式拒绝**，错误信息带上实际值与上界；运行期资源类
+  入口判定**"——配置 / 形状类（`n_positions > 1024`、`prompt_len > n_positions`、
+  `max_prefill_seq_len` 未声明 / 越界 / 交叉校验不过（`p5_s5_interface_spec.md` §2 的 ①～⑤）、
+  profile 查询失败）**显式拒绝**，错误信息带上实际值与上界；运行期资源类
   （TRT 未提供 workspace 时既有插件退单趟 + WARN）保留既有降级，但**S5 新增路径不得引入新的这类
   静默降级**。末块变短**不算**这种情形（同一个 kernel 按 `cu_seqlens` 处理）。
+- **Trade-off（2026-10-05 采纳"显式配置"时补，作者四点修订）**：
+  - **"单一事实来源"的口径**：单一是**下游**单一 —— chunk 策略与 profile 校验用同一份声明值；
+    **声明侧仍是两处**（`EngineBuilder::Config` + `LLMRunner::Config`，与 `max_batch` / `block_size`
+    同一个模式）。交叉校验**检不出**两侧声明不一致（builder 更大、runner 更保守时会通过 —— 安全方向，
+    但不是单一来源）。**不**新增"从 profile 反推 per-row 上界再比对"的校验：那会绕回"从 shape 反推"，
+    正是本次修订要消掉的形态。
+  - **`kPackedAttentionMaxContextSeqLen = 1024` 是外部约束**：来源是 kernel 的
+    `__shared__ float s_scores[...]`（4 KB 静态共享内存），**内核改此值（换 dtype / 动态共享内存 /
+    换分块策略）时 runner 侧的上界校验与 spec 必须同步修订** —— 引用常量名，不复制数值。
+  - **"policy < cap"第二旋钮本轮不做**；**触发条件**：当出现"想用更小的 chunk 换调度灵活性、
+    但不想动建图上界"的需求时（届时用 `chunk_limit ≤ max_prefill_seq_len` 表达，判据不变）。
 
 ## Requirement Coverage
 

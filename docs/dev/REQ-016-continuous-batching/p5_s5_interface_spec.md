@@ -54,26 +54,43 @@ chunk 的第二段之后必须**读缓存**里前面已经写好的 prompt K/V �
   prompt_done == prompt_len ⇒ 该序列进入 generation 相（从下一步起参与生成段）
 ```
 
-**`chunk_limit` 的取值（2026-10-04 作者确认：不暴露给调用方，由 profile 上限推导）**：
+**`chunk_limit` 的取值（2026-10-05 修订：作者采纳"显式配置 + 交叉校验"，取代 2026-10-04 的
+"由 profile 推导、不暴露给调用方"）**：
 
-- 取 **`chunk_limit` = profile 的单序列上限**（prefill 的 `input_ids` / `position_ids` 第 1 维
-  `.max`，即建图时的 `max_prefill_seq_len`）—— 这是 packed 图里"每行 token 数"的天然上界
-  （超过它行就会越出形状），所以"由上限推导"是唯一不需要新配置的口径。
-- **推导的来源（2026-10-04 作者授权折入）**：`LLMRunner::Config` 里**没有** `max_prefill_seq_len`，
-  `Engine` 类也不暴露 profile 查询（只有 `SetInputShape` / `SetTensorAddress` / `Enqueue` 等），
-  所以"由 profile 推导"目前无从下手。本设计采用**给 `Engine` 加一个 profile 查询接口**
-  （查 `ICudaEngine::getProfileShape(tensor, profile, kOPT|kMAX)`），由 runner 在构造期推出
-  `chunk_limit`，而不是往调用方再要一个可能与实际建图漂移的配置值 —— 依据是项目既有的
-  "**按对方查询、不按配置假定**"（workspace 版见 `paged_attention_split.hpp` 的注释与
-  `PROGRESS.md` §2.15）。**未编译验证**：接口名与 TRT 10.15 的实际签名要在真机窗口核对。
-- **推导结果必须先过三条真实约束**（替换原稿"fused kernel 支持的常量集合"）：
-  ① `chunk_limit >= 1`；② `chunk_limit <= profile 的行上界`；③ `prompt_done + pos + 1 <= prompt_len
-  <= n_positions <= kPackedAttentionMaxContextSeqLen = 1024`。任何一条不满足 →
-  **构造期直接拒绝并打印实际值**（见 §3 的兜底纪律），不静默换慢路径。
-- 若 profile 查询拿不到（接口不可用 / 张量名不符），同样在**构造期**报错，**不允许**退回一个
-  猜测的默认值 —— 那等于把"建图和运行时的口径不一致"变成静默错。
-- **`n_positions` 的来源 —— "不新增 Config 字段"的唯一例外（2026-10-04 作者点名"一并修掉"后补，
-  `TS-051` 第 4 条）**：与 `chunk_limit` **相反**，它**查不到** —— 引擎里没有任何张量带着
+- **`chunk_limit` = 调用方声明的 `LLMRunner::Config::max_prefill_seq_len`**（与
+  `EngineBuilder::Config` 的同名字段是**同一个语义值**：单步每序列最多多少 token）。建图侧用它算
+  profile 的 token 上界（`T_max = max_prefill_batch × max_prefill_seq_len`），运行侧直接把它当 chunk
+  上限 —— **一个声明值，不是从别的张量形状反推**。它与 `n_positions` 属同一类：引擎查不到、
+  必须由调用方声明的几何量（`Config` 里那句"Runner 自己推不出来，所以要求调用方显式给出"）。
+- **该字段只在 packed 模式下有语义**（契约写进字段注释）：非 packed 路径（`kPaddedTwoPhase`）
+  **必须留 0**，runner 不读、也不校验；填非 0 值没有任何效果 —— 写明是为了避免下一个人在 padding
+  路径上填了值、然后困惑"为什么没用"。
+- **packed 模式的交叉校验（任一条不过 → 构造期拒绝并打印实际值与上界；引擎仍是权威）**：
+  ① `max_prefill_seq_len >= 1`（`0` 只是"未声明"的哨兵，不是合法值）；
+  ② `max_prefill_seq_len <= max_positions`（位置表上界，见下一条）；
+  ③ **`max_prefill_seq_len × block_tables.dim0.max <= input_ids.dim1.max`** —— 保证"每步 Σ 每行
+     chunk ≤ 引擎 profile 的 T 上界"，即"多行同批不会越出形状"的**充分条件**；
+  ④ `max_prefill_seq_len <= kPackedAttentionMaxContextSeqLen`；
+  ⑤ profile 查询失败（引擎不可查 / 张量名不符）→ 拒绝，不许退回猜测的默认值。
+- **`kPackedAttentionMaxContextSeqLen = 1024` 的来源（外部约束，作者 2026-10-05 要求写清）**：
+  它**不是模型属性**，而是 **kernel 实现的编译期常量** —— `packed_attention_plugin.cu` 的
+  `__shared__ float s_scores[kPackedAttentionMaxContextSeqLen]`（1024 × 4 B = 4 KB 静态共享内存；
+  sm_75 每 block 静态共享内存上限 48 KB，余量充足），`configurePlugin` 用它拦住
+  `max_seq_len > 1024` 的建图。**若内核改这个数组（换 dtype / 改动态共享内存 / 换分块策略），
+ 上界必须同步修订**；runner 侧第 ④ 条与本文都以该常量名引用、**不复制数值**。
+- **"单一事实来源"的准确范围（作者 2026-10-05 指正）**：单一是**下游**单一 —— chunk 策略与
+  profile 校验都用同一份声明值；**声明侧仍是两处**（`EngineBuilder::Config` 与 `LLMRunner::Config`
+  各给一次，与 `max_batch` / `block_size` 同一个模式）。校验 ③ 只能证明"runner 的声明与引擎 profile
+  自洽"，**检不出两侧声明不一致**（builder 声明更大、runner 更保守时它会通过 —— 是安全方向，但
+  不是单一来源）。**不做**"从 profile 反推 per-row 上界再比对"的校验：那会绕回"从 shape 反推"，
+  正是本次修订要消掉的形态。
+- **原先的"由 profile 推导"降级为校验**：`Engine` 的只读 profile 查询接口保留（查
+  `getProfileShape`），用途从"推导 `chunk_limit`"变成"**校验声明值**"（第 ③ / ⑤ 条）。依据仍是
+  "按对方查询、不按配置假定"：**意图由调用方声明，上界由引擎裁决**。**未编译验证**：接口名与
+  TRT 10.15 的实际签名要在真机窗口核对。
+- **`n_positions` 的来源（2026-10-04 作者点名"一并修掉"后补，`TS-051` 第 4 条）**：与
+  `chunk_limit` **同属一类**（引擎查不到 → **调用方声明 + 引擎校验**）——
+  引擎里没有任何张量带着
   `n_positions`（只留下 `ceil(n_positions / block_size)`：cache 第 0 维 / `block_tables` 第 1 维），
   而 runner 也看不到 `config.json`。所以只能由调用方声明：`LLMRunner::Config::max_positions`
   （与 `block_size` / `num_blocks` 属于同一类"runner 推不出来"的几何参数）。
@@ -86,7 +103,9 @@ chunk 的第二段之后必须**读缓存**里前面已经写好的 prompt K/V �
   **注意（2026-10-05 复盘登记，尚未定案）**：这个**来源本身**仍在决策中 —— "调用方声明"（本节的
   当前实现）vs"建图侧注入"（`n_positions` 是图属性，若 TRT 能读回插件 / 图属性则语义更顺）。判据是
   语义正确性，**不是**"是否撞 spec §2 的字段禁令"；见 `STATE.md` 的 Recovery Notes / Next Action
-  第 6 条。**定案前按现状保留**，本节其余内容不受影响。
+  第 6 条。**定案前按现状保留**。**补充（2026-10-05 同日）**：上面的 `max_prefill_seq_len` 修订已把
+  "**引擎查不到的量 → 调用方声明 + 引擎交叉校验**"立为此类量的统一口径；该待决策项在它自己的决策
+  流程里裁决，本次不擅自结案（若裁决为"建图侧注入"，那两条都要一起改）。
 - "非末块对齐、末块按实际长度"是**同一条规则的两半**：非末块一律 `chunk_limit`（对齐 → 形状与 kernel
   假设稳定），末块是该序列剩余的实际长度（允许更短，按 `cu_seqlens` 分段处理，**不是回退**）。
 
@@ -181,11 +200,12 @@ mask  = 因果（chunk 内）+ 按 cu_seqlens_ctx 分段（不同序列不互相
 | cache 记账 | host 侧从"赋值"改成"**累加**"（`context_lens_host_[row] += row_lengths[i]`、`Sequence::length` 同）；预留量校验改用**累计长度** —— 只改 kernel 不改这两处 = 第二块起静默错 |
 | 采样 | 只有 `prompt_done == prompt_len` 的行参与采样；行集用**显式行列表 + 紧凑暂存**，不动 `SampleBatch` 签名与行号纪律（§2） |
 | 退出判据 | `max_new` 计时从 prefill 完成起（§2） |
-| `Engine`（新增只读接口） | 加一个 profile 查询（`getProfileShape`）供 runner 在构造期推导 `chunk_limit` 与做入口拒绝；**`chunk_limit` 不新增 `Config` 字段**（§2；`n_positions` 是唯一例外，见下一行） |
+| `Engine`（新增只读接口） | 加一个 profile 查询（`getProfileShape`）：用途是**校验**调用方声明的 `max_prefill_seq_len` / `max_positions`（§2 的交叉校验 ③/⑤），**不再用来推导 `chunk_limit`**（2026-10-05 修订） |
+| `LLMRunner::Config`（**2026-10-05 修订：新增**） | `max_prefill_seq_len`：`chunk_limit` 的来源（与建图侧同名同值）；**只在 packed 模式有语义，非 packed 必须留 0**；paired 校验 ①～⑤ 见 §2 |
 | `LLMRunner::Config`（新增 `max_positions`） | 位置表长度 `n_positions`：引擎侧查不到（只留 `ceil(n_positions/block_size)`），只能由调用方声明；packed 模式下必填 + 两条上界检查，入口按 `prompt_len + max_new - 1` 拒绝（§2 末、§3 的适用范围表） |
 | 图 / profile（`builder.cpp`） | `cu_seqlens_ctx` 的行维上界从 `max_prefill_batch` 改成 `max_prefill_batch + 1`（它的长度是 `B_ctx + 1`；用行维范围会让"整批都是 context 行"的首步 `setInputShape` 失败，`TS-051` 第 6 条） |
-| 测试专用钩子 | `SetChunkLimitOverride` / `ChunkLimitOverride`（声明在 `llm_runner.hpp`，生产路径恒不设置）：给 S5-3 的三种切法用例用；先例 `SetPagedAttentionNumSplitsOverride`（§6） |
-| 图版本 | **已定（作者 2026-10-04）：bump 4 → 5**，依据 `engine_cache.hpp` 的"任何改动插件行为的代码变更都要 +1"与 1 → 2 的先例；**同日收口再 5 → 6**：`cu_seqlens_ctx` 的 profile 区间变了（上一行），而 profile 区间同样进不了指纹。代价：真机需要重建 packed 引擎（版本 5 的缓存作废） |
+| 测试专用钩子（**2026-10-05 修订：退役**） | 原先的 `SetChunkLimitOverride` / `ChunkLimitOverride` 不再需要 —— 三种切法直接通过 `Config::max_prefill_seq_len` 在**构造期**给值（一个机制，而不是"字段 + 进程级覆盖"两套，§6） |
+| 图版本 | **已定（作者 2026-10-04）：bump 4 → 5**，依据 `engine_cache.hpp` 的"任何改动插件行为的代码变更都要 +1"与 1 → 2 的先例；**同日收口再 5 → 6**：`cu_seqlens_ctx` 的 profile 区间变了（上一行），而 profile 区间同样进不了指纹。代价：真机需要重建 packed 引擎（版本 5 的缓存作废）。**2026-10-05 的 `max_prefill_seq_len` 修订不动建图与 profile 区间 → 保持 6，不需要再 bump** |
 | 判据/用例 | 见 §6（新增一组，不改 S4/S3 的既有用例） |
 
 **不改的东西**：打包顺序（context 在前）、段边界与下标纪律、split-K 的复用（generation 段照旧）、
@@ -207,9 +227,9 @@ packed 插件的输入个数与顺序、**其余** profile 区间（`cu_seqlens_
 
 - packed 的 token 维 `T` 仍然是"本步所有参与行的 token 总数"：chunk 只会让它**更小**，
   不改变 S4 已定的范围（`[1, max_batch × max_prefill_seq_len]`）。
-- `chunk_limit` = 从引擎 profile **查出来**的单序列上限（`input_ids` / `position_ids` 第 1 维 `.max`，
-  不是 `config_` 里的字段 —— `LLMRunner::Config` 没有这个字段，见 §2）。它是**数据**不是形状，
-  只决定"每步送多少"，不需要进 profile。
+- `chunk_limit` = **调用方声明的 `Config::max_prefill_seq_len`**（§2 的 2026-10-05 修订）；
+  `input_ids` / `position_ids` 第 1 维的 profile 上界**只用来校验它**（§2 校验 ③），不再拿它反推。
+  它是**数据**不是形状，只决定"每步送多少"，不需要进 profile。
 - **`cu_seqlens_ctx` 的行维范围 = `[1, max_prefill_batch + 1]`**（2026-10-04 收口修正）：它的长度是
   `B_ctx + 1`（最后一项是段内 token 总数，插件也靠 `dim[0] - 1` 推 `B_ctx`），比 `block_tables` /
   `context_lens` 的行维**多一格**。沿用行维范围时，`B_ctx = max_prefill_batch` 的首步（整批都是
@@ -228,10 +248,10 @@ packed 插件的输入个数与顺序、**其余** profile 区间（`cu_seqlens_
 
 ## 6. 判据与用例（待实现后补进 test_plan.md）
 
-> **`chunk_limit` 在用例里怎么变（2026-10-04 定，作者可否决）**：它不暴露给调用方，但 AC9 要跑
-> "1 / 中间值 / ≥ prompt_len"三种切法 → 取**测试专用覆盖钩子**（`SetChunkLimitOverride` /
-> `ChunkLimitOverride`，生产路径恒不设置），照 `SetPagedAttentionNumSplitsOverride` +
-> `tests/paged_attention_test_support.hpp` 的先例；**不**走"为三种切法建三个引擎"那条路。
+> **`chunk_limit` 在用例里怎么变（2026-10-05 修订）**：AC9 要跑"1 / 中间值 / ≥ prompt_len"三种切法 →
+> **直接在构造期给 `Config::max_prefill_seq_len`**（每个切法一个 runner，共用同一份引擎文件、各自反序列化；
+> 见 `test_llm_runner_chunked.cpp` 的夹具）。原先的 `SetChunkLimitOverride` 钩子随本次修订**退役**
+> （一个机制，而不是"字段 + 进程级覆盖"两套）；**不**走"为三种切法建三个引擎"那条路。
 
 | 用例 | 判据 |
 |---|---|
@@ -285,6 +305,17 @@ packed 插件的输入个数与顺序、**其余** profile 区间（`cu_seqlens_
 | 8 | `n_positions` 的来源 | 引擎侧**查不到** → 新增 `LLMRunner::Config::max_positions`（"不新增 `Config` 字段"的唯一例外）；packed 模式必填 + 两条上界检查 + 入口拒绝（§2 末） |
 | 9 | `cu_seqlens_ctx` 的 profile 上界 | 从行维范围拆出，改成 `[1, max_prefill_batch + 1]`；`kPackedPrefillGraphVersion` **5 → 6**（真机需重建一次 packed 引擎） |
 
+**第四轮确认（作者 2026-10-05 采纳"显式配置 + 交叉校验"方向）**：
+
+| # | 事项 | 结论 |
+|---|---|---|
+| 10 | `chunk_limit` 的来源 | **反转 2026-10-04 的"不暴露给调用方、由 profile 推导"**：改为 `Config::max_prefill_seq_len` 显式声明（与建图侧同名同值），profile 查询降级为校验（§2） |
+| 11 | 该字段在非 packed 路径的语义 | **必须留 0**；runner 不读也不校验（契约写进字段注释）—— 避免"填了值却没效果"的困惑（作者第 1 点） |
+| 12 | `kPackedAttentionMaxContextSeqLen = 1024` 的来源 | 记为**外部约束**：kernel 的 `__shared__ float s_scores[...]`（4 KB 静态共享内存），spec 显式记录 + "内核改此值需同步修订"（作者第 2 点，§2） |
+| 13 | "单一事实来源"的口径 | **下游单一，不是声明侧单一**（声明侧仍是 builder + runner 两处）；不新增"从 profile 反推 per-row 上界比对"的校验（作者第 3 点，§2 / design D16 的 Trade-off） |
+| 14 | "policy < cap"第二旋钮 | 本轮**不做**；design.md 的 Trade-off 写明触发条件（作者第 4 点） |
+| 15 | `n_positions` 的待决策项（§8 表 3 第 8 行） | 本轮的"声明 + 交叉校验"与它同构，但**不擅自结案**；若最终裁决为"建图侧注入"，两个字段要一起改（§2 末） |
+
 **下一步**：设计修订已出（本文件 + `design.md` D15/D16 + `analysis.md` 的术语登记），
 Gate-A 重开待作者确认；确认后按 `review.md` 的 S5 用例清单开始 S5-1 的实现。
 
@@ -317,3 +348,11 @@ P1 三条在此收口），逐节修订：
 行维范围）并把图版本改成 4 → 5 → 6；§5 写清 `cu_seqlens_ctx` 的行维范围是 `[1, B + 1]`；
 §6 的 `ChunkLimitRejectedConfigs` 判据扩成四组。依据：作者 2026-10-04 的"一并修掉"指令
 （`TS-051` 的四条 + 收口时新查出的两条）。
+
+**2026-10-05（作者采纳"显式配置 + 交叉校验"方向 + 四点修订）**：`chunk_limit` 的来源从"profile
+推导"改为**显式字段 `Config::max_prefill_seq_len`**（§2 开头重写、§4 表新增一行并退役
+`SetChunkLimitOverride`、§5 与 §6 的注记同步、§8 表 4）。四点修订全部折入：① 字段在非 packed 模式
+必须留 0（§2）；② `1024` 记为外部约束并注明同步修订条件（§2）；③ "单一事实来源"改口径为**下游单一、
+声明侧两处**，且不新增"从 profile 反推"的校验（§2 + design D16 的 Trade-off）；④ "policy < cap"
+第二旋钮不做，只写触发条件（design D16）。另：§8 表 4 第 15 行明确 `n_positions` 的待决策项**不由
+本轮结案**。依据：作者 2026-10-05 的采纳指令与四点修订（见 §8 表 4）。
