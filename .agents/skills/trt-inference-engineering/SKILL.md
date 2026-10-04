@@ -158,7 +158,7 @@ STATE.md 的 `phase` 字段使用连字符标识（feature 用 `P0-Requirement` 
 
 6. 猜测不存在的feature状态。
 
-7. 修改Skill自身文件。
+7. 修改Skill自身文件（绝对禁止；每次修改都需作者明确许可，许可指令为“授权修改SKILL一次”）。
 
 ## Workflow Routing
 
@@ -284,6 +284,11 @@ Step 5:
 禁止：
 
 猜测恢复目标。
+
+## 会话收尾（Handoff）
+
+收尾回复里凡出现"本该在动手前说、我在这里补记"这类自我披露，**必须同时产出一条 Recovery Note
+（写进该 feature 的 STATE.md）或一条流程改动**；只披露不落载体不算闭环。
 
 ## Multi Feature Handling
 
