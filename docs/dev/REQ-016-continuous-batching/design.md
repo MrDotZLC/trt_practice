@@ -461,7 +461,13 @@ varlen 自注意力、之后的走分页注意力（含当前 token）——**�
 - **采样行集 = 显式行列表 + 紧凑暂存**：本步参与采样的行 = 生成段前缀 ∪ 本步完成 prefill 的 chunk 行。
   完成的行**不保证**连续（长 prompt 分块中、新准入的短 prompt 本步完成时会出现"洞"），而采样器
   只吃连续 `[count]`；因此 runner 用一张显式行列表把（末位 logits / per-row 采样参数 / EOS 标记 /
-  输出 token）在紧凑槽位上聚集与散开 —— **不动 `SampleBatch` 签名，也不动行号纪律**（不变量 4）。
+  输出 token）在紧凑槽位上聚集与散开 —— **不动 `SampleBatch` 签名**。
+- **generation 段的行映射（2026-10-04 按方案 A 补）**：同一条"洞"也影响**下一步**的 generation 段 ——
+  那条完成的行必须能进生成段，而生成段现在按"cache 行 = 活跃前缀"恒等寻址（`AppendDecodeKV` 的
+  `rows`、推进 `context_lens` 的 kernel、以及 host 侧两处记账，见 `paged_kv_cache.cpp`）。
+  **决策：给 generation 段加显式行映射**（`rows` 数组，`nullptr` = 恒等 → S1/S2/S3 行为与开销不变），
+  **不改行序**（不置换 `order_`）。不变量 4 的口径由"引擎行 == cache 行"精确化为
+  "**引擎行 ↔ cache 行同源，映射方式显式**"。
 - **写回位置与记账**：写回从 `prompt_done` 起——kernel 用**写回时刻**的 `context_lens[row] + t`
   （该值同样仍是本步之前的已写入长度，不需要新输入）；host 侧记账从"赋值"改成"累加"
   （`context_lens_host_[row] += row_lengths[i]`、`Sequence::length` 同）；预留量校验改用**累计长度**。

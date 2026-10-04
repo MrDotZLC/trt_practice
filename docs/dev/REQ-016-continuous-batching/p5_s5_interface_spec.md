@@ -162,16 +162,24 @@ mask  = 因果（chunk 内）+ 按 cu_seqlens_ctx 分段（不同序列不互相
 | position_ids | context 行的第 `i` 个 chunk token 用 `prompt_done + i`（绝对位置）；首 chunk 退化为 `0..L_c-1`（§2） |
 | 活跃表 | 记录 `prompt_done`（优先直接取 `PagedKVCache::SequenceLength`，见 §2）；`RunPackedMixedStep` 按 §2 切 chunk |
 | 写回 | 位置从 `prompt_done` 起：kernel 用**写回时刻**的 `context_lens[row] + t`（无需新输入）；`row_lengths` 用 **chunk 长度** |
+| generation 段的行映射 | **加显式行映射**（`rows`，`nullptr` = 恒等，S1/S2/S3 行为与开销不变）：`AppendDecodeKV` / `AppendDecodeStep` / 推进 `context_lens` 的 kernel 都接受一张"每步重建的 cache 行号列表"。理由：本步完成 prefill 的行可能被未完成的行隔开，而 generation 段现在按"cache 行 = 前缀"恒等寻址（`paged_kv_cache.cpp` 的四处）。**不改行序、不置换 `order_`** |
 | cache 记账 | host 侧从"赋值"改成"**累加**"（`context_lens_host_[row] += row_lengths[i]`、`Sequence::length` 同）；预留量校验改用**累计长度** —— 只改 kernel 不改这两处 = 第二块起静默错 |
 | 采样 | 只有 `prompt_done == prompt_len` 的行参与采样；行集用**显式行列表 + 紧凑暂存**，不动 `SampleBatch` 签名与行号纪律（§2） |
 | 退出判据 | `max_new` 计时从 prefill 完成起（§2） |
 | `Engine`（新增只读接口） | 加一个 profile 查询（`getProfileShape`）供 runner 在构造期推导 `chunk_limit` 与做入口拒绝；**不新增 `LLMRunner::Config` 字段**（§2） |
+| 测试专用钩子 | `SetChunkLimitOverride` / `ChunkLimitOverride`（声明在 `llm_runner.hpp`，生产路径恒不设置）：给 S5-3 的三种切法用例用；先例 `SetPagedAttentionNumSplitsOverride`（§6） |
 | 图版本 | **已定（作者 2026-10-04）：`kPackedPrefillGraphVersion` bump 4 → 5**。依据：`engine_cache.hpp` 的"任何改动插件行为的代码变更都要 +1"与 `builder.cpp` 记的 1 → 2 先例（`PagedAttentionPlugin::getWorkspaceSize` 从 0 变正数）。代价：真机首次重建 packed 引擎 |
 | 判据/用例 | 见 §6（新增一组，不改 S4/S3 的既有用例） |
 
 **不改的东西**：打包顺序（context 在前）、段边界与下标纪律、split-K 的复用（generation 段照旧）、
 块映射与不变量 4 的口径、`prefill_mode` 开关（S5 是 packed 路径内部的能力，不新增开关 —— 见 §8）；
 packed 插件的输入个数与顺序、profile 区间。
+
+**"下标纪律"的精确口径（2026-10-04 按方案 A 修正）**：不变量 4 要求的是"**引擎行 ↔ cache 行同源**"，
+不是"必须恒等映射"。S3/S4 的 generation 段之所以用恒等行号，是因为那时"能生成的行恰好是活跃前缀"
+（= cache 前缀）。S5 分块后这条前提不再成立，所以 generation 段改成**显式行映射**（`rows` 数组，
+`nullptr` = 恒等）；原稿"不动下标纪律"的说法由此修正为"**不变量 4 不变，映射方式显式化**"。
+行序（`order_`）与段边界（`context_seq_count`）、打包顺序都不动。
 
 **改判的东西（2026-10-04 第二遍复评 + 作者确认）**：原稿把 `graph_version` 也列进"不改"，但那是
 **没有依据的结论**（`engine_cache.hpp` 要求"任何改动插件行为的代码变更都要 +1"；`builder.cpp` 记着
@@ -198,6 +206,11 @@ packed 插件的输入个数与顺序、profile 区间。
   见 §4），因为 `engine_cache` 看不见"插件对同一绑定的计算语义变了"。
 
 ## 6. 判据与用例（待实现后补进 test_plan.md）
+
+> **`chunk_limit` 在用例里怎么变（2026-10-04 定，作者可否决）**：它不暴露给调用方，但 AC9 要跑
+> "1 / 中间值 / ≥ prompt_len"三种切法 → 取**测试专用覆盖钩子**（`SetChunkLimitOverride` /
+> `ChunkLimitOverride`，生产路径恒不设置），照 `SetPagedAttentionNumSplitsOverride` +
+> `tests/paged_attention_test_support.hpp` 的先例；**不**走"为三种切法建三个引擎"那条路。
 
 | 用例 | 判据 |
 |---|---|

@@ -24,6 +24,8 @@ P6 产物。本版 2026-10-03 建立（S1 代码已落、未编译）。
 | AC6 性能可复现 | 先声明判别下限，再 A/B | **属于 P4/P7**（环境搁置） | 待环境 |
 | AC7 不浪费 | 短序列不受最长序列影响 | `PackedShortSequenceNotPenalized`（S4；**代价**那条属 P4/P7） | 待真机 |
 | AC8 两条路径各自成立且可回退 | 各自满足 AC1；切换不改调用方接口 | `FallbackSwitchKeepsResults`（S4）+ `PackedEqualsSequential` | 待真机 |
+| Included 8：长 prompt 的分块推进 | 跨多步推进，且与不分块等价 | `ChunkedEqualsWholePrompt`（S5） | 待真机 |
+| AC9 分块与不分块等价 | 三种切法逐位相同；不影响同批其它序列 | `ChunkedEqualsWholePrompt` + `ChunkBoundaryDoesNotDisturbOthers`（S5） | 待真机 |
 
 ## Unit Test
 
@@ -81,6 +83,26 @@ S1 没有新增单元级用例（改动集中在 runner 与采样器的接口层
 | `PackedMetadataFollowsPackedOrder` | `block_tables` / `context_lens` 按 packed 行序重建（照 S3 直传镜像会让 generation 行读到别人的块） |
 | `PackedShortSequenceNotPenalized` | AC7 的可观测部分：同批长度差很大时短序列结果不受影响（代价那条属 P4/P7） |
 | `FallbackSwitchKeepsResults` | AC8：回退到 `kPaddedTwoPhase` 后仍各自成立（不要求跨路径逐位相同） |
+
+### S5 chunked prefill（`LlmRunnerChunkedTest.*`，代码待 S5-2 / 用例待 S5-3）
+
+> **`chunk_limit` 在用例里怎么变（2026-10-04 定，作者可否决）**：设计定了它**不暴露给调用方**
+> （由引擎 profile 推导），而 AC9 要跑"1 / 中间值 / ≥ prompt_len"三种切法。口径取**测试专用覆盖钩子** ——
+> 照 `SetPagedAttentionNumSplitsOverride` + 测试侧 RAII `ScopedSplitsOverride`
+> （`tests/paged_attention_test_support.hpp`）的先例，生产路径恒不设置；**不走**"为三种切法建三个引擎"
+> 那条路（同一用例里要建三次引擎、对拍三遍，成本明显更高）。
+> **packed 路径的"逐条单跑"参考**同样是单请求 `RunScheduler`（同 S4）。
+
+| 用例 | 判据 |
+|---|---|
+| `ChunkedEqualsWholePrompt` | AC9：同一条 prompt 在 `chunk_limit` 取 1 / 中间值 / ≥ prompt_len 三种切法下 token **逐位相同**；覆盖"全对齐步"与"含末块步"两种形状 |
+| `ChunkedPositionsAreAbsolute` | 第二块起的 `position_ids` = `prompt_done + i`（用段内 `i` 会查错位置表，且**不报错**） |
+| `ChunkBoundaryDoesNotDisturbOthers` | 分块不影响同批其它序列（含正在 generation 的行） |
+| `ChunkedShortPromptsUnchanged` | `chunk_limit ≥ prompt_len` 时与不分块逐位相同（S4 路径的红利） |
+| `ChunkProgressStateIsCorrect` | `prompt_done` 推进正确：chunk 期间不出 token、完成后才采第 0 个、`max_new` 从那时计时 |
+| `ChunkedSamplingRowSetIsCompacted` | "分块中的长 prompt"排在"本步完成的短 prompt"**之前**时，完成的那行仍被正确采样、未完成的行不出 token |
+| `ChunkedRetireAndBlocks` | 分块跨步时的块记账与退出归还正确（AC3 在分块下的形态） |
+| `ChunkLimitRejectedConfigs` | 配置 / 形状类不可用（推导不出 `chunk_limit`、越界、`prompt_len > n_positions`）被**显式拒绝**，错误信息带实际值与上界；反向断言"没有静默换路" |
 
 ## Regression Test
 
