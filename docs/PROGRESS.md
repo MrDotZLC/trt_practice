@@ -1633,6 +1633,20 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 | **探针图会改变后端行为** | 挂 21 个图输出后，TRT 的 tactic 从 `i8i8` 变成 `volta_fp32_icudnn_int8x4_*`（层数 44 → 78）——**仪器改变了被观测对象** | 不能只看"某个计数变了"，要问"现象还复不复现"：**B1-4（复现对照）是硬门**；另加逐层 ONELINE 落盘供人核对 | `TROUBLESHOOTING` **#47.2** |
 | **遍历 I/O 张量时形状问错对象** | `ICudaEngine::getTensorShape` 对动态维返回 **-1** → 转 `size_t` 成天文数字 → 报错伪装成"**显存分配失败：input**" | 形状**只能问 `IExecutionContext`**（`setInputShape` 之后），并对任何 ≤0 的维显式报错。既有用例没踩到它，是因为它把尺寸硬编码成常量、从不枚举张量 | `TROUBLESHOOTING` **#47.1 / #47.4** |
 
+### 5.16 [DEC-PERF-UNVERIFIED] REQ-016 连续批的性能未验证（Dependency Missing，2026-10-05）
+
+**问题**：REQ-016（连续批 / S3 调度 / S4 packed 混合批 / S5 分块 prefill）的**全部性能结论未验证**。
+
+**影响**：① AC6（性能可复现）与 AC7（不浪费）**无从结**；② `max_batch`、packed 引擎 profile 的 `opt`
+等取值仍是**保守值 + "待实测"**，不得当成实测结论；③ 2026-10-05 的 `chunk_limit` 修订让**分块真的
+启用**（旧口径下几乎不触发），默认路径的行为画像随之改变 —— 更不允许声称收益。
+
+**Workaround / 恢复后必须做**：见 `docs/dev/REQ-016-continuous-batching/benchmark_before.md` 的
+`## Result` 与"三处留痕"表 —— 恢复后要量**五项**（batch=1 每步延迟、prefill logits 显存、K/V 池、
+每序列块用量、**S5 的 chunk 维度对照**），其中 `summary.md` 的 Performance 行在 **P8** 清
+（`phases/p4_baseline.md` 的 Dependency Missing 点名，`STATE.md` 的 Next Action 第 5 条已锚定义务）。
+过程与本次更正见 `docs/TROUBLESHOOTING.md` 与 `STATE.md` 的 Current Blockers（P4 / P7 搁置那条）。
+
 ## 6. [DEC-NEXT-STEPS] 下一步计划
 
 **没有"自动往下走"的阶段。** Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成；

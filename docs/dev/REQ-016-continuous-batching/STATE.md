@@ -101,6 +101,14 @@
 - **P4 / P7 搁置（2026-10-03）**：当前不在 GTX 1660 Ti 环境，无法取基线。按
   `phases/p4_baseline.md` 的 Dependency Missing 记 N/A；`benchmark_before.md` 写明环境恢复后
   必须补的四项测量。**批上限（`max_batch`）暂时只能取保守值并标注"待实测"**，不得写成实测结论。
+  **`Gate-B: N/A（缺依赖：本机无 GPU / 无 nvcc·cmake·TRT，无法取基线）`** —— 技能要求的
+  **三处留痕**（引用 `phases/p4_baseline.md` 的 Dependency Missing，逐项打勾，不转述）：
+  ① `benchmark_before.md` 的 `## Result` = `N/A: <原因>` ✅ 已写（含恢复清单）；
+  ② `STATE.md` 的 Next Action / Current Blockers 写 `Gate-B: N/A（缺依赖：<原因>）` ✅ 本条；
+  ③ `summary.md` 的 Performance 一节写 N/A + 原因 ⏳ **未满足（阻塞）**：该文件是 P8 产物，P4 时点
+     不可能产出 —— 已按 `AGENTS.md` §5 第 5 条登记+上报（作者 2026-10-05 指令"全落"，含本条），
+     义务落在 Next Action 第 5 条，P8 清。
+  （`docs/PROGRESS.md` §5.16 是**附加**留痕，不在技能点名的三处里；2026-10-05 补。）
 - **本沙箱无编译能力**：没有 nvcc / cmake / 任何 C++ 编译器，也没有 TensorRT 与 build 目录，
   因此 P5 的 Exit Gate（"编译通过、无新增 warning"）在本环境**无法执行**。
   **S1 的代码改动（含采样器）全部未编译验证。**
@@ -136,6 +144,10 @@
 5. 环境恢复后补 P4，再按 D10 的两种负载跑 P7。**注意（2026-10-05）**：`TS-052` 发现 2 的修订
    （`chunk_limit` 改由显式声明派生）会让**分块真的启用**（此前几乎不触发）→ 默认路径的行为画像变了，
    P7 结果必须按"**性能未验证 / 不声称收益**"的口径呈现，AC6 不得凭空结。
+   **P8 义务（2026-10-05 登记）**：`summary.md` 的 Performance 一节必须写 `N/A` + 原因 —— 它是
+   `phases/p4_baseline.md` 的 Dependency Missing **三处留痕里的第 3 处**（P4 时点不可能产出，
+   故记"未满足（阻塞）"并在此锚定义务）。恢复后要量的**五项**见 `benchmark_before.md` 的 `## Result`
+   （第 5 项 = S5 的 chunk 维度对照）。
 6. **待决策（设计，走决策流程）**：`n_positions` 的来源 —— "调用方声明（`Config::max_positions`，
    当前实现）"vs"建图侧注入（引擎 / 图属性）"。见 `## Recovery Notes` 的"待决策"条：判据是语义
    （`n_positions` 是图属性），**不是**"是否撞 spec §2"；选项 B 的可行性（TRT 能否读回插件属性）
