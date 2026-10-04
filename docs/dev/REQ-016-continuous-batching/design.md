@@ -486,6 +486,9 @@ varlen 自注意力、之后的走分页注意力（含当前 token）——**�
   `Config::max_positions`（packed 模式必填 + 两条上界检查），入口按 `prompt_len + max_new - 1`
   拒绝。少了它，`prompt_len + max_new - 1 > n_positions` 会让 wpe 的 gather 越界读且**不报错**
   （`TS-051` 第 4 条）。细则见 `p5_s5_interface_spec.md` §2 末。
+  **该来源尚未定案（2026-10-05）**："调用方声明"vs"建图侧注入（`n_positions` 是图属性）"要走
+  独立决策流程（见 `STATE.md` 的 Recovery Notes / Next Action 第 6 条），**不要**以"是否撞 spec §2"
+  为判据；定案后在这里落最终形态。
 - **图与引擎（`graph_version`）**：方案 A 让 I/O 契约与 `getWorkspaceSize` **都不变**，所以存在
   "复用旧引擎"的理论可能；但 `engine_cache.hpp` 的规则是"**任何改动建图 / 精度 / 插件行为的代码变更
   都要 +1**"（先例：1 → 2 正是 `PagedAttentionPlugin::getWorkspaceSize` 从 0 变正数），
