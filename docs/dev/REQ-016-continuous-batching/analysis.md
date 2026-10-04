@@ -151,3 +151,6 @@ decode 引擎（读 cache + context_lens/block_tables）─→ logits[1,1,V]
 | 空闲块数回到初始值 | 分配器报告的可用块数等于该轮开始前的值（引用相等，不是"接近"） | 存在差值 |
 | 无显著差异 | 观测差小于本次口径的判别下限（本机这类测量约 ±400~600 µs，`docs/PROGRESS.md` §5.13b） | 把小于下限的差值写成"更快 / 更慢 X%" |
 | 可复现且不自证 | 同 session、同二进制 A/B、逐轮交替测量，报中位数与四分位；且事先声明判别下限 | 只有单次读数；或用实现自己产出对比实现自己；或事后才补判别下限 |
+| 分块 / chunk（Included 8、AC9） | **指针式登记**（作者 2026-10-04 定）：定义以 `p5_s5_interface_spec.md` §2 为**唯一来源** —— `chunk_len = min(prompt_len - prompt_done, chunk_limit)`；非末块对齐（恒为 `chunk_limit`）、末块按剩余实际长度。本表只登记指针，不复制正文，避免两处定义漂移 | 把末块变短当成"回退"；或同一输入切出不同的 chunk 组（自适应切法） |
+| 末块 / 非末块 | 同上（`p5_s5_interface_spec.md` §2）：同一条规则的两半 | 把末块当异常，或把非末块切成短块 |
+| chunk 的绝对位置 | 同上（`p5_s5_interface_spec.md` §2）：chunk 内第 i 个 token 的 `position_ids` = `prompt_done + i`；首 chunk 退化为 `0..L_c-1` | 用段内下标 `i` 当位置（第二块起查错位置表，且不报错） |
