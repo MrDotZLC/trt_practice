@@ -23,6 +23,7 @@ using test_support::kBlocksPerSeq;
 using test_support::kHeadSize;
 using test_support::kHeads;
 using test_support::kLayers;
+using test_support::kPositions;
 using test_support::kVocab;
 
 // 用例的 profile 必须允许批 > 1（`SmallGpt2BuilderConfig` 的默认是 1/1/1）。
@@ -192,6 +193,9 @@ PackedFixture MakePackedFixture(const std::string& engine_prefix, int32_t max_ba
     runner_config.vocab_size = kVocab;
     runner_config.max_batch = max_batch;
     runner_config.eos_token_id = eos_token_id;
+    // S5：packed 模式下 runner 必须知道位置表长度（引擎侧查不到，见 Config::max_positions）；
+    // 本夹具的模型就是 kPositions 个位置。
+    runner_config.max_positions = kPositions;
     runner_config.prefill_mode = LLMRunner::Config::PrefillMode::kPackedMixed;
     fixture.runner = std::make_unique<LLMRunner>(runner_config, fixture.engine, fixture.engine,
                                                  nullptr);

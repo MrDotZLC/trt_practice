@@ -43,6 +43,22 @@ class LLMRunner {
         int32_t max_blocks_per_seq = 0;
         // 物理块池大小（能同时容纳多少 token 的 K/V）。
         int32_t num_blocks = 0;
+        // 位置表长度 n_positions（= config.json 的 `n_positions`，也 = 建图时给 PagedAttention /
+        // PackedAttention 插件的 `max_seq_len`）。
+        //
+        // **为什么必须由调用方给**：它不是任何输入张量的形状 —— 引擎侧只留下
+        // `ceil(n_positions / block_size)`（cache 的第 0 维 / block_tables 的第 1 维）这个**上界**，
+        // 而 runner 看不到 config.json。与本结构体开头那句"Runner 自己推不出来，所以要求调用方
+        // 显式给出"同一口径。
+        //
+        // **谁用它**：`prompt_len + max_new - 1 > max_positions` 时入口直接拒绝（见 RunScheduler
+        // 的入口校验）。少了这道闸，位置编码的 `addGather(wpe, position_ids)` 会越界读 ——
+        // TRT **不报错**，只会拿位置表以外的数据算出无意义的 logits（`docs/TROUBLESHOOTING.md`
+        // 的 `TS-051`）。S5 的分块让"prompt_len 超过单步形状上界"成为正常路径，这条闸不可省。
+        //
+        // `0` = 未声明：**packed 模式下构造期直接拒绝**（"不许猜默认值"）；padding 两段式路径下
+        // 不检查（那条路径的 S 由引擎 profile 兜住：越界时 `SetInputShape` 会显式失败）。
+        int32_t max_positions = 0;
         // 与引擎激活精度一致；不一致时 PagedAttention 会按错误宽度读 cache。
         bool is_half = false;
         // 单次批量调用的最大序列数（S1：静态批）。
@@ -202,11 +218,13 @@ class LLMRunner {
     // 同上，但按**显式顺序**（S4 的 packed 行序：context 行在前、generation 行在后）上传。
     bool UploadRowParamsByOrder(const std::vector<ActiveSequence>& active,
                                 const std::vector<int32_t>& active_indices);
-    // **S4 的一步**：打包 → 一次 packed 调用 → context 写回 / generation 追加 → 采样。
-    // active 的行序 = 活跃表序（generation 行是前缀）；packed 行序 = context 行在前。
+    // **S4/S5 的一步**：打包 → 一次 packed 调用 → context 写回 / generation 追加 → 采样。
+    // `active` 的行序 = 活跃表序；packed 行序 = context 行在前、generation 行在后。
+    // **两段的分工不由调用方传入**：S5 起按 cache 的已写入长度在函数内重算（完成 prefill 的行
+    // 可能夹在未完成的行后面），所以这里不再有"生成段前缀行数 / 新入批行数"两个参数 ——
+    // S4 的"generation 行 = 活跃表前缀"这个前提在分块下不成立。
     bool RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
-                            const std::vector<ActiveSequence>& active, int32_t generation_rows,
-                            int32_t new_rows, int32_t max_new);
+                            const std::vector<ActiveSequence>& active, int32_t max_new);
 
     Config config_;
     bool valid_ = false;

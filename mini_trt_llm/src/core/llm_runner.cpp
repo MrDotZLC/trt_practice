@@ -1,6 +1,7 @@
 #include "mini_trt_llm/core/llm_runner.hpp"
 
 #include "mini_trt_llm/core/llm_runner_kernel.hpp"
+#include "mini_trt_llm/plugins/packed_attention_plugin.hpp"
 #include "mini_trt_llm/sampler/sampler_common.hpp"
 #include "mini_trt_llm/utils/cuda_check.hpp"
 #include "mini_trt_llm/utils/logger.hpp"
@@ -166,6 +167,30 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
 
     // 采样器的 per-batch 参数（k / p）在整个请求里是常量，所以在这里上传一次，
     // 不放进解码循环——循环里只允许有"已经备好"的设备侧动作。
+    // ---- S5：位置表上界（`Config::max_positions`）----
+    // 与 `chunk_limit` 不同，**它查不到**：引擎侧只留了 `ceil(n_positions / block_size)`
+    // （cache 第 0 维 / block_tables 第 1 维）这个上界，runner 也看不到 config.json —— 所以只能
+    // 由调用方声明（见 hpp 的字段说明）。packed 模式下"没声明"与"声明得比引擎侧上界还大（自相矛盾）"
+    // 都在这里拒绝：少了这道闸，`prompt_len + max_new - 1 > n_positions` 会让 wpe 的 gather
+    // 越界读，而且**不报错**（`TS-051` 的第 4 条）。
+    if (config_.prefill_mode == Config::PrefillMode::kPackedMixed) {
+        const int64_t pool_tokens =
+            static_cast<int64_t>(config_.max_blocks_per_seq) * config_.block_size;
+        if (config_.max_positions <= 0) {
+            MINI_TRT_LOG_ERROR("LLMRunner: packed mode requires Config::max_positions"
+                               " (n_positions) —— 推导不出来就拒绝，不猜默认值");
+            return;
+        }
+        if (config_.max_positions > pool_tokens ||
+            config_.max_positions > kPackedAttentionMaxContextSeqLen) {
+            MINI_TRT_LOG_ERROR("LLMRunner: Config::max_positions "
+                               << config_.max_positions << " exceeds the engine-side bounds: "
+                               << "cache/块表容量 " << pool_tokens << " tokens, 插件上限 "
+                               << kPackedAttentionMaxContextSeqLen);
+            return;
+        }
+    }
+
     // ---- S5：chunked prefill 的 chunk_limit（构造期从引擎 profile 推导，不暴露给调用方）----
     // 取 prefill 的 token 维上界：packed 图的 `input_ids` 是 [1, T]，所以是第 1 维的 kMAX。
     // **为什么不从 Config 要一个字段**：那会与真实建的图漂移；项目既有纪律是"按对方查询、
@@ -868,6 +893,17 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
                                                      << " has an empty prompt or max_new_tokens <= 0");
             return {};
         }
+        // **位置表上界**（S5 起必须显式守）：prompt 与随后 `max_new` 个生成 token 用到的最大位置是
+        // `len + max_new - 2`；越过 `n_positions - 1` 就是位置编码查表的越界读 —— TRT 不报错，
+        // 只会用位置表以外的数据算出无意义的 logits（见 `TS-051` 第 4 条）。
+        if (config_.max_positions > 0 &&
+            len + r.options.max_new_tokens - 1 > config_.max_positions) {
+            MINI_TRT_LOG_ERROR("LLMRunner: request " << i << " needs position "
+                               << (len + r.options.max_new_tokens - 2)
+                               << " but the position table holds " << config_.max_positions
+                               << " (Config::max_positions)");
+            return {};
+        }
         if (r.options.temperature != 1.0f) {
             MINI_TRT_LOG_ERROR("LLMRunner: request " << i
                                                      << " uses temperature != 1.0 (unsupported)");
@@ -1147,7 +1183,7 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
             // **S4**：两相装进一个 packed 张量、每步一次调用（见 RunPackedMixedStep）。
             // 统计只填**跨路径**的两个量（`prefill_calls` / `decode_calls` 是 S3 两段式专有，
             // S4 下不读也不去凑语义 —— 见 SchedulerStats 的字段说明）。
-            if (!RunPackedMixedStep(requests, active, generation_rows, new_rows, max_new)) {
+            if (!RunPackedMixedStep(requests, active, max_new)) {
                 MINI_TRT_LOG_ERROR("LLMRunner: packed mixed step failed");
                 return {};
             }
@@ -1292,6 +1328,14 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
         // 本步没参与采样的行（分块还没完成）**不出 token**，绝不能给它记一个 token ——
         // 那会让"分块"改变可见的生成语义（AC9 / `ChunkProgressStateIsCorrect`）。S3 仍是恒等行号。
         const auto record_token = [&](int32_t row, int32_t slot) -> bool {
+            // 把"行号越界"从 UB 变成显式失败：这张表由 `RunPackedMixedStep` 填，一旦它忘了在早退
+            // 路径复位，越界的就是结果缓冲（4 字节写越界，且索引 `-1` 的读也在这里出现过）。
+            if (row < 0 || row >= static_cast<int32_t>(active.size())) {
+                MINI_TRT_LOG_ERROR("LLMRunner: sampled row " << row
+                                                             << " is outside the active table ("
+                                                             << active.size() << " rows)");
+                return false;
+            }
             ActiveSequence& s = active[static_cast<size_t>(row)];
             const int64_t dst_index =
                 static_cast<int64_t>(s.result_slot) * max_new + s.generated;
@@ -1439,12 +1483,13 @@ bool LLMRunner::UploadRowParamsByOrder(const std::vector<ActiveSequence>& active
 //   这条分类是**单源**的：不新增 `prompt_done` 字段，也不依赖"完成的行恰好排在前面"
 //   —— 那条前提在分块下不成立（长 prompt 分块中、它后面的短 prompt 可能已完成）。
 bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
-                                   const std::vector<ActiveSequence>& active,
-                                   int32_t generation_rows, int32_t new_rows, int32_t max_new) {
-    // S5：这两个入参（S4 的"生成段前缀行数 / 新入批行数"）不再决定分段 —— 分段与采样行集都在本函数
-    // 内按 cache 已写入长度重算。保留参数只是不改调用点（见 STATE 的 S5-2b 计划）。
-    (void)generation_rows;
-    (void)new_rows;
+                                   const std::vector<ActiveSequence>& active, int32_t max_new) {
+    // 逐行状态**每步先复位**：`RunScheduler` 的 ⑤ 与 `SchedulerStats` 直接读它们，而"活跃表为空"
+    // （最后一条序列在轮首 retire 之后的那一轮）会走下面的早退分支 —— 不复位就会拿上一步的行号去
+    // 索引空的 `active`（越界写结果缓冲），并把上一步的计数重复累加（`TS-051` 第 2 条）。
+    packed_context_rows_ = 0;
+    packed_generation_rows_ = 0;
+    sample_active_indices_.clear();
     const int32_t b_total = static_cast<int32_t>(active.size());
     if (b_total <= 0) {
         return true;
@@ -1544,7 +1589,7 @@ bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
     }
     // 采样行集（**槽位 = 本数组下标**）：已完成的 generation 行 ∪ 本步刚好完成 prefill 的 chunk 行。
     // 按活跃行号升序排一次，让 ⑤ 的 gather 与结果落位、EOS 回读三处共用同一个口径。
-    sample_active_indices_.clear();
+    // （数组本身在函数开头已清空。）
     for (int32_t active_index : generation_active) {
         sample_active_indices_.push_back(active_index);
     }
@@ -1594,12 +1639,16 @@ bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
         MINI_TRT_LOG_ERROR("LLMRunner: failed to upload packed metadata");
         return false;
     }
-    // generation 段的 token 在设备上（按序列聚集的历史），逐行搬进 packed 的尾部
-    for (int32_t j = 0; j < generation_rows; ++j) {
-        const ActiveSequence& s = active[static_cast<size_t>(j)];
+    // generation 段的 token 在设备上（按序列聚集的历史），逐行搬进 packed 的尾部。
+    // **必须按 `generation_active` 取行**：S5 的 generation 行不再是活跃表前缀（完成 prefill 的行
+    // 可能夹在未完成的行后面）。按前缀取会在 `generated == 0` 时算出 `src_index = -1`（读到结果
+    // 缓冲之外），并把别人的 token 喂给这一行（`TS-051` 第 5 条）。
+    for (size_t j = 0; j < generation_active.size(); ++j) {
+        const ActiveSequence& s = active[static_cast<size_t>(generation_active[j])];
         const int64_t src_index =
             static_cast<int64_t>(s.result_slot) * max_new + s.generated - 1;
-        if (cudaMemcpyAsync(static_cast<int32_t*>(d_packed_tokens_.data()) + t_ctx + j,
+        if (cudaMemcpyAsync(static_cast<int32_t*>(d_packed_tokens_.data()) + t_ctx +
+                                static_cast<int32_t>(j),
                             static_cast<const int32_t*>(d_result_tokens_.data()) + src_index,
                             sizeof(int32_t), cudaMemcpyDeviceToDevice, nullptr) != cudaSuccess) {
             MINI_TRT_LOG_ERROR("LLMRunner: failed to gather packed generation tokens");
@@ -1617,7 +1666,10 @@ bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
         !engine->SetInputShape("block_tables",
                                nvinfer1::Dims{2, {b_total, config_.max_blocks_per_seq}}) ||
         !engine->SetInputShape("context_lens", nvinfer1::Dims{1, {b_total}}) ||
-        !engine->SetInputShape("cu_seqlens_ctx", nvinfer1::Dims{1, {new_rows + 1}}) ||
+        // 形状按**本步真实**的 context 行数：S5 里"仍在分块中的行"也是 context 行，
+        // 用 S4 的"新入批行数"会声明得比 kernel 实读的 `cu_seqlens_ctx[0..B_ctx]` 小（`TS-051` 第 3 条）。
+        !engine->SetInputShape("cu_seqlens_ctx",
+                               nvinfer1::Dims{1, {packed_context_rows_ + 1}}) ||
         !engine->SetInputShape("context_seq_count", nvinfer1::Dims{1, {1}})) {
         MINI_TRT_LOG_ERROR("LLMRunner: failed to set packed input shapes");
         return false;
@@ -1714,7 +1766,7 @@ bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
     const size_t row_bytes = static_cast<size_t>(config_.vocab_size) * elem;
     const int32_t sample_count = static_cast<int32_t>(sample_active_indices_.size());
     // 活跃行号 → packed 行号 → 该行在 packed 张量里的**末位 token 下标**（两段各自的公式）。
-    // S5 用显式表而不是 S4 的"j < new_rows"分段判断，因为采样行集已经不连续。
+    // S5 用显式表而不是 S4 的"行号 < 新入批行数"分段判断，因为采样行集已经不连续。
     std::vector<int32_t> packed_row_of_active(static_cast<size_t>(b_total), -1);
     std::vector<int32_t> last_of_packed_row(static_cast<size_t>(b_total), 0);
     for (size_t j = 0; j < context_active.size(); ++j) {

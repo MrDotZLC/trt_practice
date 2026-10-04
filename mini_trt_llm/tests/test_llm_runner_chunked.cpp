@@ -88,7 +88,7 @@ ChunkedFixture MakeChunkedFixture(const std::string& name, int32_t max_batch) {
     return fixture;
 }
 
-LLMRunner::Config ChunkedRunnerConfig(int32_t max_batch) {
+LLMRunner::Config ChunkedRunnerConfig(int32_t max_batch, int32_t max_positions) {
     LLMRunner::Config config;
     config.num_layers = kLayers;
     config.num_kv_heads = kHeads;
@@ -99,16 +99,20 @@ LLMRunner::Config ChunkedRunnerConfig(int32_t max_batch) {
     config.is_half = false;
     config.vocab_size = kVocab;
     config.max_batch = max_batch;
+    // packed 模式下必给（runner 查不到位置表长度，见 Config::max_positions）。
+    config.max_positions = max_positions;
     config.prefill_mode = LLMRunner::Config::PrefillMode::kPackedMixed;
     return config;
 }
 
 // 在**指定切法**下造一个 runner。`chunk_limit` 只在构造期从覆盖值读入，之后只读。
+// `max_positions` 默认就是本夹具的位置表长度；只有 `ChunkLimitRejectedConfigs` 会故意给别的值。
 std::unique_ptr<LLMRunner> MakeRunner(const ChunkedFixture& fixture, int32_t max_batch,
-                                      int32_t chunk_limit) {
+                                      int32_t chunk_limit, int32_t max_positions = kPositions) {
     ScopedChunkLimitOverride scope(chunk_limit);
     auto engine = std::make_shared<Engine>(fixture.engine_path, fixture.logger);
-    return std::make_unique<LLMRunner>(ChunkedRunnerConfig(max_batch), engine, engine, nullptr);
+    return std::make_unique<LLMRunner>(ChunkedRunnerConfig(max_batch, max_positions), engine,
+                                       engine, nullptr);
 }
 
 LLMRunner::GenerateOptions GreedyOptions(int32_t max_new_tokens) {
@@ -215,9 +219,11 @@ TEST(LlmRunnerChunkedTest, ChunkedEqualsWholePrompt) {
         const std::vector<int64_t>& tokens = results[0].tokens;
         EXPECT_EQ(tokens.size(), static_cast<size_t>(kMaxNew)) << "chunk_limit = " << limit;
         // 形状侧：每步拿到 chunk 的行数之和 = ceil(prompt_len / chunk_limit) —— 证明真的分了块。
-        // 只断言 `context_rows`：packed 路径的 stats 目前会把最后一步的计数再加一遍，
-        // `generation_rows` 因此偏大（缺陷登记在 STATE.md 的 Current Blockers）。
         EXPECT_EQ(runner->scheduler_stats().context_rows, ChunkCount(kPromptLen, limit))
+            << "chunk_limit = " << limit;
+        // 生成段行数 = max_new - 1（首 token 来自"prefill 完成"的那一步，不占生成段）。
+        // 这条同时是 `TS-051` 第 2 条（空活跃表的旧行号被重复累加）的回归守卫。
+        EXPECT_EQ(runner->scheduler_stats().generation_rows, kMaxNew - 1)
             << "chunk_limit = " << limit;
         std::cout << "[诊断] chunk_limit=" << limit << " tokens=" << SequenceToString(tokens)
                   << "\n";
@@ -333,6 +339,10 @@ TEST(LlmRunnerChunkedTest, ChunkedShortPromptsUnchanged) {
     ASSERT_EQ(chunked_results.size(), 2u);
     EXPECT_EQ(whole->scheduler_stats().context_rows, 2) << "不分块：两条各一步（S4 的形态）";
     EXPECT_EQ(chunked->scheduler_stats().context_rows, 2 * ChunkCount(kPromptLen, 2));
+    // 两条各 kMaxNew 个 token：首 token 在完成 prefill 的那步，剩下 kMaxNew-1 个在生成段
+    // （=`TS-051` 第 2 条的回归守卫：旧实现的空活跃表轮会把上一步的行数再加一遍）。
+    EXPECT_EQ(whole->scheduler_stats().generation_rows, 2 * (kMaxNew - 1));
+    EXPECT_EQ(chunked->scheduler_stats().generation_rows, 2 * (kMaxNew - 1));
 
     for (size_t i = 0; i < requests.size(); ++i) {
         std::cout << "[诊断] 第 " << i << " 条 不分块=" << SequenceToString(whole_results[i].tokens)
@@ -456,10 +466,11 @@ TEST(LlmRunnerChunkedTest, ChunkedRetireAndBlocks) {
 // ⑧ 配置 / 形状类不可用必须显式拒绝
 // ---------------------------------------------------------------------------
 
-// 分两段：① 非法 Config 在构造期（任何引擎 / 显存动作之前）就被拒 —— 这一段**不需要 GPU**，
+// 三组判据：① 非法 Config 在构造期（任何引擎 / 显存动作之前）就被拒 —— 这一段**不需要 GPU**，
 // 沙箱里也真的跑过（放在 skip 之前，且用 ASSERT：失败会直接以"红"收场，不会被后面的 skip 吞掉）；
-// ② 真机段：覆盖值越界必须构造期拒绝、覆盖值 = 上界必须接受、prompt 超过 `n_positions` 必须失败
-// —— 判据是"**没有静默换路**"，错误信息带实际值与上界（日志不进判据，真机由人看一眼）。
+// ② 真机段 · 构造期拒绝：`chunk_limit` 越界、`max_positions` 没给 / 越界 —— 覆盖值 = 上界必须
+// **接受**（自证"拒绝的是越界，不是覆盖本身"）；③ 真机段 · 入口拒绝：请求需要的位置超过
+// `max_positions` 时必须失败。判据是"**没有静默换路**"，错误信息带实际值与上界（日志不进判据）。
 TEST(LlmRunnerChunkedTest, ChunkLimitRejectedConfigs) {
     // ① 非法 Config（全 0）：构造期第一道校验就拒绝，不碰引擎、不碰显存。
     LLMRunner::Config bogus;
@@ -485,15 +496,34 @@ TEST(LlmRunnerChunkedTest, ChunkLimitRejectedConfigs) {
     EXPECT_FALSE(rejected->ok()) << "chunk_limit 越界 (" << (bound + 1) << " > " << bound
                                  << ") 必须构造期拒绝";
 
-    // ④ prompt 超过 `n_positions`：本夹具里 n_positions = 池的单序列容量，所以这种请求一定装不下
-    //    → 被拒。**注意**：拦下它的是池预算检查（prompt + max_new 超过 4 块 × 4），runner 目前
-    //    **没有**一条专用的 `prompt_len <= n_positions` 检查（S5 spec §3 要求有）——缺陷登记在
-    //    STATE.md；这条断言只锁"确实拒绝了"，不代表那条检查存在。
-    std::unique_ptr<LLMRunner> runner = MakeRunner(fixture, kMaxBatch, bound);
+    // ④ `max_positions` 没给（默认 0）：packed 模式下必须构造期拒绝 —— 这个值引擎侧查不到
+    //    （只剩 `ceil(n_positions/block_size)` 这个上界），"猜一个默认值"就是留下越界读的隐患。
+    std::unique_ptr<LLMRunner> missing_positions =
+        MakeRunner(fixture, kMaxBatch, bound, /*max_positions=*/0);
+    EXPECT_FALSE(missing_positions->ok()) << "packed 模式下 max_positions 未声明必须构造期拒绝";
+
+    // ⑤ `max_positions` 比引擎侧上界还大（自相矛盾：池/块表根本装不下那么多位置）→ 拒绝。
+    std::unique_ptr<LLMRunner> oversized_positions =
+        MakeRunner(fixture, kMaxBatch, bound, kTokensPerSeq + 4);
+    EXPECT_FALSE(oversized_positions->ok())
+        << "max_positions 超过 cache/块表容量（" << kTokensPerSeq << "）必须构造期拒绝";
+
+    // ⑥ 入口拒绝：`max_positions` 取 8（**小于**池容量 16，所以"装不下池"那条检查会放行），
+    //    请求需要位置 11 —— 只有那条位置表检查能拦下它。正向对照：同一 runner 上 prompt 8 + 1 个
+    //    新 token（最大位置 7）必须能跑完。
+    const int32_t kSmallPositions = 8;
+    std::unique_ptr<LLMRunner> runner = MakeRunner(fixture, kMaxBatch, bound, kSmallPositions);
     ASSERT_TRUE(runner->ok());
-    const std::vector<LLMRunner::GenerateResult> results =
-        runner->RunScheduler({MakeRequest(MakePrompt(kTokensPerSeq + 4), GreedyOptions(1), 0)});
-    EXPECT_TRUE(results.empty()) << "prompt 超过 n_positions 的请求不得进入调度";
+    const std::vector<LLMRunner::SchedulerRequest> too_long = {
+        MakeRequest(MakePrompt(12), GreedyOptions(1), 0)};
+    const int32_t free_before = runner->NumFreeKvBlocks();
+    EXPECT_TRUE(runner->RunScheduler(too_long).empty())
+        << "prompt 12 + 1 个新 token 需要位置 11 > max_positions(8)，必须入口拒绝";
+    EXPECT_EQ(runner->NumFreeKvBlocks(), free_before) << "被拒路径不该留下块";
+    const std::vector<LLMRunner::GenerateResult> fits =
+        runner->RunScheduler({MakeRequest(MakePrompt(kSmallPositions), GreedyOptions(1), 0)});
+    ASSERT_EQ(fits.size(), 1u) << "正向对照：位置放得下的请求必须照常跑完";
+    EXPECT_EQ(fits[0].tokens.size(), 1u);
 }
 
 }  // namespace

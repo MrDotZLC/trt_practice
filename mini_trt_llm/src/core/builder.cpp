@@ -47,7 +47,11 @@ constexpr int32_t kEngineGraphVersion = 3;
 // I/O 契约、profile 区间与 `getWorkspaceSize` 都没变，但**插件对同一绑定的计算语义变了** ——
 // 指纹看不见插件源码的变化，复用按旧语义建的引擎会让分块后的结果**静默算错**，所以手工 +1。
 // 依据：本文件开头的 1 → 2（`PagedAttentionPlugin::getWorkspaceSize` 从 0 变正数）同一条规矩。
-constexpr int32_t kPackedPrefillGraphVersion = 5;
+// **5 → 6（2026-10-04，S5 收口）**：`cu_seqlens_ctx` 的**行维 profile 上界**从 `max_prefill_batch`
+// 改成 `max_prefill_batch + 1`（它的长度是 B_ctx + 1，最后一个元素是段内 token 总数；用行维范围
+// 会让"整批都是 context 行"的首步 `setInputShape` 直接失败）。profile 区间也是指纹看不见的
+// 建图产物 → 同样手工 +1，否则缓存里的旧引擎会带着过小的上界被复用。
+constexpr int32_t kPackedPrefillGraphVersion = 6;
 
 const char* StageName(BuildStage stage) {
     switch (stage) {
@@ -304,13 +308,18 @@ bool EngineBuilder::AddLlmOptimizationProfiles(nvinfer1::IBuilder* builder,
 
     // **S4 packed 图有两条独立动态轴，且落在不同输入上**（见 p5_s4_interface_spec.md §7）：
     //   * `input_ids` / `position_ids`：dim0 固定 1、dim1 是 **token 维 T**；
-    //   * `block_tables` / `context_lens` / `cu_seqlens_ctx`：dim0 是 **行维 B_total**。
+    //   * `block_tables` / `context_lens`：dim0 是 **行维 B_total**；
+    //   * `cu_seqlens_ctx`：dim0 是 **段内前缀和的长度 B_ctx + 1**（最后一个元素是段内 token 总数）
+    //     —— 比行维多一格，所以它单独一组范围（`packed_rows` 的上界会让"整批都是 context 行"
+    //     的首步越界：B_ctx = B 时长度为 B + 1）。
     // 所以不能沿用"按 dim 下标对所有输入套同一组范围"——那会把 block_tables 的行维钉成 1，
     // `B_total > 1` 直接越界（这正是 ApplyProfile 现在收**输入名**的原因）。
     // 两个 opt 都**先取保守值并标注待实测**（作者 2026-10-04 定：opt 等 P4 实测后定）。
     const DimRange packed_tokens{1, config_.opt_prefill_seq_len,
                                  config_.max_prefill_batch * config_.max_prefill_seq_len};
     const DimRange packed_rows{1, config_.max_prefill_batch, config_.max_prefill_batch};
+    const DimRange packed_ctx_prefix{1, config_.max_prefill_batch + 1,
+                                     config_.max_prefill_batch + 1};
 
     // 按 stage 过滤要挂哪些 profile：双引擎方案下每个 engine 只该有自己那一组，
     // 多挂一组不会报错，但会让 TRT 为用不到的形状多编译一份 kernel（GPT-2 上是分钟级开销）。
@@ -336,6 +345,9 @@ bool EngineBuilder::AddLlmOptimizationProfiles(nvinfer1::IBuilder* builder,
             }
             if (name == "input_ids" || name == "position_ids") {
                 return dim == 0 ? DimRange{1, 1, 1} : packed_tokens;
+            }
+            if (name == "cu_seqlens_ctx") {
+                return dim == 0 ? packed_ctx_prefix : DimRange{1, 1, 1};
             }
             return dim == 0 ? packed_rows : DimRange{1, 1, 1};
         };
