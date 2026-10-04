@@ -11,7 +11,7 @@
 >
 > 编号只增不改，新记录追加在末尾。
 
-## 索引（50 条，按编号）
+## 索引（51 条，按编号）
 
 | ID | # | 一句话 | 状态 |
 |---|---|---|---|
@@ -65,6 +65,7 @@
 | `TS-048` | 48 | 引擎缓存把"模型路径写法"算进指纹 → 换调用方式就重建（已修复，真机已验证） | 已修复（真机已验证） |
 | `TS-049` | 49 | 资产闸门自证项"应当跳过"那条**继承了环境的 `MINI_TRT_REQUIRE_ASSETS`** → 真机验收时自己变红（已修复） | 已修复（沙箱可复现并验证） |
 | `TS-050` | 50 | 新的 ctest 项写在了 `find_package(Python3)` **之前** → 变量未定义、**静默不注册**（configure 成功、条数不变） | 已修复（沙箱验证：268 条） |
+| `TS-051` | 51 | S5-2 的提交里有 1 处编译错误 + 3 处缺陷（逐行读代码发现，未修） | 待作者定夺 |
 
 > 索引用 `TS-NNN`；旧写法 `#NN` 仍可用（同号）。**正文只增不改**，新记录追加在末尾。
 
@@ -3080,3 +3081,41 @@ grep '^file=' /tmp/mini_trt_llm_resnet18_onnx_fp32.engine.fingerprint   # 应变
   `docs/dev/REQ-009-retire-legacy/phase5_development_plan.md` §10）。
 
 **状态**：已修复（沙箱验证 268 条 / 0 失败）。
+
+---
+
+## 51. [TS-051] S5-2 的提交里有 1 处编译错误 + 3 处缺陷（逐行读代码发现，2026-10-04）
+
+- **日期**：2026-10-04
+- **现象**：**没有真机现象**——沙箱无 nvcc / cmake / TensorRT，本机这一轮是"写用例前先逐行核对
+  S5-2 已提交的 runner 代码"，静态查出下面四条（含一条**编译错误**）。
+- **排查路径**（可复用，全是"把控制流走一遍 + 追问边界"）：
+  1. 为给"分块步数已计入防呆上界"配守门用例，先把 `RunScheduler` 的**每一轮循环**按顺序读一遍
+     （① retire → ② admit → ③④ 引擎调用 → ⑤ 结果落位 / finish flag），并专门追问
+     "**哪一轮 `active` 会变成空的、空轮还会不会继续跑到 ⑤**" —— 答案是"会"（末条序列在**轮首**
+     retire 掉之后，同一轮继续跑完整轮，到轮末才重新判断 while 条件）。
+  2. 顺着 ⑤ 的 `sample_active_indices_` 追到 `RunPackedMixedStep` 的 `b_total <= 0` 早退分支，
+     看三个**逐行状态成员**有没有复位 → 命中第 2 条。
+  3. 为核 `chunk_limit` 的上界（用例要从引擎 profile 查它，而不是写死一个数），读 `builder.cpp` 的
+     `ApplyProfile`（packed 的 `input_ids` 第 1 维上界 = `max_prefill_batch × max_prefill_seq_len`）
+     与 `llm_runner.cpp` 里所有 `SetInputShape` 调用点 → 命中第 1、3 条（同一个 `new_rows`）。
+  4. 为设计 `ChunkLimitRejectedConfigs` 的"入口拒绝"段，逐条列出 spec §3 适用范围内**可判定**的
+     拒绝项（推导不出 `chunk_limit` / 越界 / `prompt_len > n_positions`），再回代码里逐个找对应检查
+     → 第 4 条没有对应物（小夹具里它被"池容量 == n_positions"掩盖，真实模型上不成立）。
+- **四条（定位与修法见 `docs/dev/REQ-016-continuous-batching/STATE.md` 的 Current Blockers 头条）**：
+  1. **编译错误**：`llm_runner.cpp:1141`（`if (packed_mode)` 分支）引用 `new_rows`，而它的声明在
+     `:1151`（`else` 分支内）—— 这份 S5-2 提交**编不过**。
+  2. **空活跃表越界写 + stats 重复累加**：`RunPackedMixedStep` 在 `b_total <= 0` 时早退且不复位
+     `sample_active_indices_` / `packed_context_rows_` / `packed_generation_rows_`；⑤ 于是拿**上一步的
+     行号**对空 `active` 取 `active[row]`，并把 token 写到 `d_result_tokens_` 的**界外**
+     （`result_slot*max_new + generated`）。每次 packed 调用都会走到这轮。同一根因让
+     `SchedulerStats` 把最后一步的计数再加一遍（S4 的 `CuSeqlensBoundaryCases` 断言会因此变红）。
+  3. **`cu_seqlens_ctx` 声明形状偏小**：`SetInputShape` 用 `new_rows + 1`（S4 口径），S5 里"仍在分块
+     中的行"也是 context 行（`packed_context_rows_ >= new_rows`）→ 声明小于 kernel 实读的
+     `cu_seqlens_ctx[0..B_ctx]`（同缓冲内的越界读，取决于分配，不会马上报错）。
+  4. **缺 `prompt_len <= n_positions` 的入口拒绝**：spec §3 的适用范围表与
+     `packed_attention_plugin.cu` 的注释都假定 runner 入口已有这条，代码里没有。
+- **为什么没顺手修**：AGENTS §0.7 ——「已经点名的范围就是上限」。本轮作者只点名了
+  "step_limit 计入分块步数"与"S5-3 用例"，这四条都不在该范围内，所以只登记 + 等定夺
+  （真机窗口第一次编译就会先撞上第 1 条）。
+- **状态**：未修复，待作者定夺。

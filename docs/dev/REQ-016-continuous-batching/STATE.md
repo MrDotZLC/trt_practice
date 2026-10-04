@@ -27,6 +27,30 @@
 
 ## Current Blockers
 
+- **【静态审查发现，待作者定夺，未改代码】S5-2 提交的 `llm_runner.cpp` 有 1 处编译错误 + 3 处缺陷**
+  （2026-10-04：写 S5-3 用例时逐行读代码发现；本沙箱无编译器，以下全是人工核对 + 推演，**未真机复现**；
+  定位路径见 `docs/TROUBLESHOOTING.md` 的 `TS-051`）：
+  1. **编译错误（P0）**：`llm_runner.cpp:1141` 在 `if (packed_mode)` 分支里用了 `new_rows`，而它的声明在
+     `else` 分支内（`:1151`）—— packed 分支看不到这个标识符，**这份代码现在编不过**。
+     修法与下面第 3 条同源：`cu_seqlens_ctx` 的声明形状应改用 `packed_context_rows_ + 1`，那个形参
+     就不再被用到（删掉形参即可一并消掉编译错误）。
+  2. **空活跃表的越界访问 + stats 重复累加（P0，每次 packed 调用都走到）**：最后一条序列在**轮首** retire
+     被移除后，同一轮会继续跑到 ⑤；而 `RunPackedMixedStep` 在 `b_total <= 0` 时**早退且不清**
+     `sample_active_indices_` / `packed_context_rows_` / `packed_generation_rows_` → ⑤ 拿上一步的行号对
+     **空的 `active`** 做 `active[row]`，并把 token 写到 `d_result_tokens_[result_slot*max_new + generated]`
+     （一行容量的**界外**）。同一根因还让 `SchedulerStats` 把最后一步的计数再累加一遍 —— S4 的
+     `CuSeqlensBoundaryCases`（断言 `generation_rows == 2*(kMaxNew-1)`）会因此变红。
+     修法：早退路径把这三个成员清零（或 ⑤ 加 `!active.empty()` 守卫）。
+  3. **`cu_seqlens_ctx` 的声明形状偏小（P1）**：`:1611` 用 `new_rows + 1`（S4 口径），但 S5 里"仍在分块中
+     的行"也算 context 行（`packed_context_rows_ >= new_rows`）→ 声明形状小于 kernel 实际读的
+     `cu_seqlens_ctx[0..B_ctx]`（越界读发生在同一块设备缓冲内，所以它是"合约违规 + 取决于分配"，
+     不是马上报错）。修法：改用 `packed_context_rows_ + 1`。
+  4. **缺 `prompt_len <= n_positions` 的入口拒绝（P1）**：spec §3 的适用范围表与
+     `packed_attention_plugin.cu` 的注释都假定 runner 入口已有这条检查，**代码里没有**。小夹具里它恰好
+     被"池容量 = n_positions"兜住（不显形）；真实模型上池可以更大 → `prompt_len > n_positions` 会让
+     wpe 的 gather 越界读（TRT 未定义行为）。`ChunkLimitRejectedConfigs` 的第 ④ 段只锁"确实被拒"，
+     并在注释里写明拦下它的是池预算检查、不是那条专用检查。
+  **这四条都不在"step_limit + S5-3 用例"的授权范围内 → 未动产品代码**，等作者点名后再修。
 - **S4 的 generation 段已改为复用 split-K（2026-10-04 作者指出 → 当日修完，待编译验证）**：
   原先我在新插件里自写了一份**单趟** generation kernel，而 `paged_attention_plugin.cu` 的
   **生产路径早就是 split-K**（REQ-014 交付；单趟只是 A/B 参考与 workspace 缺失时的兜底）——
@@ -74,10 +98,10 @@
    `requirement` Included 8 / AC9；`design.md` D15/D16；`p5_s5_interface_spec.md`；`review.md` 的
    两节复评。第二遍复评把上一节的"P0 无"**改判为 BLOCK**（3 条 P0 + 3 条 P1），修订后作者同日确认：
    `graph_version` **bump 4 → 5**、术语**指针式登记**、三条缺口全部折入设计（见 `## Current Blockers`）。
-   **子步进度（作者 2026-10-04 点名）**：**S5-1 注意力已落码（未编译验证）** —— 见
-   `## Implementation Plan` 的 P5-S5 小节；**下一步 S5-2**（runner + cache：`Engine` 的 profile
-   查询与 `chunk_limit` 推导 / 入口拒绝、切 chunk、**绝对位置**、写回**累加**记账、采样行集紧凑暂存），
-   再 **S5-3 用例**（`ChunkedEqualsWholePrompt` 等，见 spec §6）。
+   **子步进度（作者 2026-10-04 分三次点名）**：**S5-1 / S5-2 / S5-3 与 `step_limit` 修正全部已落码，
+   全部未编译验证** —— 见 `## Implementation Plan` 的 P5-S5 小节。下一步是**真机窗口**：
+   编译（P5 Exit Gate）→ 跑 S4/S5 的用例 → 结果回填 `test_plan.md`（P6）。**进场前先看
+   `## Current Blockers` 的头条**：S5-2 的提交里有一处**编译错误**与三处缺陷（静态审查发现，未修）。
    **实现顺序（作者 2026-10-04 改判）**：S4 的真机测试先搁置、S5 的代码先做（共用同一张 packed 图）；
    真机窗口恢复后按 S4 → S5 一起验证。**交接用的 `next_session_prompt.md` 已按作者指令删除**，
    本节 + `review.md` 的两节复评即交接入口。
@@ -262,18 +286,19 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
   - **原设计缺口（"完成的行被未完成的行隔开时怎么进 generation 段"）按作者选定的方案 A 收口**：
     `AppendDecodeKV` / `AppendDecodeStep` / 推进 `context_lens` 的 kernel 都接受显式 `rows`
     （`nullptr` = 恒等 → S1/S2/S3 行为与开销不变），**不改行序**；文档同步在 `d232d05`。
-- **S5 剩余（P6 之前）**：① **S5-3 用例** —— 8 条，见 `test_plan.md` 的 S5 一节（`ChunkedEqualsWholePrompt`
-  / `ChunkedPositionsAreAbsolute` / `ChunkBoundaryDoesNotDisturbOthers` / `ChunkedShortPromptsUnchanged` /
-  `ChunkProgressStateIsCorrect` / `ChunkedSamplingRowSetIsCompacted` / `ChunkedRetireAndBlocks` /
-  `ChunkLimitRejectedConfigs`），需先定用例文件放哪（新建 `tests/test_llm_runner_chunked.cpp` 或并入
-  packed 用例文件，二选一并说明理由）；② **`step_limit` 未计入分块步数** ——
-  防呆上界还是 `max_arrival + max_new*request_count + request_count + 4`，长 prompt + 小 `chunk_limit`
-  需要 `ceil(prompt_len/chunk_limit)` 步，可能撞上它而**误报 bug**；修法是把 `max_prompt × request_count`
-  计进去（一行）。**① 与 ② 都还没做**。
-- **S5-3（最后，用例）**：`ChunkedEqualsWholePrompt` / `ChunkBoundaryDoesNotDisturbOthers` /
-  `ChunkedShortPromptsUnchanged` / `ChunkProgressStateIsCorrect` / `ChunkedRetireAndBlocks` /
-  `ChunkedPositionsAreAbsolute` / `ChunkedSamplingRowSetIsCompacted` / `ChunkLimitRejectedConfigs`，
-  见 spec §6。
+- **S5 剩余（P6 之前）—— 作者 2026-10-04 点名的两项都已落码（未编译验证）**：
+  ① **S5-3 用例**：新建 `tests/test_llm_runner_chunked.cpp`（`LlmRunnerChunkedTest.*`，8 条，
+  与 `test_plan.md` 的 S5 一节同名同序：`ChunkedEqualsWholePrompt` / `ChunkedPositionsAreAbsolute` /
+  `ChunkBoundaryDoesNotDisturbOthers` / `ChunkedShortPromptsUnchanged` / `ChunkProgressStateIsCorrect` /
+  `ChunkedSamplingRowSetIsCompacted` / `ChunkedRetireAndBlocks` / `ChunkLimitRejectedConfigs`）。
+  **为什么新建文件而不是并进 packed 用例文件**：本组要"**一个引擎文件 + 每个切法一个 runner**"
+  （`chunk_limit` 只在构造期读一次），packed 文件的夹具只有单 runner；且 test_plan 已按
+  `LlmRunnerChunkedTest.*` 登记、`tests/CMakeLists.txt` 用 `file(GLOB *.cpp)` 自动收源文件（不改构建脚本）。
+  ② **`step_limit` 计入分块步数**：packed 路径下加
+  `chunk_step_slack = max_prompt × request_count`（= Σ `ceil(prompt_len/chunk_limit)` 的松上界，
+  与 `chunk_limit` 取值无关、永远够用）；**只在 packed 下放宽**（S3 两段式一步送完 prompt，
+  放宽它只会白白损失对死循环的敏感度）。守门用例是 `ChunkedEqualsWholePrompt` 的 `limit=1` 分支
+  （12 个分块步 vs 老上界 9 步 —— 老上界下这条用例会以 `scheduler step limit exceeded` 收场）。
 
 ---
 
@@ -351,6 +376,13 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
   采样行集紧凑暂存）、`fc2a973`（cache 层：`row_starts` 写回起点 + generation 段显式行映射）。
   **原设计缺口由作者选定方案 A 收口**（显式行映射，不改行序）。**全部未编译验证**；
   剩余：S5-3 用例、`step_limit` 计入分块步数（见 P5-S5 节的"S5 剩余"）
+- 2026-10-04: **作者点名"S5 剩余（P6 之前）两项"** → ① `step_limit` 把分块步数计进防呆上界
+  （packed 路径加 `max_prompt × request_count`，只在 packed 下放宽）；② 新建
+  `tests/test_llm_runner_chunked.cpp`（`LlmRunnerChunkedTest.*`，8 条，与 test_plan 的 S5 清单
+  同名同序）。**全部未编译验证**。同一轮逐行读 S5-2 的代码，发现 **1 处编译错误（`new_rows` 跨分支引用）
+  + 3 处缺陷（空活跃表越界写 + stats 重复累加、`cu_seqlens_ctx` 声明形状偏小、缺
+  `prompt_len <= n_positions` 入口拒绝）**，按 §0.7 **未改产品代码**，登记进 `## Current Blockers`
+  与 `docs/TROUBLESHOOTING.md` 的 `TS-051`，等作者定夺
 
 ---
 
