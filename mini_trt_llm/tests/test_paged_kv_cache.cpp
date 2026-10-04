@@ -502,4 +502,113 @@ TEST(PagedKVCacheTest, AppendDecodeStepAdvancesMappedRowsOnly) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// S5 的**写回起点**（`row_starts`）：只在 packed 源下有意义 —— 两条判据一起钉住
+// ---------------------------------------------------------------------------
+// 背景（`TS-054` 登记的陷阱）：通用 prefill kernel **没有** `row_starts` 形参，唯有
+// `WriteKVPackedPrefillKernel` 会用它。所以"传了起点却没传 packed 源"会被静默忽略 ——
+// K/V 从位置 0 覆盖写，而 host 记账仍按 `起点 + 长度` 累加。这条用例做两件事：
+//   ① **正向**：同一序列分两块写（第 2 块带起点）→ 第 2 块落在**紧跟**第 1 块的位置上；
+//   ② **反向**：没给 packed 源却带起点 → **响亮拒绝**，且一个字节都不写。
+//
+// 为什么正向那条非要有：`row_starts` 在此之前**零覆盖**（只有 packed 生产路径用它），少了它，
+// "起点被忽略"只会在真机上表现为"第 2 块覆盖了第 1 块"这种要读很久的错（分块 prefill 正是 S5 的
+// 主场景，见 `p5_s5_interface_spec.md` §4 的"cache 记账"行）。
+TEST(PagedKVCacheTest, WritePrefillKVRowStartsContinuesInsteadOfOverwriting) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    PagedKVCache cache(MakeConfig());
+    ASSERT_TRUE(cache.valid());
+    ASSERT_TRUE(cache.AllocateSequence(/*seq_id=*/5, /*max_tokens=*/12));  // 行 0，3 块
+
+    // packed 源：一个 [5, kv_heads, head_size] 的连续块 —— 第 1 块用 token 0..2、第 2 块用 3..4。
+    constexpr int32_t kFirstChunk = 3;
+    constexpr int32_t kSecondChunk = 2;
+    const std::vector<float> packed = MakeKV(/*batch=*/1, /*tokens=*/5, 100.0f);
+    DeviceBuffer d_packed(packed.size() * sizeof(float));
+    ASSERT_TRUE(d_packed.Allocate(packed.size() * sizeof(float)));
+    CUDA_CHECK(cudaMemcpy(d_packed.data(), packed.data(), d_packed.size(),
+                          cudaMemcpyHostToDevice));
+
+    const std::vector<int32_t> rows = {0};
+    const std::vector<int32_t> first_seqlens = {0, kFirstChunk};
+    DeviceBuffer d_first_seqlens(first_seqlens.size() * sizeof(int32_t));
+    ASSERT_TRUE(d_first_seqlens.Allocate(first_seqlens.size() * sizeof(int32_t)));
+    CUDA_CHECK(cudaMemcpy(d_first_seqlens.data(), first_seqlens.data(), d_first_seqlens.size(),
+                          cudaMemcpyHostToDevice));
+    const std::vector<int32_t> first_lengths = {kFirstChunk};
+    ASSERT_EQ(cache.WritePrefillKV(/*layer=*/0, d_packed.data(), d_packed.data(), kFirstChunk,
+                                   rows.data(), 1, first_lengths.data(), nullptr,
+                                   static_cast<const int32_t*>(d_first_seqlens.data()), 1),
+              cudaSuccess);
+    EXPECT_EQ(cache.SequenceLength(5), kFirstChunk);
+
+    // 第 2 块：源是 packed 缓冲的 [3,5)，写回起点 = 第 1 块写到的位置（3）。
+    const std::vector<int32_t> second_seqlens = {kFirstChunk, kFirstChunk + kSecondChunk};
+    DeviceBuffer d_second_seqlens(second_seqlens.size() * sizeof(int32_t));
+    ASSERT_TRUE(d_second_seqlens.Allocate(second_seqlens.size() * sizeof(int32_t)));
+    CUDA_CHECK(cudaMemcpy(d_second_seqlens.data(), second_seqlens.data(),
+                          d_second_seqlens.size(), cudaMemcpyHostToDevice));
+    const std::vector<int32_t> starts = {kFirstChunk};
+    const std::vector<int32_t> second_lengths = {kSecondChunk};
+    ASSERT_EQ(cache.WritePrefillKV(/*layer=*/0, d_packed.data(), d_packed.data(), kSecondChunk,
+                                   rows.data(), 1, second_lengths.data(), nullptr,
+                                   static_cast<const int32_t*>(d_second_seqlens.data()), 1,
+                                   starts.data()),
+              cudaSuccess);
+    CUDA_CHECK(cache.UploadMetadata(nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    EXPECT_EQ(cache.SequenceLength(5), kFirstChunk + kSecondChunk)
+        << "起点 + 本块长度才是累计长度（分块下是累加，不是赋值）";
+
+    // 落点：token t 必须落在位置 t（第 2 块从起点续写），源值取自 packed 缓冲的同一个 t。
+    // 偏移按"块表 + 块内槽位"独立算一遍，不复用产品代码的算法。
+    std::vector<int32_t> mirror(static_cast<size_t>(cache.batch_size()) * kMaxBlocksPerSeq, -1);
+    ASSERT_EQ(cudaMemcpy(mirror.data(), cache.block_tables(), mirror.size() * sizeof(int32_t),
+                         cudaMemcpyDeviceToHost),
+              cudaSuccess);
+    const std::vector<float> key_cache =
+        ReadBack(cache.key_cache(0), cache.bytes_per_layer() / sizeof(float));
+    for (int32_t t = 0; t < kFirstChunk + kSecondChunk; ++t) {
+        for (int32_t h = 0; h < kKvHeads; ++h) {
+            for (int32_t d = 0; d < kHeadSize; ++d) {
+                const size_t src =
+                    (static_cast<size_t>(t) * kKvHeads + h) * kHeadSize + d;
+                EXPECT_FLOAT_EQ(key_cache[ExpectedOffset(mirror, /*b=*/0, t, h, d)], packed[src])
+                    << "token " << t << " 必须落在位置 " << t
+                    << "（第 2 块从起点续写，不能覆盖第 1 块）";
+            }
+        }
+    }
+}
+
+TEST(PagedKVCacheTest, WritePrefillKVRejectsRowStartsWithoutPackedSource) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    PagedKVCache cache(MakeConfig());
+    ASSERT_TRUE(cache.valid());
+    ASSERT_TRUE(cache.AllocateSequence(/*seq_id=*/5, /*max_tokens=*/12));
+
+    const std::vector<float> kv = MakeKV(/*batch=*/1, /*tokens=*/3, 500.0f);
+    DeviceBuffer d_kv(kv.size() * sizeof(float));
+    ASSERT_TRUE(d_kv.Allocate(kv.size() * sizeof(float)));
+    CUDA_CHECK(cudaMemcpy(d_kv.data(), kv.data(), d_kv.size(), cudaMemcpyHostToDevice));
+
+    const std::vector<int32_t> rows = {0};
+    const std::vector<int32_t> lengths = {3};
+    const std::vector<int32_t> starts = {4};
+    EXPECT_EQ(cache.WritePrefillKV(/*layer=*/0, d_kv.data(), d_kv.data(), /*tokens=*/3,
+                                   rows.data(), 1, lengths.data(), nullptr,
+                                   /*cu_seqlens_ctx=*/nullptr, /*context_seq_count=*/0,
+                                   starts.data()),
+              cudaErrorInvalidValue)
+        << "带起点却没有 packed 源必须响亮拒绝 —— 通用 kernel 会静默忽略起点（TS-054）";
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // 拒绝路径不许留下痕迹：host 记账与设备端长度都停在 0。
+    EXPECT_EQ(cache.SequenceLength(5), 0);
+    int32_t device_len = -1;
+    CUDA_CHECK(cudaMemcpy(&device_len, cache.context_lens(), sizeof(int32_t),
+                          cudaMemcpyDeviceToHost));
+    EXPECT_EQ(device_len, 0);
+}
+
 }  // namespace mini_trt_llm

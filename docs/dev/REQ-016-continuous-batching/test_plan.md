@@ -44,6 +44,14 @@ runner 侧用例更早能验）。用例清单以该文件为准，这里只登�
 | `EngineCacheTest.SidecarFieldReadsBodyOnly` | 用 `fingerprint` 当 key 读不到第一行（正文只从 `---` 之后开始）；只有第一行、没有 `---` → 空串 |
 | `EngineCacheTest.SidecarFieldToleratesCrlfLineEndings` | 整份 sidecar 用 CRLF（含 `---` 行）时仍能读到值（Windows 上文本模式写出的形态） |
 
+**S5 的写回起点（`row_starts`）另加两条 GPU 单测**（2026-10-05，落 `tests/test_paged_kv_cache.cpp`；
+来源 = `TS-054` 登记的陷阱"非 packed 路径会静默忽略起点"）：
+
+| 用例 | 判据 |
+|---|---|
+| `PagedKVCacheTest.WritePrefillKVRowStartsContinuesInsteadOfOverwriting` | **正向**：同一序列分两块写、第 2 块带起点 → token t 落在位置 t（**第 2 块不覆盖第 1 块**）；`SequenceLength` = 起点 + 本块长度。这是 `row_starts` 的首条测试（此前零覆盖） |
+| `PagedKVCacheTest.WritePrefillKVRejectsRowStartsWithoutPackedSource` | **反向**：带起点但 `cu_seqlens_ctx == nullptr` → `cudaErrorInvalidValue`，host 记账与设备端 `context_lens` 都停在 0（不许静默从 0 写） |
+
 ## Integration Test
 
 `tests/test_llm_runner_batch.cpp`（新建，8 条）：

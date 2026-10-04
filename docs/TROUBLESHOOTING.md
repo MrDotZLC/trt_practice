@@ -3291,5 +3291,57 @@ grep '^file=' /tmp/mini_trt_llm_resnet18_onnx_fp32.engine.fingerprint   # 应变
    **已改**：把可读侧升成"**本结构体的所有指针字段都必须是设备可读地址**"的总则（并写明这几个
    "容易被当成 host 数组"的字段由 `LLMRunner` 上传到常驻缓冲）+ 三个字段就地标"设备缓冲"。
 - **状态**：**0 处 P0**；三条缺口**已按作者 2026-10-05 的"先处理缺口"全部处理**，改动**纯注释**
-   （无行为变化，不影响 `graph_version` 与指纹）。改后用 `cpp-comment-style` 复核：公共 API 的参数
-   可读侧已写明、不留过时注释。
+  （无行为变化，不影响 `graph_version` 与指纹）。改后用 `cpp-comment-style` 复核：公共 API 的参数
+  可读侧已写明、不留过时注释。
+
+---
+
+## 54. [TS-054] REQ-016 静态自检：`rows` 的**"默认恒等"全量对账**（0 处不满足；1 处潜在陷阱已修）
+
+- **日期**：2026-10-05
+- **类型**：**静态审查**（本机无编译器 / GPU）；作者点名清单第 4 项："四处 `rows` 消费者的默认行为
+  对账 —— 逐个查调用点有没有'漏传就默认恒等、而语义已变'的地方"。
+- **判据（`nullptr` 默认恒等**在**该调用点成立的三条件**）：
+  1. **本步写入 / 推进的行恰好是缓存批的前 `row_count` 行**（否则默认映射就指错了行）；
+  2. 行号空间**稠密**（退出即压实、不留洞），否则"前缀"与"行号"会对不上；
+  3. 该默认**只服务 S1/S2/S3 的"生成行 = 活跃前缀"前提** —— S5 分块把这个前提打破（完成的行可能被
+     仍在分块的行隔开），所以 packed 路径改走显式行表（`p5_s5_interface_spec.md` §4）。
+- **四处消费者**（`rows` 的落点）：① `WritePrefillKV`（通用 kernel 按 `rows[b]` 寻址）；
+  ② `AppendDecodeKV`；③ `AppendDecodeStep`（内部转调 ② + 推进 kernel）；④ `AdvanceContextLensKernel`
+  （**只**由 ③ 调用，`rows == nullptr` 时按恒等推进前 `batch_size` 行）。
+
+### 调用点对账（生产代码：6 处；tests：15 处）
+
+| 调用点 | `rows` 实参 | 默认恒等是否成立 | 依据 |
+|---|---|---|---|
+| `GenerateBatch` 的 prefill 写回（S1 静态批） | 显式 `{0..batch-1}` | 不适用（显式） | 静态批行序 = 请求序 |
+| `GenerateBatch` 的 decode 追加（S1） | `nullptr`，`row_count = batch` | **✓** | 静态批全是生成行，缓存行 = 0..batch-1 |
+| `RunScheduler` padding 的 context 写回（S3） | 显式 `rows`（+ 行号同源断言） | 不适用（显式） | `llm_runner.cpp` 的 `RowOf(seq) == generation_rows + j` 校验 |
+| `RunScheduler` padding 的 generation 追加（S3） | `nullptr`，`row_count = generation_rows` | **✓** | `generation_rows` 在**退出压实之后、admit 之前**取（`llm_runner.cpp`：先 `FreeSequence` + `active.erase`，再 `generation_rows = active.size()`）⇒ 前 `generation_rows` 行就是生成行；admit 追加在尾部 |
+| `RunPackedMixedStep` 的 context 写回（S5） | 显式 `cache_rows` | 不适用（显式） | 分块下完成行与在跑行交错 |
+| `RunPackedMixedStep` 的 generation 追加（S5） | 显式 `generation_rows_host` | 不适用（显式） | 同上 |
+| tests（15 处） | 全部显式表，或"整批都是生成行"下的 `nullptr` | **✓** | `test_paged_kv_cache.cpp` / `test_gpt2_decode_consistency.cpp` / `test_llm_runner_{scheduler,packed}.cpp` |
+
+**结论：0 处不满足** —— 两处用 `nullptr` 的地方都落在条件 1 + 2 上，且"生成行是前缀"这条在
+`RunScheduler` 里有**代码级依据**（取点 + 行号同源断言），不是靠约定。
+
+### 登记的发现（1 处潜在陷阱）—— **作者点名"先修登记的潜在陷阱"后已修**
+
+1. **`row_starts` 在非 packed 路径下会被静默忽略**：`row_starts` 只被 `WriteKVPackedPrefillKernel`
+   消费（`paged_kv_cache_kernels.cu` 的 `start = row_starts[engine_row]`），而 `LaunchWriteKV` 只在
+   `cu_seqlens_ctx != nullptr && !append` 时分派到那个 kernel；通用 `WriteKVKernel` **根本没有
+   `row_starts` 形参**。于是"传了 `row_starts` 但没传 `cu_seqlens_ctx`"会被**静默忽略**：K/V 从位置 0
+   写起，而 host 侧记账已经按 `row_starts[i] + row_lengths[i]` 累加（`paged_kv_cache.cpp` 同一函数
+   里的 host 分支）→ 设备 `context_lens` 与**实际写过的位置**不一致，decode 会从没写过的位置续读
+   （**静默算错**）。
+   **当时无调用点触发**：唯一传 `row_starts` 的是 packed 路径，同时带 `cu_seqlens_ctx`；也**没有任何
+   用例覆盖 `row_starts`**（tests 里零调用）。
+   **已修**（作者 2026-10-05 点名"先修登记的潜在陷阱"）：① `PagedKVCache::WritePrefillKV` 入口加
+   响亮拒绝（`row_starts != nullptr && cu_seqlens_ctx == nullptr` → `cudaErrorInvalidValue` +
+   指名原因的错误日志）；② `LaunchWriteKV` 里加同义的**兜底**（防止将来有调用方绕过公开入口；
+   那里没有 logger，只返回错误码）；③ 补两条用例（都在 `tests/test_paged_kv_cache.cpp`）：
+   `WritePrefillKVRowStartsContinuesInsteadOfOverwriting`（**正向**：同一序列分两块写、第 2 块带起点 ——
+   断言 token t 落在位置 t、**第 2 块不覆盖第 1 块**，这是 `row_starts` 的**首条覆盖**）与
+   `WritePrefillKVRejectsRowStartsWithoutPackedSource`（**反向**：带起点但无 packed 源 → 拒绝，
+   且 host 记账与设备端长度都停在 0）。**改动不动图 / profile / 指纹**（`graph_version` 保持 6）。
+- **状态**：**0 处不满足**；1 处潜在陷阱**已修**（两道闸 + 两条用例），**未编译验证**。

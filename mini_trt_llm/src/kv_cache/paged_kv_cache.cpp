@@ -230,6 +230,17 @@ cudaError_t PagedKVCache::WritePrefillKV(int32_t layer, const void* key, const v
         row_count <= 0 || row_lengths == nullptr) {
         return cudaErrorInvalidValue;
     }
+    // **`row_starts` 只在 packed 源（`cu_seqlens_ctx != nullptr`）下有意义**：写回起点由
+    // `WriteKVPackedPrefillKernel` 实现，而通用 `WriteKVKernel` 按 stride 从 0 写起、**根本没有
+    // 这个形参**。少了这条闸，"传了起点却没传 packed 源"会被**静默忽略**：K/V 从位置 0 覆盖写，
+    // 而下面的 host 记账照样按 `row_starts[i] + row_lengths[i]` 累加 —— 于是设备侧的
+    // `context_lens` 与实际写过的位置不一致，decode 从没写过的位置续读（静默算错，
+    // `TS-054` 登记的正是这条陷阱）。`LaunchWriteKV` 里另有一道同义的兜底。
+    if (row_starts != nullptr && cu_seqlens_ctx == nullptr) {
+        MINI_TRT_LOG_ERROR("PagedKVCache: row_starts is only supported for a packed source, but "
+                           "cu_seqlens_ctx == nullptr —— 通用 prefill kernel 没有写回起点");
+        return cudaErrorInvalidValue;
+    }
     void* cache_key = key_cache(layer);
     void* cache_value = value_cache(layer);
     if (cache_key == nullptr) {

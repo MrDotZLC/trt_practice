@@ -27,6 +27,19 @@
 
 ## Current Blockers
 
+- **【静态自检：0 处不满足；1 处潜在陷阱已按作者指令修复】`TS-054`：`rows` 的"默认恒等"全量对账**
+  （2026-10-05，作者点名清单第 4 项；完整表见 `docs/TROUBLESHOOTING.md` 的 `TS-054`）：
+  四处消费者（`WritePrefillKV` / `AppendDecodeKV` / `AppendDecodeStep` / `AdvanceContextLensKernel`）
+  的 **6 个生产调用点 + 15 个 tests 调用点**逐个核对"漏传就默认恒等、而语义已变"：
+  **0 处不满足** —— 两处用 `nullptr` 的地方（S1 静态批、S3 padding 生成段）都成立，且 S3 那条有
+  **代码级依据**：`generation_rows` 在"退出压实之后、admit 之前"取（所以生成行确实是前 `generation_rows`
+  行），admit 又用行号同源断言把新行钉在尾部。
+  **发现 1 处潜在陷阱（已修）**：`row_starts` 只被 packed prefill kernel 消费，通用 kernel 没有这个
+  形参 → "传了 `row_starts` 但没传 `cu_seqlens_ctx`"会被**静默忽略**（K/V 从 0 写，而 host 记账按
+  `row_starts + row_lengths` 累加 ⇒ 设备长度与实际写入不一致，静默算错）。当时无调用点触发、tests 零覆盖。
+  **已修（作者点名"先修登记的潜在陷阱"）**：`WritePrefillKV` 入口响亮拒绝 + `LaunchWriteKV` 同义兜底
+  + 两条用例（`WritePrefillKVRowStartsContinuesInsteadOfOverwriting` 正向覆盖 `row_starts` 的**首条**测试、
+  `WritePrefillKVRejectsRowStartsWithoutPackedSource` 反向）。不动图 / profile / 指纹。
 - **【静态自检发现，0 处 P0；3 处缺口已按作者指令处理（纯注释）】`TS-053`：host 指针进设备侧的
   全量对账**
   （2026-10-05，作者点名"系统性扫查"；完整清单见 `docs/TROUBLESHOOTING.md` 的 `TS-053`）：
@@ -540,6 +553,11 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
   在册）；登记三处**注释 / 契约级**缺口（S4 残留注释、公开入口里 `rows`/`row_starts` 是 host 而
   `cu_seqlens_ctx` 是设备、采样器指针字段未标"设备可读"）→ **作者点名"先处理缺口"后三处均已改**
   （纯注释，无行为变化；按 `cpp-comment-style` 复核）
+- 2026-10-05: **`TS-054`（静态自检：`rows` 的"默认恒等"全量对账）** —— 四处消费者 ×（6 生产 + 15 tests）
+  调用点逐个核对：**0 处不满足**（两处 `nullptr` 都有代码级依据）；发现 1 处**潜在陷阱**
+  （`row_starts` 在非 packed 路径被静默忽略）→ **作者点名"先修潜在陷阱"后已修**：两道闸
+  （`WritePrefillKV` 入口拒绝 + `LaunchWriteKV` 兜底）+ 两条用例（正向首次覆盖 `row_starts`、反向拒绝），
+  **未编译验证**
 
 ---
 

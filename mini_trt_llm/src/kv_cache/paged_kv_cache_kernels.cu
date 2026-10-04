@@ -138,6 +138,12 @@ cudaError_t LaunchWriteKV(const PagedKVWriteArgs& args, cudaStream_t stream) {
         args.head_size <= 0 || args.block_size <= 0 || args.max_blocks_per_seq <= 0) {
         return cudaErrorInvalidValue;
     }
+    // **兜底**：写回起点只在 packed prefill 分支里实现（见 `PagedKVWriteArgs::row_starts`），
+    // 通用分支会从 0 写起。走到这里说明调用方绕过了 `PagedKVCache::WritePrefillKV` 的入口校验 ——
+    // 响亮失败，别静默丢掉起点（`TS-054`）。
+    if (args.row_starts != nullptr && args.cu_seqlens_ctx == nullptr) {
+        return cudaErrorInvalidValue;
+    }
 
     // 元素总数按**本次参与的行数**算：源张量只有 row_count 行是本次算出来的，
     // 用批内已登记序列数会多写那些残留行（见 PagedKVWriteArgs::rows）。
