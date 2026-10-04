@@ -202,6 +202,9 @@ generation 段之前，kernel 才能用一个运行时边界标量切开两条�
 | AC4 不回归 | 现有沙箱用例全绿；真机既有用例（FP32 端到端、K/V 缓存、插件）不出现新红 | P6 | 沙箱 + 真机 |
 | AC5 单序列语义不变 | batch = 1 与改动前的基线逐 token 比对 | P6 用例 | 真机 |
 | AC6 性能可复现 | 先声明判别下限 → 同 session、同二进制 A/B、逐轮交替，报中位数与四分位 | P4 baseline + P7 | 真机 |
+| AC7 不浪费 | 同一批内"长度差很大"的两组输入对比：最长那条的长度不改变短序列的代价；判别口径与下限在 P4 声明 | P4 + P7（负载对照） | 真机 |
+| AC8 两条路径各自成立且可回退 | 打包路径（默认）与"填充 + 掩码"路径**各自**满足 AC1；默认路径可切回且不改调用方接口（`FallbackSwitchKeepsResults`） | P6 用例 | 真机 |
+| AC9 分块与不分块等价 | 同一条 prompt 在 `chunk_limit` 取 1 / 中间值 / ≥ prompt_len 三种切法下 token 逐位相同，且不影响同批其它序列（`ChunkedEqualsWholePrompt` 等，见 `p5_s5_interface_spec.md` §6）；**含位置编码的绝对位置断言** | P6 用例 | 真机 |
 
 **环境约束**：沙箱无 GPU，本表除 AC4 的沙箱一半外都只能在真机执行；
 若真机不可用，按 `phases/p4_baseline.md` 的 Dependency Missing 记为 N/A 并三处留痕，**不得**默认通过。
@@ -218,6 +221,9 @@ generation 段之前，kernel 才能用一个运行时边界标量切开两条�
    不允许各自维护下标。
 5. **元数据缓冲指针恒定**：S2 之后，跨请求的设备指针不随批大小变化；
    "每步重绑"从"正确性的依赖"降级为"保险措施"。
+6. **分块的位置与记账（S5）**：chunk 内第 `i` 个 token 的位置 = `prompt_done + i`（绝对位置）；
+   cache 侧的写入长度是**累加**（每步 `+= chunk 长度`），因此任何时刻的 `context_lens` 都等于
+   该序列已写入的 token 数。这一条是分块下的"行号 / 长度同源"（不变量 4 的延伸，D16）。
 
 ## Trade-off
 
@@ -409,30 +415,77 @@ varlen 自注意力、之后的走分页注意力（含当前 token）——**�
 - **依赖 S4**：S5 不需要 S4 才能开工，但两者共用同一套 packed 输入契约；S4 先做（打包 + 段分派）能让 S5
   只增加"context 段的 chunk 可以 < prompt 长度"与"读缓存"两件事。
 - **仍然排除**：抢占 / 换出；调度层的混批 / 分块优先级策略（例如按分块重排准入）。
-- **S5 自己的设计要解的四件事**：① context 段读缓存（第三种计算模式：query 数 > 1 且 K/V 来自缓存）；
+- **S5 自己的设计要解的五件事**（2026-10-04 第二遍复评后由四件补为五件，第 ⑤ 条是那轮查出的遗漏）：
+  ① context 段读缓存（第三种计算模式：query 数 > 1 且 K/V 来自缓存）；
   ② 活跃表的 prompt 进度字段与"何时算 prefill 完成"；③ 与 D9 块预算、退出判据的联动；
-  ④ 判据：AC9 + 分块不得影响同批其它序列。
+  ④ 判据：AC9 + 分块不得影响同批其它序列；
+  ⑤ **位置与采样行集**：chunk 的 token 必须用**绝对位置**（`prompt_done + i`）；且"本步完成 prefill 的行"
+  在活跃表里**不保证连续**，采样因此需要显式行列表（两条都见 D16）。
 
-### D16 S5 的实现形态（分块语义 + 统一成分页因果注意力）
+### D16 S5 的实现形态（分块语义 + chunked 分页因果 context kernel）
+
+> **2026-10-04 第二遍复评后重写**。原版把形态写成"统一成分页因果"，但核对代码后确认：
+> generation 段的 split-K 是 **decode 专用**（每行 1 个 query、workspace 布局写死），
+> 而 context 段的现有 kernel 根本不接 `block_tables` / `context_lens`。原版的表述在实现层面
+> 是空壳，且漏了位置编码与采样行集两条会**静默算错**的落点。以下为定稿形态。
 
 | 方案 | 说明 | 取舍 |
 |---|---|---|
-| **A. 统一成"分页因果注意力"（采用，待作者确认）** | context 段也走分页寻址（K/V = 缓存里 `[0, prompt_done)` + 本 chunk 自包含、因果 + 按段 mask）；首 chunk 时缓存部分为空 → **自动退化**成 S4 的 varlen 自注意力 | 一条实现、一个判据面（AC9 的两条路径走同一段代码最容易对齐）；代价是**首块也吃分页开销** |
-| B. 双模式（首块 varlen / 后续分页） | 首块保持 S4 的原路径，后续 chunk 走新的分页因果路径 | 首块更快；代价是同一语义两套实现、判据与回归面翻倍 |
+| **A. 新写 chunked 分页因果 context kernel（采用，第二遍复评定稿）** | context 段保持**一个 query 位置一个 block** 的网格（与 S4 的 varlen kernel 同形），K/V 读法改成"分页缓存 `[0, prompt_done)` ++ 本 chunk 自包含"；首 chunk 缓存长度为 0 → **自动退化**成 S4 的 varlen 行为（同一段代码） | 一条实现、一个判据面；**workspace 需求不变**（score 仍在 shared），"复用已构建引擎"的条件可证；代价是首块也吃分页寻址开销 |
+| B. 把 generation 段的 split-K 扩到"一行多个 query" | 沿用 `PagedAttentionSplitKernel` + 其 workspace 布局 | 首块可能更快；但 split-K 是 decode 专用（workspace 布局 `[split][batch][head][m,l,acc]` 写死、`has_current_token` 单 token），要重写布局与归并 → `getWorkspaceSize` 变 → 引擎必须重建且 `graph_version` 必须 bump |
+| C. 双模式（首块 varlen / 后续分页） | 首块保持 S4 原路径，后续 chunk 走新的分页因果路径 | 首块更快；代价是同一语义两套实现、判据与回归面翻倍，与"少一种模式"的初衷相反 |
 
-**决策：A（待作者确认）。** 若 P4/P7 实测首块代价显著，再退回 B（届时判据不变）。
+**决策：A。** 依据：现状核对显示 B 会动 workspace、C 会翻倍判据面，A 是唯一"新增语义但不动
+已构建引擎的 I/O 与 workspace 契约"的方案。若 P4/P7 实测首块代价显著，再退回 C（届时判据不变）。
 
-**分块的语义（同时定下，见 `p5_s5_interface_spec.md` §2）**：
+**S5 的实现形态（逐条定下）**：
 
+- **kernel 形态**：新写 chunked context kernel（替换 `PackedContextAttentionKernel` 的 K/V 读法）。
+  网格仍是 `(num_heads, B_ctx, max_seq_len)`，一个 block 负责 `(head, seq, 段内 query 位置 pos)`；
+  `pos >= L_c` 的块立即返回（`L_c` 由 `cu_seqlens_ctx` 给出，是设备值）。
+  K/V 分两段：① 分页缓存 `[0, prompt_done)`——**注意力时刻**的 `context_lens[seq]` 就是 `prompt_done`
+  （runner 的顺序是"先上传元数据、再跑引擎、最后写回"，见 `llm_runner.cpp` 的 ②③④），
+  ② 本 chunk 自包含的 `[0, pos]`；因果边界 = `prompt_done + pos`。输出只写这 `L_c` 个 query 位置。
+- **key 数上界与"支持集合"**：per-query 的 key 数 = `prompt_done + pos + 1 <= prompt_len <= n_positions`，
+  而 `configurePlugin` 已要求 `n_positions <= kPackedAttentionMaxContextSeqLen = 1024`
+  （`gpt2_model_builder.cpp` 把 `cfg.n_positions` 作为插件的 `max_seq_len` 传入）。score 数组按该
+  编译期常量分配即可。因此原版"`chunk_limit` 必须落在 fused kernel 支持的常量集合内"**改写为可执行的两条**：
+  `n_positions <= 1024`（建图期已有校验）＋ `prompt_len <= n_positions`（入口拒绝，见兜底纪律）。
+  `chunk_limit` 本身**不是**任何 kernel 的模板常量，它是数据，不需要也不应该进"支持集合"。
+- **禁止静默跳过**：现有 context kernel 在 `len > 1024` 时直接 `return`（**不写输出**）——S5 的新 kernel
+  不得保留这种形态；越界一律在构造期 / 入口显式拒绝。
+- **position_ids 用绝对位置**：context 行的第 `i` 个 chunk token 的位置 = `prompt_done + i`
+  （首 chunk 退化为 `0..L_c-1`，与 S4 一致）。依据：模型是**绝对位置查表**
+  （`gpt2_model_builder.cpp` 的 `addGather(wpe, position_ids)`）；沿用现状的"段内位置从 0 起"
+  会让第二块起查错位置表，且不报错（静默错，AC9 必然变红）。
+- **采样行集 = 显式行列表 + 紧凑暂存**：本步参与采样的行 = 生成段前缀 ∪ 本步完成 prefill 的 chunk 行。
+  完成的行**不保证**连续（长 prompt 分块中、新准入的短 prompt 本步完成时会出现"洞"），而采样器
+  只吃连续 `[count]`；因此 runner 用一张显式行列表把（末位 logits / per-row 采样参数 / EOS 标记 /
+  输出 token）在紧凑槽位上聚集与散开 —— **不动 `SampleBatch` 签名，也不动行号纪律**（不变量 4）。
+- **写回位置与记账**：写回从 `prompt_done` 起——kernel 用**写回时刻**的 `context_lens[row] + t`
+  （该值同样仍是本步之前的已写入长度，不需要新输入）；host 侧记账从"赋值"改成"累加"
+  （`context_lens_host_[row] += row_lengths[i]`、`Sequence::length` 同）；预留量校验改用**累计长度**。
 - **chunk 期间不出 token**：序列在 prompt 全部 prefill 完成前不参与采样，`max_new` 从那时开始计时，
   否则"分块"会改变可见的生成语义。
-- **切法是确定性的**：`chunk_limit` **由 profile 的单序列上限推导、不暴露给调用方**；
-  非末块对齐（恒为 `chunk_limit`）、末块按剩余的实际长度。不做"按队列长度自适应"那类调度层策略
-  （那一条仍在 Excluded 里）—— AC1/AC9 的逐位对拍依赖确定性。
-- **不动图、不动 `graph_version`**：同一张 packed 图，chunk 只让每步的 `T` 变小
-  （这是 S4 把"每序列 token 数 ≥ 1"写进契约换来的好处）。
-- **兜底纪律（作者 2026-10-04 定）**：无法走 fused kernel 的配置（例如推导出的 `chunk_limit`
-  不在支持集合内）**在构造期/入口显式拒绝**，不许静默退到慢路径；末块变短不算这种情形。
+- **切法是确定性的**：`chunk_limit` = 引擎 profile 的**单序列上限**（`input_ids` / `position_ids`
+  第 1 维 `.max`），**不暴露给调用方**；非末块对齐（恒为 `chunk_limit`）、末块按剩余的实际长度。
+  不做"按队列长度自适应"那类调度层策略（那一条仍在 Excluded 里）—— AC1/AC9 的逐位对拍依赖确定性。
+- **`chunk_limit` 的来源（2026-10-04 作者授权折入）**：`LLMRunner::Config` 里**没有**
+  `max_prefill_seq_len`，`Engine` 类也不暴露 profile 查询，所以"由 profile 推导"必须先补一个
+  **`Engine` 的只读 profile 查询接口**（查 `getProfileShape`），**不新增 `LLMRunner::Config` 字段** ——
+  依据是项目既有的"按对方查询、不按配置假定"（workspace 版见 `paged_attention_split.hpp` 与
+  `PROGRESS.md` §2.15）。查询失败必须**构造期报错**，不许退回猜测的默认值。
+- **图与引擎（`graph_version`）**：方案 A 让 I/O 契约与 `getWorkspaceSize` **都不变**，所以存在
+  "复用旧引擎"的理论可能；但 `engine_cache.hpp` 的规则是"**任何改动建图 / 精度 / 插件行为的代码变更
+  都要 +1**"（先例：1 → 2 正是 `PagedAttentionPlugin::getWorkspaceSize` 从 0 变正数），
+  而 S5 改的正是插件对同一绑定的计算语义。**作者 2026-10-04 复核确认：
+  `kPackedPrefillGraphVersion` 4 → 5**（代价是真机首次重建 packed 引擎，分钟级；不再保留"沿用 4 +
+  写豁免条件"的分支）。
+- **兜底纪律（作者 2026-10-04 定；第二遍复评补全检查对象与适用范围）**：分界是"**能否在构造期 /
+  入口判定**"——配置 / 形状类（`n_positions > 1024`、`prompt_len > n_positions`、推导不出
+  `chunk_limit`、profile 查询失败）**显式拒绝**，错误信息带上实际值与上界；运行期资源类
+  （TRT 未提供 workspace 时既有插件退单趟 + WARN）保留既有降级，但**S5 新增路径不得引入新的这类
+  静默降级**。末块变短**不算**这种情形（同一个 kernel 按 `cu_seqlens` 处理）。
 
 ## Requirement Coverage
 
@@ -450,6 +503,11 @@ varlen 自注意力、之后的走分页注意力（含当前 token）——**�
 | AC4 不回归 | §验证策略（AC4 行） | S1/S2/S3 每步 | P6 |
 | AC5 单序列语义不变 | §验证策略（AC5 行） | S1 | P6 |
 | AC6 性能可复现且不自证 | §验证策略（AC6 行）+ §Performance Consideration（测量口径） | S1/S3 | P4 + P7 |
+| Included 7：不等长 prefill 按真实长度计费 + 两条路径（打包为默认） | §Runtime Flow（S3 两段式 / S4 packed）+ D10 + D13 | S3 + S4 | P4 + P6 |
+| Included 8：长 prompt 的分块推进（S5） | §Runtime Flow（S5 分块模型）+ D15 + D16 | S5 | P6 |
+| AC7 不浪费 | §验证策略（AC7 行）+ D10（负载对照口径） | S3 + S4 | P4 + P7 |
+| AC8 两条路径各自成立且可回退 | §Runtime Flow（S3 / S4 两条路径）+ D13 + D14 | S3 + S4 | P6 |
+| AC9 分块与不分块等价 | §Runtime Flow（S5）+ D16 + `p5_s5_interface_spec.md` §6 | S5 | P6 |
 
 ## Risk
 
