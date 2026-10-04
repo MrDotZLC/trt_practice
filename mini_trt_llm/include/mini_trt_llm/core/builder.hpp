@@ -82,6 +82,16 @@ class EngineBuilder {
         // docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md + PH4-INT8-TOOLCHAIN 的 S3。
         // 默认关的理由：它会增加引擎体积与构建时间，只有"需要自证精度"的场合才开。
         bool detailed_profiling = false;
+
+        // **S4 的 packed 混合批 prefill 图（2026-10-04）**：置 true 时 prefill 阶段建
+        // "一个 packed 张量装两相、attention 按段分派"的图（见 `p5_s4_interface_spec.md`），
+        // 并把该图的 profile 改成"token 维 + 行维"两条独立动态轴。
+        //
+        // **默认 false（= 仍用 S3 的 padding 图）**：翻转默认值要等真机把两条路径都跑绿（P6）——
+        // 在那之前，未编译/未验证的路径不该成为默认（与"不许把未验证当结论"同一条纪律）。
+        // 注意：packed 图与 padding 图的**指纹代次不同**（kPackedPrefillGraphVersion），
+        // 所以两者可以共存，不会互相复用引擎。
+        bool packed_mixed_prefill = false;
     };
 
     explicit EngineBuilder(Logger& logger, const Config& config);

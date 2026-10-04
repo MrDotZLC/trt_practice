@@ -1,6 +1,7 @@
 #include "mini_trt_llm/core/gpt2_model_builder.hpp"
 
 #include "mini_trt_llm/plugins/paged_attention_plugin.hpp"
+#include "mini_trt_llm/plugins/packed_attention_plugin.hpp"
 #include "mini_trt_llm/utils/logger.hpp"
 
 #include <NvInfer.h>
@@ -341,6 +342,14 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
     }
 
     const bool is_decode = options.stage == BuildStage::kDecode;
+    // **S4 的 packed 混合批图**（只对 prefill 有效）：一个 packed 张量里装两相
+    // （context 段的全部 token 在前、generation 段的 1 token/行在后），attention 由
+    // `PackedAttentionPlugin` 按段分派。见 `p5_s4_interface_spec.md`。
+    const bool is_packed = options.packed_mixed;
+    if (is_packed && is_decode) {
+        MINI_TRT_LOG_ERROR("GPT-2 build: packed_mixed is only supported for the prefill stage");
+        return false;
+    }
     // prefill 与 decode 都要把每层的 K/V 导出：前者用来写 cache，
     // 后者是"下一轮追加"的数据来源。
     const bool export_kv = options.stage != BuildStage::kSingle;
@@ -362,10 +371,11 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
     // 分段 prefill / 带 history 的调用无法复用同一个引擎。
     // decode 每步只吃一个 token，所以序列维是静态 1；prefill 的序列维是动态的。
     nvinfer1::ITensor* input_ids = network->addInput(
-        "input_ids", nvinfer1::DataType::kINT32, is_decode ? Dims2(-1, 1) : Dims2(-1, -1));
+        "input_ids", nvinfer1::DataType::kINT32,
+        is_decode ? Dims2(-1, 1) : (is_packed ? Dims2(1, -1) : Dims2(-1, -1)));
     nvinfer1::ITensor* position_ids = network->addInput(
         "position_ids", nvinfer1::DataType::kINT32,
-        is_decode ? Dims2(-1, 1) : Dims2(-1, -1));
+        is_decode ? Dims2(-1, 1) : (is_packed ? Dims2(1, -1) : Dims2(-1, -1)));
     if (input_ids == nullptr || position_ids == nullptr) {
         MINI_TRT_LOG_ERROR("GPT-2 build: failed to declare inputs");
         return false;
@@ -380,8 +390,11 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
     // **两个输入的动态维不会自动绑定**：TRT 不会因为两处都写 `-1` 就认定它们相等，调用方必须把
     // 本输入的最后一维设成与 `input_ids` 的 S 一致。设错这一个数不会报错，只会让 mask 与 token
     // 错位——所以 runner 侧把两个形状一起设（见 BindPrefill）。
+    // **packed 图没有 padding_bias**：packed 无填充，掩码由段内 `cu_seqlens_ctx` 分段表达
+    // （见 p5_s4_interface_spec.md §3）。沿用这条会让 packed 图多一个用不上的输入，
+    // 而"多一个输入"在 TRT 里就是改 I/O 契约（消费方必须绑）。
     nvinfer1::ITensor* padding_bias = nullptr;
-    if (!is_decode) {
+    if (!is_decode && !is_packed) {
         padding_bias = network->addInput("padding_bias", nvinfer1::DataType::kFLOAT,
                                          Dims4(-1, 1, 1, -1));
         if (padding_bias == nullptr) {
@@ -402,7 +415,11 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
     // tests/test_gpt2_decode_consistency.cpp 的严格对拍抓出来过。
     std::vector<nvinfer1::ITensor*> key_caches(static_cast<size_t>(cfg.n_layer), nullptr);
     std::vector<nvinfer1::ITensor*> value_caches(static_cast<size_t>(cfg.n_layer), nullptr);
-    if (is_decode) {
+    // packed 图与 decode 图都要 cache 与它的元数据：packed 的 **generation 段**要读缓存，
+    // 而 **context 段**不读（它用 packed 自己的 K/V 做 varlen 自注意力）。
+    nvinfer1::ITensor* cu_seqlens_ctx = nullptr;
+    nvinfer1::ITensor* context_seq_count = nullptr;
+    if (is_decode || is_packed) {
         const int32_t blocks_per_seq = cfg.num_blocks();
         block_tables = network->addInput(
             "block_tables", nvinfer1::DataType::kINT32, Dims2(-1, blocks_per_seq));
@@ -426,6 +443,18 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
         if (block_tables == nullptr || context_lens == nullptr) {
             MINI_TRT_LOG_ERROR("GPT-2 build: failed to declare decode inputs");
             return false;
+        }
+        if (is_packed) {
+            // packed 专有：段边界与**段内**前缀和（下标从 0 起，禁止跨段混用 —— §3 的下标纪律）
+            cu_seqlens_ctx = network->addInput("cu_seqlens_ctx", nvinfer1::DataType::kINT32,
+                                              nvinfer1::Dims{1, {-1}});
+            context_seq_count = network->addInput("context_seq_count",
+                                                 nvinfer1::DataType::kINT32,
+                                                 nvinfer1::Dims{1, {1}});
+            if (cu_seqlens_ctx == nullptr || context_seq_count == nullptr) {
+                MINI_TRT_LOG_ERROR("GPT-2 build: failed to declare packed inputs");
+                return false;
+            }
         }
     }
 
@@ -560,6 +589,10 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
         // prefill 用显式子图（MatMul → mask → Softmax → MatMul）。
         // 两条路都产出 [B, NH, seq, D]，之后的 reshape / c_proj / 残差完全共用。
         nvinfer1::ITensor* attention_out = nullptr;
+        // packed 分支要把 token-major 的 K/V 留给下面的输出导出用（写回 kernel 按 token 寻址，
+        // 所以导出的是 [T, NH, D]，而不是 heads-major 的 [1, NH, T, D]）。
+        nvinfer1::ITensor* packed_k_out = nullptr;
+        nvinfer1::ITensor* packed_v_out = nullptr;
         if (is_decode) {
             nvinfer1::ITensor* plugin_inputs[7] = {
                 q_kv[0],
@@ -581,6 +614,75 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
             }
             plugin_layer->setName(LayerName(scope + "paged_attention").c_str());
             attention_out = plugin_layer->getOutput(0);
+        } else if (is_packed) {
+            // heads-major [1, NH, T, D] → token-major [T, NH, D]：先转置成 [1, T, NH, D]，
+            // 再用 -1 推断出 token 维（TRT 的 reshape 里 -1 = 推断、0 = 复制对应的输入维）。
+            // 每一步都显式查空：这个文件里每个张量操作都这么写，别在这里破例
+            // （nullptr 一路传下去会在 TRT 里变成难定位的崩溃）。
+            nvinfer1::ITensor* q_tokens = nullptr;
+            nvinfer1::ITensor* k_tokens = nullptr;
+            nvinfer1::ITensor* v_tokens = nullptr;
+            nvinfer1::ITensor* q_heads_t = AddTranspose(
+                network, q_kv[0], Dims4(0, 2, 1, 3), LayerName(scope + "q_tokens_t"));
+            nvinfer1::ITensor* k_heads_t = AddTranspose(
+                network, q_kv[1], Dims4(0, 2, 1, 3), LayerName(scope + "k_tokens_t"));
+            nvinfer1::ITensor* v_heads_t = AddTranspose(
+                network, q_kv[2], Dims4(0, 2, 1, 3), LayerName(scope + "v_tokens_t"));
+            if (q_heads_t != nullptr) {
+                q_tokens = AddReshape(network, q_heads_t, Dims3(-1, heads, head_size),
+                                      LayerName(scope + "q_tokens"));
+            }
+            if (k_heads_t != nullptr) {
+                k_tokens = AddReshape(network, k_heads_t, Dims3(-1, heads, head_size),
+                                      LayerName(scope + "k_tokens"));
+            }
+            if (v_heads_t != nullptr) {
+                v_tokens = AddReshape(network, v_heads_t, Dims3(-1, heads, head_size),
+                                      LayerName(scope + "v_tokens"));
+            }
+            if (q_tokens == nullptr || k_tokens == nullptr || v_tokens == nullptr) {
+                MINI_TRT_LOG_ERROR("GPT-2 build: packed attention reshape failed at layer "
+                                   << layer);
+                return false;
+            }
+            nvinfer1::ITensor* plugin_inputs[9] = {q_tokens,
+                                                   k_tokens,
+                                                   v_tokens,
+                                                   key_caches[static_cast<size_t>(layer)],
+                                                   value_caches[static_cast<size_t>(layer)],
+                                                   block_tables,
+                                                   context_lens,
+                                                   cu_seqlens_ctx,
+                                                   context_seq_count};
+            // scale 传 0 → 插件按 1/sqrt(head_size) 推导（与 paged 插件同一约定）。
+            // `max_seq_len` 是 context kernel 的 grid.z 上限 = **单序列**最大长度，取模型的位置数上界。
+            PackedAttentionPlugin plugin(heads, heads, head_size, cfg.block_size, cfg.n_positions,
+                                         0.0f);
+            nvinfer1::IPluginV3Layer* plugin_layer =
+                network->addPluginV3(plugin_inputs, 9, nullptr, 0, plugin);
+            if (plugin_layer == nullptr) {
+                MINI_TRT_LOG_ERROR("GPT-2 build: PackedAttention plugin failed at layer "
+                                   << layer);
+                return false;
+            }
+            plugin_layer->setName(LayerName(scope + "packed_attention").c_str());
+            packed_k_out = k_tokens;
+            packed_v_out = v_tokens;
+            // 插件输出 [T, NH, D] → 回到下游期望的 heads-major [1, NH, T, D]：
+            // 先 reshape 成 [1, T, NH, D]，再转置。
+            // **这里必须用 `-1` 推断 token 维，不能用 0 占位**：`0` 表示"沿用输入**同一维下标**"
+            // （AddReshape 里 `setZeroIsPlaceholder(true)`），而我们要做的是 rank 3 → 4 的重排，
+            // 下标对不上；`-1` 由总体积推断出 T（NH/D 是字面量，唯一解）。
+            nvinfer1::ITensor* out_tokens = AddReshape(
+                network, plugin_layer->getOutput(0), Dims4(1, -1, heads, head_size),
+                LayerName(scope + "attention_out_flat"));
+            attention_out = AddTranspose(network, out_tokens, Dims4(0, 2, 1, 3),
+                                         LayerName(scope + "attention_out_heads"));
+            if (attention_out == nullptr) {
+                MINI_TRT_LOG_ERROR("GPT-2 build: packed attention output reshape failed at layer "
+                                   << layer);
+                return false;
+            }
         } else {
             nvinfer1::ITensor* key_t =
                 AddTranspose(network, q_kv[1], Dims4(0, 1, 3, 2),
@@ -745,10 +847,20 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
             // 类型，**实测无效**（重建后仍是 FP32）：弱类型网络下 Cast 只是精度提示，
             // 锁不住 I/O 类型。消费方必须**查询**引擎声明的类型，不能假定。
             // 排查与证据见 docs/TROUBLESHOOTING.md + TS-018。
-            q_kv[1]->setName(k_name.c_str());
-            q_kv[2]->setName(v_name.c_str());
-            network->markOutput(*q_kv[1]);
-            network->markOutput(*q_kv[2]);
+            // **packed 图导出的是 token-major 的 [T, NH, D]**（写回 kernel 按 token 寻址，
+            // 见 p5_s4_interface_spec.md §5）；padding/decode 图仍是 heads-major 的
+            // [B, NH, S, D]（那是它们既有消费方的契约，不动）。
+            nvinfer1::ITensor* k_out = is_packed ? packed_k_out : q_kv[1];
+            nvinfer1::ITensor* v_out = is_packed ? packed_v_out : q_kv[2];
+            if (k_out == nullptr || v_out == nullptr) {
+                MINI_TRT_LOG_ERROR("GPT-2 build: missing K/V tensor for output at layer "
+                                   << layer);
+                return false;
+            }
+            k_out->setName(k_name.c_str());
+            v_out->setName(v_name.c_str());
+            network->markOutput(*k_out);
+            network->markOutput(*v_out);
         }
     }
 

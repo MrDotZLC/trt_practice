@@ -188,6 +188,17 @@ packed 路径是 `T · V ≈ Σ L_i · V` —— 这正是"不等长批按真实
 它是"典型批 × 典型长度"，直接影响显存占用与调度器的最优形状区间 ——
 现在写一个拍脑袋的值等于把它变成隐性契约；实现 S4 时先取一个**显式标注待实测**的保守值。
 
+**profile 有两条独立的动态轴（2026-10-04 落码时发现，会改动 `builder.cpp`）**：
+packed 图里 `input_ids` / `position_ids` 的动态轴是 **token 维 `T`**（范围 `[1, max_batch × max_prefill_seq_len]`），
+而 `block_tables` / `context_lens` / `cu_seqlens_ctx` 的动态轴是 **行维 `B_total`**（范围 `[1, max_batch]`）；
+`context_seq_count` 固定 `[1]`。现有 `EngineBuilder::ApplyProfile` 是"按 dim 下标对所有输入套同一组范围"，
+**不能**直接套到 packed 图上（那样 `block_tables` 的第 0 维会被钉成 1，`B_total > 1` 直接越界）——
+packed 图必须改成**按输入名**给范围。这是 packed 图对 `builder.cpp` 的唯一硬改动，已进 Implementation Plan。
+
+**两套图的指纹各用各的代次**：padding prefill 图 = `kEngineGraphVersion`（3），
+packed 混合批图 = `kPackedPrefillGraphVersion`（4），由 `Config::packed_mixed_prefill` 选。
+**默认值保持 padding（false）**，翻转要等 P6 把两条路径都跑绿 —— 未编译/未验证的路径不该成为默认。
+
 ## 8. 路径开关与回退（AC8）
 
 - `LLMRunner::Config` 加 `prefill_mode`（`kPackedMixed` 默认 / `kPaddedTwoPhase`），**不改调用方接口**。

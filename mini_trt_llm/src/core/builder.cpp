@@ -38,6 +38,11 @@ namespace {
 // （指纹不含建图代码本身）。
 // 3: prefill 图新增 padding_bias 输入（REQ-016 S3，支持批内 prompt 长度不齐）
 constexpr int32_t kEngineGraphVersion = 3;
+// **4: S4 的 packed 混合批 prefill 图**（一个 packed 张量装两相、attention 按段分派）。
+// 它与 version 3 的 padding prefill 图**并存**（由 `Config::packed_mixed_prefill` 选），
+// 两套图的 I/O 契约不同（多 6 个输入、K/V 输出换成 token-major 的 [T,NH,D]、去掉 padding_bias），
+// 所以用各自代次进指纹 —— 复用错引擎的后果是"按旧契约绑张量"，那是静默错而不是报错。
+constexpr int32_t kPackedPrefillGraphVersion = 4;
 
 const char* StageName(BuildStage stage) {
     switch (stage) {
@@ -76,7 +81,7 @@ constexpr DimRange kUnsupportedRange{-1, -1, -1};
 // 都必须有 min/opt/max。整张量全静态时直接跳过，不创建空 profile。
 bool ApplyProfile(nvinfer1::IOptimizationProfile* profile,
                   const nvinfer1::ITensor* tensor,
-                  const std::function<DimRange(int32_t)>& range_for_dim) {
+                  const std::function<DimRange(const std::string&, int32_t)>& range_for_dim) {
     nvinfer1::Dims min_dims = tensor->getDimensions();
     nvinfer1::Dims opt_dims = min_dims;
     nvinfer1::Dims max_dims = min_dims;
@@ -86,7 +91,7 @@ bool ApplyProfile(nvinfer1::IOptimizationProfile* profile,
         if (min_dims.d[dim] >= 0) {
             continue;
         }
-        const DimRange range = range_for_dim(dim);
+        const DimRange range = range_for_dim(tensor->getName(), dim);
         if (range.min <= 0 || range.opt < range.min || range.max < range.opt) {
             MINI_TRT_LOG_ERROR("Cannot determine optimization range for dynamic dim "
                                << dim << " of tensor " << tensor->getName());
@@ -197,7 +202,9 @@ EngineFingerprintInputs EngineBuilder::MakeFingerprintInputs(const std::string& 
     inputs.stage = StageName(stage);
     inputs.precision = PrecisionString(config_.precision);
     inputs.source_kind = onnx_path.empty() ? "config" : "onnx";
-    inputs.graph_version = kEngineGraphVersion;
+    // packed 混合批图与 padding prefill 图是两套契约，各用各的代次（见上面两个常量的说明）。
+    inputs.graph_version = config_.packed_mixed_prefill ? kPackedPrefillGraphVersion
+                                                        : kEngineGraphVersion;
     inputs.trt_version = std::to_string(getInferLibVersion());
     int cuda_version = 0;
     if (cudaRuntimeGetVersion(&cuda_version) == cudaSuccess) {
@@ -275,18 +282,13 @@ bool EngineBuilder::AddLlmOptimizationProfiles(nvinfer1::IBuilder* builder,
         return true;
     }
 
-    // 布局约定：第 0 维是 batch，其余动态维一律视为序列相关维。
+    // 布局约定（非 packed 路径）：第 0 维是 batch，其余动态维一律视为序列相关维。
     // 这样对 [B, S, H] 与 RoPE 的 [B, H, S, D] 都成立，无需为每种布局写一份规则。
     //
     // 已知限制：Decode profile 把非 batch 动态维固定为 1（对应"每步只喂 1 个 token"），
     // 因此 KV Cache 长度维目前不能声明为动态。接入真实 LLM 网络（Phase 2）时需细化，
     // 届时该维应单独取 max_decode_seq_len。
-    auto make_range = [this](const DimRange& batch_range, const DimRange& seq_range) {
-        return [batch_range, seq_range](int32_t dim) -> DimRange {
-            return dim == 0 ? batch_range : seq_range;
-        };
-    };
-
+    // （packed 图不适用这条约定：它有两条独立动态轴且落在不同输入上 —— 见下面的 packed_* 说明。）
     const DimRange prefill_batch{config_.min_prefill_batch, config_.opt_prefill_batch,
                                  config_.max_prefill_batch};
     const DimRange prefill_seq{config_.min_prefill_seq_len, config_.opt_prefill_seq_len,
@@ -294,6 +296,16 @@ bool EngineBuilder::AddLlmOptimizationProfiles(nvinfer1::IBuilder* builder,
     const DimRange decode_batch{config_.min_decode_batch, config_.opt_decode_batch,
                                 config_.max_decode_batch};
     const DimRange decode_seq{1, 1, 1};
+
+    // **S4 packed 图有两条独立动态轴，且落在不同输入上**（见 p5_s4_interface_spec.md §7）：
+    //   * `input_ids` / `position_ids`：dim0 固定 1、dim1 是 **token 维 T**；
+    //   * `block_tables` / `context_lens` / `cu_seqlens_ctx`：dim0 是 **行维 B_total**。
+    // 所以不能沿用"按 dim 下标对所有输入套同一组范围"——那会把 block_tables 的行维钉成 1，
+    // `B_total > 1` 直接越界（这正是 ApplyProfile 现在收**输入名**的原因）。
+    // 两个 opt 都**先取保守值并标注待实测**（作者 2026-10-04 定：opt 等 P4 实测后定）。
+    const DimRange packed_tokens{1, config_.opt_prefill_seq_len,
+                                 config_.max_prefill_batch * config_.max_prefill_seq_len};
+    const DimRange packed_rows{1, config_.max_prefill_batch, config_.max_prefill_batch};
 
     // 按 stage 过滤要挂哪些 profile：双引擎方案下每个 engine 只该有自己那一组，
     // 多挂一组不会报错，但会让 TRT 为用不到的形状多编译一份 kernel（GPT-2 上是分钟级开销）。
@@ -308,7 +320,20 @@ bool EngineBuilder::AddLlmOptimizationProfiles(nvinfer1::IBuilder* builder,
     for (const auto& [batch_range, seq_range] : profiles) {
         nvinfer1::IOptimizationProfile* profile = builder->createOptimizationProfile();
         NVINFER_CHECK(profile);
-        const auto range_for_dim = make_range(batch_range, seq_range);
+        // 按 stage 的**语义**选范围映射：packed prefill 图用"按输入名"的那套，
+        // 其余（padding prefill / decode / single）保持"按 dim 下标"的原行为。
+        const bool packed_profile =
+            config_.packed_mixed_prefill && (stage == BuildStage::kPrefill);
+        const auto range_for_dim =
+            [&](const std::string& name, int32_t dim) -> DimRange {
+            if (!packed_profile) {
+                return dim == 0 ? batch_range : seq_range;
+            }
+            if (name == "input_ids" || name == "position_ids") {
+                return dim == 0 ? DimRange{1, 1, 1} : packed_tokens;
+            }
+            return dim == 0 ? packed_rows : DimRange{1, 1, 1};
+        };
         for (int32_t i = 0; i < network->getNbInputs(); ++i) {
             if (!ApplyProfile(profile, network->getInput(i), range_for_dim)) {
                 return false;
@@ -375,6 +400,8 @@ bool EngineBuilder::BuildFromConfig(const std::string& model_dir,
     build_options.stage = stage;
     build_options.weight_dtype = ToTrtDataType(config_.precision);
     build_options.export_diagnostics = config_.export_diagnostics;
+    // S4：把 packed 混合批图的开关透给模型构建器（只有 prefill 阶段有意义，构建器会自行校验）。
+    build_options.packed_mixed = config_.packed_mixed_prefill;
 
     if (!builder_impl->Build(network.get(), weights, model_config, build_options)) {
         MINI_TRT_LOG_ERROR("Model builder failed: " << builder_impl->Name());

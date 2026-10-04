@@ -37,6 +37,13 @@ struct BuildOptions {
     // 漏绑会让 enqueue 直接失败——本项目已经因为"默认带上诊断输出"在真机上打挂过
     // 6 条用例，详见 docs/TROUBLESHOOTING.md + TS-019。
     bool export_diagnostics = false;
+
+    // **S4 的 packed 混合批图（2026-10-04）**：prefill 阶段建"一个 packed 张量装两相"的图
+    // （见 `p5_s4_interface_spec.md`）。只对 prefill 有效；decode 阶段传 true 会被模型构建器拒绝。
+    // 它改变的是**图的输入/输出契约**（多 6 个输入、K/V 输出布局从 [1,NH,T,D] 换成 token-major
+    // 的 [T,NH,D]、去掉 padding_bias），因此必须与 `graph_version` 的对应代次一起用
+    // （见 builder.cpp 的 `kPackedPrefillGraphVersion`）。
+    bool packed_mixed = false;
 };
 
 // 模型构建器抽象接口。

@@ -82,6 +82,20 @@
 
 （技能 P5 要求：当前修改模块 / 预计文件 / 测试方式）
 
+### P5-S4（**进行中，未编译验证**，2026-10-04 开工）
+
+**当前修改模块**：S4 packed 混合批——插件（已落）、图/构建（进行中）、runner（待做）、用例（待做）。
+
+| 步骤 | 内容 | 状态 |
+|---|---|---|
+| 插件 | `packed_attention_plugin.{hpp,cu}` + `BlockReduceMax` + 注册；generation 段**复用 paged 的 split-K**（给 `PagedAttentionKernelArgs` 与三条 kernel 加行/token 基址） | **已落**（`257aedd` / `487bc9d`），未编译 |
+| ① 图/构建 | 接口（`BuildOptions::packed_mixed` / `Config::packed_mixed_prefill`，默认 **false**）+ `kPackedPrefillGraphVersion = 4` + 指纹按开关选代次；**图本体**：`input_ids/position_ids` 用 `Dims2(1,-1)`、去掉 `padding_bias`、加 `block_tables`/`context_lens`/每层 cache/`cu_seqlens_ctx`/`context_seq_count`、注意力换 `PackedAttentionPlugin`（Q/K/V 转 token-major `[T,NH,D]`，输出再转回 heads-major）、**K/V 输出导 token-major**；`ApplyProfile` 改成**按输入名**给范围（packed 的两条动态轴） | **已落**，未编译 |
+| ② runner | `prefill_mode` 开关、打包与元数据重建（含**按 packed 行序重建** `block_tables`/`context_lens`）、映射数组、写回（多收设备端 `cu_seqlens`）/追加（源基址 + 行集）/采样聚集、`SchedulerStats` 跨路径四个量 | 待做 |
+| ③ 用例 | §9 的 8 条（`PackedEqualsSequential` / `MixedStepContextAndGeneration` / `ContextTokensPrecedeGeneration` / `CuSeqlensBoundaryCases` / `PackedWriteBackMapsCorrectly` / `PackedMetadataFollowsPackedOrder` / `PackedShortSequenceNotPenalized` / `FallbackSwitchKeepsResults`）+ test_plan 行 | 待做 |
+
+**测试方式**：本沙箱无编译器 → 只做静态自检（逐行括号深度、符号成对、最长行、CRLF/无 BOM）。
+真机：编译 → 跑两条路径的用例 → 重跑既有 decode 用例（这次动过 paged kernel 的索引基址）。
+
 **当前修改模块**：S1 批量执行 —— 运行时（`LLMRunner`）的批量入口与批量缓冲；
 外加一处**采样器随机流口径修正**（见 Recovery Notes）。**状态：已落码，未编译。**
 
