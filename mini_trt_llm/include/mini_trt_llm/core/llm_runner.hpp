@@ -11,6 +11,15 @@
 
 namespace mini_trt_llm {
 
+// **测试专用**：覆盖 chunked prefill（S5）的 `chunk_limit`。`<= 0` 表示不覆盖（生产路径的默认值）。
+//
+// 为什么需要它：`chunk_limit` 由引擎 profile 推导、**不暴露给调用方**（design.md D16 /
+// `p5_s5_interface_spec.md` §2），而 AC9 的用例要在"1 / 中间值 / ≥ prompt_len"三种切法下
+// 对拍同一条 prompt。约定与 `SetPagedAttentionNumSplitsOverride` 一致：**生产路径从不设置**，
+// 测试侧用 RAII 守卫设置与恢复（见 test_plan.md 的 S5 节）。
+void SetChunkLimitOverride(int32_t chunk_limit) noexcept;
+int32_t ChunkLimitOverride() noexcept;
+
 // LLM 自回归生成 Runner：Prefill → Decode 循环 → 采样。
 //
 // 只做 token-id 级别的生成（收 token id、还 token id），因此**不依赖 tokenizer**——
@@ -241,6 +250,20 @@ class LLMRunner {
     DeviceBuffer d_context_seq_count_;     // [1] int32：段边界 B_ctx
     DeviceBuffer d_packed_block_tables_;   // [max_batch, max_blocks_per_seq] int32（**按 packed 行序**）
     DeviceBuffer d_packed_context_lens_;   // [max_batch] int32（同上，**推进前**的值）
+    // ---- S5 chunked prefill ----
+    // 每步最多送多少 prompt token（**由引擎 profile 推导，不暴露给调用方**；构造期定，之后只读）。
+    // 只在 `prefill_mode == kPackedMixed` 时有意义；推导失败或越界时构造期直接拒绝（`valid_ = false`）。
+    // 测试可通过 `SetChunkLimitOverride` 覆盖（见文件头的说明）。
+    int32_t chunk_limit_ = 0;
+    // 本步 packed 的两段行数（由 `RunPackedMixedStep` 填，供 `SchedulerStats` 与结果落位读）。
+    // S5 之后两段**不再按活跃表前缀切**：context 段 = 本步拿到 chunk 的行，generation 段 = 本步
+    // 能喂 token 的行（= prefill 已完成的行，可能夹在未完成的行后面）。
+    int32_t packed_context_rows_ = 0;
+    int32_t packed_generation_rows_ = 0;
+    // 本步参与采样的活跃行号，**升序**（槽位 = 数组下标）。S5 下"本步完成 prefill 的行"可能被
+    // 未完成的行隔开，采样器只吃连续 `[count]`，所以按这张表把末位 logits 与 per-row 参数压紧；
+    // 结果落位（`RunScheduler` 的 ⑤）与 finish-flag 回读也按同一张表，避免两处口径漂移。
+    std::vector<int32_t> sample_active_indices_;
     // 每层的 K/V 输出缓冲（prefill/decode 各自的形状不同）
     std::vector<std::unique_ptr<DeviceBuffer>> d_prefill_kv_;
     std::vector<std::unique_ptr<DeviceBuffer>> d_decode_kv_;

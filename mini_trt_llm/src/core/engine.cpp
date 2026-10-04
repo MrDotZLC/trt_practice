@@ -43,6 +43,38 @@ bool Engine::SetOptimizationProfile(int32_t index, cudaStream_t stream) {
     return true;
 }
 
+bool Engine::GetProfileDims(const std::string& name, nvinfer1::OptProfileSelector selector,
+                            nvinfer1::Dims* dims) const {
+    if (engine_ == nullptr || dims == nullptr || name.empty()) {
+        return false;
+    }
+    // 0 号 profile：运行时要求每个引擎恰好一个（不变量 2），所以这里不暴露 profile 下标。
+    const nvinfer1::Dims shape = engine_->getProfileShape(name.c_str(), 0, selector);
+    if (shape.nbDims <= 0) {
+        // TRT 对"查不到该张量 / 非动态输入 / 非法 selector"都返回 nbDims <= 0；
+        // 这里只报错不猜，避免把"查不到"当成某个具体形状传下去。
+        MINI_TRT_LOG_ERROR("Engine: cannot query profile shape of tensor '" << name
+                                                                            << "' (selector "
+                                                                            << static_cast<int32_t>(selector)
+                                                                            << ")");
+        return false;
+    }
+    *dims = shape;
+    return true;
+}
+
+int32_t Engine::GetProfileDim(const std::string& name, nvinfer1::OptProfileSelector selector,
+                              int32_t dim) const {
+    nvinfer1::Dims shape{};
+    if (!GetProfileDims(name, selector, &shape)) {
+        return -1;
+    }
+    if (dim < 0 || dim >= shape.nbDims) {
+        return -1;
+    }
+    return shape.d[dim];
+}
+
 bool Engine::SetTensorAddress(const std::string& name, void* ptr) {
     if (!context_->setTensorAddress(name.c_str(), ptr)) {
         MINI_TRT_LOG_ERROR("setTensorAddress failed for tensor: " << name);

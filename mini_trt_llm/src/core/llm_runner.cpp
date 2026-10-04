@@ -47,7 +47,15 @@ class SequenceScope {
     std::vector<int32_t> ids_;
 };
 
+// **测试专用**的 chunk_limit 覆盖值（说明见 hpp）：生产路径恒为 0（= 不覆盖，用引擎 profile 推导）。
+int32_t g_chunk_limit_override = 0;
+
 }  // namespace
+
+void SetChunkLimitOverride(int32_t chunk_limit) noexcept { g_chunk_limit_override = chunk_limit; }
+
+int32_t ChunkLimitOverride() noexcept { return g_chunk_limit_override; }
+
 LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engine,
                      std::shared_ptr<Engine> decode_engine,
                      std::shared_ptr<BaseTokenizer> tokenizer)
@@ -158,6 +166,30 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
 
     // 采样器的 per-batch 参数（k / p）在整个请求里是常量，所以在这里上传一次，
     // 不放进解码循环——循环里只允许有"已经备好"的设备侧动作。
+    // ---- S5：chunked prefill 的 chunk_limit（构造期从引擎 profile 推导，不暴露给调用方）----
+    // 取 prefill 的 token 维上界：packed 图的 `input_ids` 是 [1, T]，所以是第 1 维的 kMAX。
+    // **为什么不从 Config 要一个字段**：那会与真实建的图漂移；项目既有纪律是"按对方查询、
+    // 不按配置假定"（workspace 版见 `paged_attention_split.hpp` 与 `PROGRESS.md` §2.15）。
+    // 推导失败或越界一律**构造期拒绝**（兜底纪律：不许静默退到慢路径，也不许猜一个默认值）。
+    if (config_.prefill_mode == Config::PrefillMode::kPackedMixed) {
+        const int32_t from_profile = prefill_engine_->GetProfileDim(
+            "input_ids", nvinfer1::OptProfileSelector::kMAX, 1);
+        if (from_profile <= 0) {
+            MINI_TRT_LOG_ERROR("LLMRunner: cannot derive chunk_limit from the prefill profile "
+                               "(input_ids dim 1 = " << from_profile << ")");
+            return;
+        }
+        const int32_t declared = ChunkLimitOverride();
+        if (declared > from_profile) {
+            MINI_TRT_LOG_ERROR("LLMRunner: chunk_limit override " << declared
+                               << " exceeds the engine profile bound " << from_profile);
+            return;
+        }
+        chunk_limit_ = declared > 0 ? declared : from_profile;
+        MINI_TRT_LOG_INFO("LLMRunner: chunk_limit = " << chunk_limit_
+                        << (declared > 0 ? " (test override)" : " (from engine profile)")
+                        << ", profile bound = " << from_profile);
+    }
     valid_ = true;
 }
 
@@ -1090,7 +1122,11 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
             std::max(scheduler_stats_.max_active, static_cast<int32_t>(active.size()));
         // 跨路径口径：本步"在跑"的行数（= 生成段的行数）。S3 两段式下它等于 decode_calls 的规模，
         // 但 S4 每步只有一次调用，只有这个量还有意义 —— 见 hpp 里 SchedulerStats 的说明。
-        scheduler_stats_.generation_rows += generation_rows;
+        // S5：packed 路径的"喂了几行 generation token"由 `RunPackedMixedStep` 精确给出
+        // （它才知道哪几行已完成 prefill），所以这里只在 S3 两段式下记账。
+        if (!packed_mode) {
+            scheduler_stats_.generation_rows += generation_rows;
+        }
 
         // 块表 / 语境长度每步重建并上传：登记与退出都改了行号（不变量 4 的"同源"就靠这一步）。
         if (kv_cache_->UploadMetadata(nullptr) != cudaSuccess) {
@@ -1106,8 +1142,10 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
                 MINI_TRT_LOG_ERROR("LLMRunner: packed mixed step failed");
                 return {};
             }
-            scheduler_stats_.context_rows += new_rows;
-            scheduler_stats_.generation_rows += generation_rows;
+            // S5：两段行数由 `RunPackedMixedStep` 按 cache 已写入长度算出（不再按活跃表前缀）；
+            // `context_rows` 的新口径 = Σ 本步拿到 chunk 的行数（同一序列会跨多步出现）。
+            scheduler_stats_.context_rows += packed_context_rows_;
+            scheduler_stats_.generation_rows += packed_generation_rows_;
         } else {
         // ---- ③ context 段：只装本步新入批的行 ----
         const int32_t new_rows = static_cast<int32_t>(active.size()) - generation_rows;
@@ -1241,31 +1279,39 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
 
         }  // else：S3 的两段式（packed_mode 分支在上面）
         // ---- ⑤ 结果落位 + 交回 finish flag ----
-        // S4：采样结果是**按 packed 行序**写进 `d_step_tokens_` 的（context 行在前），
-        // 所以"活跃表第 row 行的 token"落在哪个槽位要显式换算；S3 是恒等。
-        const auto token_slot_of_active = [&](int32_t row_index) -> int32_t {
-            if (!packed_mode) {
-                return row_index;
-            }
-            return row_index < generation_rows ? (new_rows + row_index)
-                                               : (row_index - generation_rows);
-        };
-        for (int32_t row = 0; row < static_cast<int32_t>(active.size()); ++row) {
+        // S5：采样结果按 `sample_active_indices_` 的**槽位序**写进 `d_step_tokens_`（槽位 = 下标）；
+        // 本步没参与采样的行（分块还没完成）**不出 token**，绝不能给它记一个 token ——
+        // 那会让"分块"改变可见的生成语义（AC9 / `ChunkProgressStateIsCorrect`）。S3 仍是恒等行号。
+        const auto record_token = [&](int32_t row, int32_t slot) -> bool {
             ActiveSequence& s = active[static_cast<size_t>(row)];
             const int64_t dst_index =
                 static_cast<int64_t>(s.result_slot) * max_new + s.generated;
             // 每步每行一次 4 字节 D2D：结果按"序列"聚集，退出/压实都不会挪动它
             if (cudaMemcpyAsync(static_cast<int32_t*>(d_result_tokens_.data()) + dst_index,
                                 static_cast<const int32_t*>(d_step_tokens_.data()) +
-                                    token_slot_of_active(row),
+                                    slot,
                                 sizeof(int32_t), cudaMemcpyDeviceToDevice, nullptr) !=
                 cudaSuccess) {
                 MINI_TRT_LOG_ERROR("LLMRunner: failed to record the sampled token");
-                return {};
+                return false;
             }
             s.generated += 1;
             if (s.generated >= s.max_new) {
                 s.finished = true;  // 下一步的 retire 收口
+            }
+            return true;
+        };
+        if (packed_mode) {
+            for (size_t slot = 0; slot < sample_active_indices_.size(); ++slot) {
+                if (!record_token(sample_active_indices_[slot], static_cast<int32_t>(slot))) {
+                    return {};
+                }
+            }
+        } else {
+            for (int32_t row = 0; row < static_cast<int32_t>(active.size()); ++row) {
+                if (!record_token(row, row)) {
+                    return {};
+                }
             }
         }
         // 读回 finish flag：**最多一个在飞**。上一步的还没落地就不再发新的 ——
@@ -1274,22 +1320,19 @@ std::vector<LLMRunner::GenerateResult> LLMRunner::RunScheduler(
         if (!active.empty() && !eos_pending) {
             eos_pending_seqs.clear();
             if (packed_mode) {
-                // 与 token_slot_of_active 同一套行序：packed 行序 = context 行在前、generation 行在后，
-                // 而 `d_eos_hit_` 就是按这个顺序写的（采样器按段续写）。
-                for (int32_t j = 0; j < new_rows; ++j) {
-                    eos_pending_seqs.push_back(
-                        active[static_cast<size_t>(generation_rows + j)].seq_id);
-                }
-                for (int32_t j = 0; j < generation_rows; ++j) {
-                    eos_pending_seqs.push_back(active[static_cast<size_t>(j)].seq_id);
+                // 与结果落位同一张表：`d_eos_hit_` 是按**采样槽位序**写的（采样器按 count 续写）。
+                for (int32_t row_index : sample_active_indices_) {
+                    eos_pending_seqs.push_back(active[static_cast<size_t>(row_index)].seq_id);
                 }
             } else {
                 for (const ActiveSequence& s : active) {
                     eos_pending_seqs.push_back(s.seq_id);
                 }
             }
+            const size_t flag_count =
+                packed_mode ? sample_active_indices_.size() : active.size();
             if (cudaMemcpyAsync(host_eos_.data(), d_eos_hit_.data(),
-                                static_cast<size_t>(active.size()) * sizeof(int8_t),
+                                flag_count * sizeof(int8_t),
                                 cudaMemcpyDeviceToHost, nullptr) != cudaSuccess) {
                 MINI_TRT_LOG_ERROR("LLMRunner: failed to issue the finish-flag readback");
                 return {};
@@ -1374,28 +1417,60 @@ bool LLMRunner::UploadRowParamsByOrder(const std::vector<ActiveSequence>& active
     return true;
 }
 
-// **S4 的一步**：打包 → 一次 packed 调用 → context 写回 / generation 追加 → 采样。
+// **S4/S5 的一步**：打包 → 一次 packed 调用 → context 写回 / generation 追加 → 采样。
 //
-// 两套下标必须分清（p5_s4_interface_spec.md §3 的下标纪律）：
-//   * **活跃表序**：generation 行 = 前缀 `[0, generation_rows)`，本步新入批的 context 行 = 尾部
-//     `[generation_rows, generation_rows + new_rows)`（它们的缓存行号 = 活跃表下标，S2 的压实保证同源）；
+// 两套下标必须分清（p5_s4_interface_spec.md §3 / p5_s5_interface_spec.md §2）：
+//   * **活跃表序**：行号 = cache 行号（S2 的压实保证同源）；
 //   * **packed 行序**：**context 行在前**（作者的硬约束），generation 行在后。
-//   两者之间的换算在这里显式写出（`packed_order_active` 与 ⑤ 处的逆映射）。
+//   两者之间的换算在这里显式写出（`packed_order_active` 与 ⑤ 处的采样行集）。
+//
+// **S5 起，"哪一行属于哪一段"不看活跃表位置，而看 cache 的已写入长度**：
+//   `written = SequenceLength(seq_id)`；`written >= prompt_len` ⇒ 已 prefill 完成（generation 段），
+//   否则本步送一个 chunk（context 段），`chunk_len = min(prompt_len - written, chunk_limit_)`。
+//   这条分类是**单源**的：不新增 `prompt_done` 字段，也不依赖"完成的行恰好排在前面"
+//   —— 那条前提在分块下不成立（长 prompt 分块中、它后面的短 prompt 可能已完成）。
 bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
                                    const std::vector<ActiveSequence>& active,
                                    int32_t generation_rows, int32_t new_rows, int32_t max_new) {
-    const int32_t b_total = generation_rows + new_rows;
+    // S5：这两个入参（S4 的"生成段前缀行数 / 新入批行数"）不再决定分段 —— 分段与采样行集都在本函数
+    // 内按 cache 已写入长度重算。保留参数只是不改调用点（见 STATE 的 S5-2b 计划）。
+    (void)generation_rows;
+    (void)new_rows;
+    const int32_t b_total = static_cast<int32_t>(active.size());
     if (b_total <= 0) {
         return true;
     }
     const size_t width = static_cast<size_t>(config_.max_blocks_per_seq);
 
-    // ---- ① 打包（host 侧算偏移；逐行重建）----
-    int32_t t_ctx = 0;
-    for (int32_t j = 0; j < new_rows; ++j) {
-        t_ctx += active[static_cast<size_t>(generation_rows + j)].prompt_len;
+    // ---- ① 分类 + 打包（host 侧算偏移；逐行重建）----
+    // 分类必须在**写回之前**做完：写完之后 `SequenceLength` 就变成"已写回"的长度了。
+    std::vector<int32_t> context_active;     // 本步要送 chunk 的行（活跃行号，升序）
+    std::vector<int32_t> generation_active;  // 本步能喂 token 的行（活跃行号，升序）
+    context_active.reserve(static_cast<size_t>(b_total));
+    generation_active.reserve(static_cast<size_t>(b_total));
+    for (int32_t row = 0; row < b_total; ++row) {
+        const ActiveSequence& s = active[static_cast<size_t>(row)];
+        const int32_t written = kv_cache_->SequenceLength(s.seq_id);
+        if (written < 0) {
+            MINI_TRT_LOG_ERROR("LLMRunner: seq " << s.seq_id << " is not in the KV batch");
+            return false;
+        }
+        if (written >= s.prompt_len) {
+            generation_active.push_back(row);
+        } else {
+            context_active.push_back(row);
+        }
     }
-    const int32_t t_total = t_ctx + generation_rows;
+    packed_context_rows_ = static_cast<int32_t>(context_active.size());
+    packed_generation_rows_ = static_cast<int32_t>(generation_active.size());
+
+    int32_t t_ctx = 0;
+    for (int32_t active_index : context_active) {
+        const ActiveSequence& s = active[static_cast<size_t>(active_index)];
+        const int32_t written = kv_cache_->SequenceLength(s.seq_id);
+        t_ctx += std::min(s.prompt_len - written, chunk_limit_);
+    }
+    const int32_t t_total = t_ctx + packed_generation_rows_;
     const size_t packed_capacity =
         static_cast<size_t>(batch_capacity_) * static_cast<size_t>(prompt_capacity_);
     if (static_cast<size_t>(t_total) > packed_capacity) {
@@ -1406,32 +1481,48 @@ bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
 
     std::vector<int32_t> host_tokens(static_cast<size_t>(t_ctx), 0);
     std::vector<int32_t> host_positions(static_cast<size_t>(t_total), 0);
-    std::vector<int32_t> host_cu_seqlens(static_cast<size_t>(new_rows) + 1, 0);
-    std::vector<int32_t> host_row_lengths(static_cast<size_t>(new_rows), 0);
+    std::vector<int32_t> host_cu_seqlens(context_active.size() + 1, 0);
+    std::vector<int32_t> host_row_lengths(context_active.size(), 0);
+    // S5：每行的写回起点（= prompt_done）。首块为 0，第 2 块起是已写入长度 —— 没有它，
+    // 第 2 块会从 0 覆盖写，把自己前一段的 K/V 抹掉（静默错）。
+    std::vector<int32_t> host_row_starts(context_active.size(), 0);
     std::vector<int32_t> host_block_tables(static_cast<size_t>(b_total) * width, 0);
     std::vector<int32_t> host_context_lens(static_cast<size_t>(b_total), 0);
     std::vector<int32_t> packed_order_active(static_cast<size_t>(b_total), 0);
 
     int32_t offset = 0;
     int32_t max_row_len = 0;
-    for (int32_t j = 0; j < new_rows; ++j) {
-        const int32_t active_index = generation_rows + j;
+    for (size_t j = 0; j < context_active.size(); ++j) {
+        const int32_t active_index = context_active[j];
         const ActiveSequence& s = active[static_cast<size_t>(active_index)];
         const GenerateRequest& r = requests[static_cast<size_t>(s.result_slot)];
-        host_row_lengths[static_cast<size_t>(j)] = s.prompt_len;
-        max_row_len = std::max(max_row_len, s.prompt_len);
-        for (int32_t i = 0; i < s.prompt_len; ++i) {
-            host_tokens[static_cast<size_t>(offset + i)] =
-                static_cast<int32_t>(r.input_ids[static_cast<size_t>(i)]);
-            host_positions[static_cast<size_t>(offset + i)] = i;  // 段内位置从 0 起
+        const int32_t written = kv_cache_->SequenceLength(s.seq_id);
+        const int32_t chunk_len = std::min(s.prompt_len - written, chunk_limit_);
+        // 不变量 4：cache 行号必须就是活跃行号。不显式校的话，映射错位只表现为"结果悄悄不对"。
+        const int32_t cache_row = kv_cache_->RowOf(s.seq_id);
+        if (cache_row != active_index) {
+            MINI_TRT_LOG_ERROR("LLMRunner: seq " << s.seq_id << " sits at KV row " << cache_row
+                                                 << ", expected " << active_index
+                                                 << " —— 行号不同源");
+            return false;
         }
-        offset += s.prompt_len;
+        host_row_lengths[j] = chunk_len;
+        host_row_starts[j] = written;  // 从 prompt_done 续写（首块为 0）
+        max_row_len = std::max(max_row_len, chunk_len);
+        for (int32_t i = 0; i < chunk_len; ++i) {
+            host_tokens[static_cast<size_t>(offset + i)] =
+                static_cast<int32_t>(r.input_ids[static_cast<size_t>(written + i)]);
+            // **绝对位置**：第 2 块起不能再用段内下标（否则位置表查错，且不报错）。
+            host_positions[static_cast<size_t>(offset + i)] = written + i;
+        }
+        offset += chunk_len;
         // 段内前缀和：context 段在 packed 张量的**最前面**，所以段内值就是绝对偏移
-        host_cu_seqlens[static_cast<size_t>(j) + 1] = offset;
-        packed_order_active[static_cast<size_t>(j)] = active_index;
+        host_cu_seqlens[j + 1] = offset;
+        packed_order_active[j] = active_index;
     }
-    for (int32_t j = 0; j < generation_rows; ++j) {
-        const ActiveSequence& s = active[static_cast<size_t>(j)];
+    for (size_t j = 0; j < generation_active.size(); ++j) {
+        const int32_t active_index = generation_active[j];
+        const ActiveSequence& s = active[static_cast<size_t>(active_index)];
         // 位置取**推进前**的语境长度（host 镜像在 S3 已被维护成准确的：WritePrefillKV 设定、
         // AppendDecodeStep 逐行 +1、FreeSequence 重建）
         const int32_t len = kv_cache_->SequenceLength(s.seq_id);
@@ -1440,8 +1531,21 @@ bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
             return false;
         }
         host_positions[static_cast<size_t>(t_ctx + j)] = len;
-        packed_order_active[static_cast<size_t>(new_rows + j)] = j;
+        packed_order_active[context_active.size() + j] = active_index;
     }
+    // 采样行集（**槽位 = 本数组下标**）：已完成的 generation 行 ∪ 本步刚好完成 prefill 的 chunk 行。
+    // 按活跃行号升序排一次，让 ⑤ 的 gather 与结果落位、EOS 回读三处共用同一个口径。
+    sample_active_indices_.clear();
+    for (int32_t active_index : generation_active) {
+        sample_active_indices_.push_back(active_index);
+    }
+    for (size_t j = 0; j < context_active.size(); ++j) {
+        const ActiveSequence& s = active[static_cast<size_t>(context_active[j])];
+        if (host_row_starts[j] + host_row_lengths[j] >= s.prompt_len) {
+            sample_active_indices_.push_back(context_active[j]);
+        }
+    }
+    std::sort(sample_active_indices_.begin(), sample_active_indices_.end());
     // 按 packed 行序重建按行输入：**S3 的"缓存镜像直传"在这里失效**（引擎行序 ≠ 缓存行序），
     // 所以 block_tables / context_lens 必须每步重排一遍再传（见 spec §3）。
     for (int32_t j = 0; j < b_total; ++j) {
@@ -1459,7 +1563,7 @@ bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
     }
 
     // ---- ② 上传（每步重建；H2D/D2D 都是 async，循环内不做同步拷贝）----
-    const int32_t context_seq_count = new_rows;
+    const int32_t context_seq_count = packed_context_rows_;
     if ((!host_tokens.empty() &&
          cudaMemcpyAsync(d_packed_tokens_.data(), host_tokens.data(),
                          host_tokens.size() * sizeof(int32_t), cudaMemcpyHostToDevice,
@@ -1541,11 +1645,11 @@ bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
     }
 
     // ---- ④ 图外两块 K/V 工作（都吃 packed 张量里的对应行）----
-    if (new_rows > 0) {
+    if (packed_context_rows_ > 0) {
         // 缓存行号显式查询（不靠"追加在尾部"的隐式约定）；S3 的同一套映射机制
-        std::vector<int32_t> cache_rows(static_cast<size_t>(new_rows), -1);
-        for (int32_t j = 0; j < new_rows; ++j) {
-            const int32_t active_index = generation_rows + j;
+        std::vector<int32_t> cache_rows(static_cast<size_t>(packed_context_rows_), -1);
+        for (int32_t j = 0; j < packed_context_rows_; ++j) {
+            const int32_t active_index = context_active[static_cast<size_t>(j)];
             const int32_t row = kv_cache_->RowOf(active[static_cast<size_t>(active_index)].seq_id);
             if (row != active_index) {
                 MINI_TRT_LOG_ERROR("LLMRunner: seq "
@@ -1560,18 +1664,25 @@ bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
             if (kv_cache_->WritePrefillKV(
                     layer, d_prefill_kv_[static_cast<size_t>(layer) * 2]->data(),
                     d_prefill_kv_[static_cast<size_t>(layer) * 2 + 1]->data(), max_row_len,
-                    cache_rows.data(), new_rows, host_row_lengths.data(), nullptr,
+                    cache_rows.data(), packed_context_rows_, host_row_lengths.data(), nullptr,
                     static_cast<const int32_t*>(d_cu_seqlens_ctx_.data()),
-                    context_seq_count) != cudaSuccess) {
+                    context_seq_count, host_row_starts.data()) != cudaSuccess) {
                 MINI_TRT_LOG_ERROR("LLMRunner: failed to write packed context K/V at layer "
                                    << layer);
                 return false;
             }
         }
     }
-    if (generation_rows > 0) {
+    if (packed_generation_rows_ > 0) {
         std::vector<const void*> keys(static_cast<size_t>(config_.num_layers));
         std::vector<const void*> values(static_cast<size_t>(config_.num_layers));
+        // S5：generation 段的行**不再是活跃前缀**（完成的行可能夹在未完成的行后面），
+        // 所以显式给出目标 cache 行号；`nullptr` 的旧行为（恒等）留给 S1/S2/S3。
+        std::vector<int32_t> generation_rows_host(static_cast<size_t>(packed_generation_rows_), -1);
+        for (int32_t j = 0; j < packed_generation_rows_; ++j) {
+            const int32_t active_index = generation_active[static_cast<size_t>(j)];
+            generation_rows_host[static_cast<size_t>(j)] = active_index;
+        }
         for (int32_t layer = 0; layer < config_.num_layers; ++layer) {
             keys[static_cast<size_t>(layer)] =
                 d_prefill_kv_[static_cast<size_t>(layer) * 2]->data();
@@ -1581,33 +1692,53 @@ bool LLMRunner::RunPackedMixedStep(const std::vector<GenerateRequest>& requests,
         // 源基址 = `cu_seqlens_ctx[B_ctx]`（= t_ctx），由 kernel 自己从设备读；
         // 目标行集 = 活跃表前缀（= 缓存前缀，走恒等映射）。
         if (kv_cache_->AppendDecodeStep(
-                keys, values, generation_rows, nullptr,
-                static_cast<const int32_t*>(d_cu_seqlens_ctx_.data()),
-                context_seq_count) != cudaSuccess) {
+                keys, values, packed_generation_rows_, nullptr,
+                static_cast<const int32_t*>(d_cu_seqlens_ctx_.data()), context_seq_count,
+                generation_rows_host.data()) != cudaSuccess) {
             MINI_TRT_LOG_ERROR("LLMRunner: failed to append packed generation K/V");
             return false;
         }
     }
 
-    // ---- ⑤ 采样前聚集：末位按**两段各自的公式**（§4）----
+    // ---- ⑤ 采样前聚集：按**采样行集**压紧（S5：本步完成的 chunk 行可能被未完成的行隔开）----
     const size_t elem = ElementSize(prefill_logits_half_);
     const size_t row_bytes = static_cast<size_t>(config_.vocab_size) * elem;
-    for (int32_t j = 0; j < b_total; ++j) {
-        const int32_t last = (j < new_rows)
-                                 ? (host_cu_seqlens[static_cast<size_t>(j) + 1] - 1)
-                                 : (t_ctx + (j - new_rows));
+    const int32_t sample_count = static_cast<int32_t>(sample_active_indices_.size());
+    // 活跃行号 → packed 行号 → 该行在 packed 张量里的**末位 token 下标**（两段各自的公式）。
+    // S5 用显式表而不是 S4 的"j < new_rows"分段判断，因为采样行集已经不连续。
+    std::vector<int32_t> packed_row_of_active(static_cast<size_t>(b_total), -1);
+    std::vector<int32_t> last_of_packed_row(static_cast<size_t>(b_total), 0);
+    for (size_t j = 0; j < context_active.size(); ++j) {
+        const int32_t packed_row = static_cast<int32_t>(j);
+        packed_row_of_active[static_cast<size_t>(context_active[j])] = packed_row;
+        last_of_packed_row[static_cast<size_t>(packed_row)] = host_cu_seqlens[j + 1] - 1;
+    }
+    for (size_t j = 0; j < generation_active.size(); ++j) {
+        const int32_t packed_row = static_cast<int32_t>(context_active.size() + j);
+        packed_row_of_active[static_cast<size_t>(generation_active[j])] = packed_row;
+        last_of_packed_row[static_cast<size_t>(packed_row)] = t_ctx + static_cast<int32_t>(j);
+    }
+    for (int32_t slot = 0; slot < sample_count; ++slot) {
+        const int32_t active_index = sample_active_indices_[static_cast<size_t>(slot)];
+        const int32_t packed_row = packed_row_of_active[static_cast<size_t>(active_index)];
+        if (packed_row < 0) {
+            MINI_TRT_LOG_ERROR("LLMRunner: sampled row " << active_index
+                                                         << " has no packed row");
+            return false;
+        }
+        const int32_t last = last_of_packed_row[static_cast<size_t>(packed_row)];
         const void* src = static_cast<const char*>(d_prefill_logits_.data()) +
                           static_cast<size_t>(last) * row_bytes;
         void* dst = static_cast<char*>(d_prefill_last_logits_.data()) +
-                    static_cast<size_t>(j) * row_bytes;
+                    static_cast<size_t>(slot) * row_bytes;
         if (cudaMemcpyAsync(dst, src, row_bytes, cudaMemcpyDeviceToDevice, nullptr) !=
             cudaSuccess) {
             MINI_TRT_LOG_ERROR("LLMRunner: failed to gather packed logits rows");
             return false;
         }
     }
-    if (!UploadRowParamsByOrder(active, packed_order_active) ||
-        !SampleBatch(static_cast<char*>(d_step_tokens_.data()), /*from_prefill=*/true, b_total,
+    if (!UploadRowParamsByOrder(active, sample_active_indices_) ||
+        !SampleBatch(static_cast<char*>(d_step_tokens_.data()), /*from_prefill=*/true, sample_count,
                      /*offset=*/0, static_cast<const uint64_t*>(d_offsets_.data()),
                      static_cast<int8_t*>(d_eos_hit_.data()), nullptr)) {
         MINI_TRT_LOG_ERROR("LLMRunner: packed sampling failed");
