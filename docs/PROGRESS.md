@@ -1847,6 +1847,14 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 > → 紧接着 `ctest -R ResNet18Int8AccuracyTest` **0.93 / 1.71 / 1.86 s 全命中、无 `stale`**；
 > 指纹里已是绝对路径。**其它引擎（GPT-2 623/709 MB、ctxsweep 627/475 MB）会在下次被用到时各重建一次**，同属预期。
 >
+> **第三次一次性失效预告（2026-10-05，REQ-016 的 A1）**：图属性 `n_positions` 开始进引擎指纹
+> （`numeric_params` 的 `model.n_positions`，见 `docs/dev/REQ-016-continuous-batching/p5_s5_interface_spec.md` §4）。
+> 于是**凡是 `config.json` 带 `hyper_params.n_positions` 的模型的全部引擎**——`models/gpt2/config.json`
+> （`n_positions: 1024`）这条链路上的主用例 prefill / decode 与 ctxsweep 那一对——会在**下次被用到时
+> 各重建一次**（分钟级）。新会话**不要把这批 `stale` 当成异常**。`models/resnet18/config.json` 的
+> `hyper_params` 里没有 `n_positions` → ResNet 的引擎**不受影响**（指纹不变）。它**不是**
+> `graph_version` bump：图与 profile 区间一个字没动，变的只是缓存键的内容。
+>
 > **重建 ≠ 逐字节相同**：`builder.cpp` 未设 `kDETERMINISTIC`、无 timing cache → TRT 的 tactic 选择是
 > timing-based。本次实测同网络重建后 `resnet18_onnx_fp32.engine` 由 **54,196,084 → 52,357,812 字节（−3.4%）**。
 > **做性能对照必须用同一次构建的引擎**（与 `docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` §3.1 的"构建间噪声"同源）。

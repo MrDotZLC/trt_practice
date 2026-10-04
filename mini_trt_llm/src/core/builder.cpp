@@ -282,7 +282,11 @@ EngineFingerprintInputs EngineBuilder::MakeFingerprintInputs(const std::string& 
     // 而 runner 侧只能靠它当位置表上界 —— 引擎查不到（只剩 `ceil(n_positions / block_size)` 这个
     // 上界），所以真值由建图期写进侧车、runner 构造期读回（见 `p5_s5_interface_spec.md` §2 的 A1）。
     // 解析不出这一项就不写（那个引擎的 runner 会因为"侧车缺字段"拒绝启动，不猜默认值）。
-    // 副作用：指纹内容变 → 现有引擎自动失效、首次跑重建一次（分钟级；**不是** `graph_version` bump）。
+    // **副作用的范围**（2026-10-05 复核后写清）：本函数是**所有 stage 共用**的，所以这一项让
+    // 带 `hyper_params.n_positions` 的模型的**全部**引擎各自失效、各自重建一次 —— 不是"只重建
+    // packed 那一份"：`single` 一份，或 `prefill` + `decode` 两份（分钟级/份）；`hyper_params`
+    // 里没有这一项的模型（CV 等）指纹不变、不重建。**不是** `graph_version` bump：变的是缓存键的
+    // 内容，图与 profile 区间一个字没动。
     int64_t model_positions = 0;
     if (TryGetModelPositions(model_dir, &model_positions)) {
         inputs.numeric_params.emplace_back("model.n_positions", model_positions);

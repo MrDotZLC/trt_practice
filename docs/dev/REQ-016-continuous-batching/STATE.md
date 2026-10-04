@@ -415,8 +415,12 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
 | `tests/test_llm_runner_chunked.cpp` | 夹具去掉 `max_positions`；`ChunkLimitRejectedConfigs` 收敛为 (A)(B) 两组；**新增 3 条**：`MissingFingerprintSidecarRejected` / `SidecarPositionsMismatchRejected` / `NonDivisibleBlockSizeRejected`（第三条含 padding 反向对照） |
 
 **测试方式**：同 S5-3（沙箱只做静态自检：逐行括号深度、符号成对、最长行、CRLF 无 BOM）。
-**不动建图 / profile 区间 → `graph_version` 保持 6**；但指纹多一项 → **现有引擎自动失效、首次跑
-重建一次**（分钟级，属指纹机制而非 bump）。真机窗口：`cmake --build` → 跑 S4/S5 全部用例 + 3 条新用例。
+**不动建图 / profile 区间 → `graph_version` 保持 6**。**指纹加项的失效范围（2026-10-05 复核后写清）**：
+`MakeFingerprintInputs` 是**所有 stage 共用**的 → 凡是 `config.json` 带 `hyper_params.n_positions` 的
+模型（GPT-2 的 config 与 ONNX 两条路径）所建的**全部引擎各自失效、各自重建一次**（`single` 一份、
+或 `prefill` + `decode` 两份，分钟级/份）——**不是**"只重建 packed 那一份"；`hyper_params` 里没有
+这一项的模型（CV/resnet18、若干最小测试模型）指纹不变、不重建。它**不 bump `graph_version`**：
+变的是缓存键内容，图与 profile 一个字没动。真机窗口：`cmake --build` → 跑 S4/S5 全部用例 + 3 条新用例。
 
 ---
 
@@ -514,7 +518,8 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
   （spec §2/§4/§5/§8 表 5、`design.md` D16、`review.md` 第四遍复评、`test_plan.md` 的 3 条新用例）+
   代码落盘（`engine_cache` 读字段 helper、`Engine::Path()`、`builder.cpp` 的 `model.n_positions`、
   `gpt2_model_builder.cpp` 的整除硬失败、runner 读回与两项自检、两个夹具与 3 条新用例）。
-  **不动建图 / profile → `graph_version` 保持 6**；指纹多一项 → 现有引擎自动失效、首次跑重建一次
+  **不动建图 / profile → `graph_version` 保持 6**；指纹加项 → 带 `hyper_params.n_positions` 的模型的
+  **全部 stage** 引擎各自重建一次（范围与理由见 `## Implementation Plan` 的"P5-S5 修订二"）
 
 ---
 

@@ -676,7 +676,7 @@ S4 的代码按"未编译验证"记账，真机窗口的第一件事是编译（
 | 项 | 说明 |
 |---|---|
 | 实现细节 | `Engine::Path()` 由本 feature 引入（作者已认可倾向此做法）；`ReadEngineSidecarField` 沿用 `ReadEngineFingerprint` 的解析风格 |
-| 指纹副作用 | `numeric_params` +1 项会改指纹 → 现有引擎**自动失效、首次跑重建一次**（分钟级），**不是** `graph_version` bump |
+| 指纹副作用 | `numeric_params` +1 项会改指纹 → 该模型的**全部 stage** 引擎（`single` 一份，或 `prefill` + `decode` 两份）各自失效、各自重建一次（分钟级/份）；`hyper_params` 无 `n_positions` 的模型不受影响。**不是** `graph_version` bump —— 2026-10-05 复核补的范围，细节见 spec §4 的"引擎侧车"行 |
 
 ### Decision（第四遍复评）
 
