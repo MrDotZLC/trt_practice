@@ -27,7 +27,7 @@
 
 ## Current Blockers
 
-- **【静态自检发现，未修，待定夺】`TS-052`：1 处 P0 + 1 处 P1**（2026-10-05，REQ-016 静态自检包；
+- **【静态自检发现，**均已修**（未编译验证）】`TS-052`：1 处 P0 + 1 处 P1**（2026-10-05，REQ-016 静态自检包；
   本机无编译器 / GPU，纯读代码 + 机械配对；完整路径见 `docs/TROUBLESHOOTING.md` 的 `TS-052`）：
   1. **P0 —— `AppendDecodeStep` 把 host 的 `rows` 直接交给设备端 kernel**：`paged_kv_cache.cpp:440`
      把调用方的 host 数组传给 `LaunchAdvanceContextLens`，而 `AdvanceContextLensKernel` 在**设备上**
@@ -375,9 +375,12 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
 **测试方式**：同 S5-3（静态自检 + 真机窗口）。**不动建图 / profile 区间 → 保持 `graph_version = 6`，
 不需要再 bump**。**前置**：本节的 P2 文档修订（spec §2/§4/§5/§6/§8/§9、design D16、test_plan 的 S5
 注记）与 **P3 式增量复评**（`review.md` 的第三遍复评，**设计层 PASS**）**都已落**；`requirement.md`
-的 AC8 按作者选的 (a) 加了限定；`analysis.md` 补了 5 条术语指针。**代码待作者"文档锁定"后的点名**；
-`review.md` 的 P1-3 已由作者确认为**退役**（删 `SetChunkLimitOverride` / `ChunkLimitOverride`）——
-即本节的四个文件改动里那一项不再是待定项。
+的 AC8 按作者选的 (a) 加了限定；`analysis.md` 补了 5 条术语指针；
+`review.md` 的 P1-3 已由作者确认为**退役**（删 `SetChunkLimitOverride` / `ChunkLimitOverride`）。
+**代码已落（2026-10-05，未编译验证）**：`llm_runner.hpp/.cpp`（新字段 + 五条构造期校验 + 钩子退役）、
+`test_llm_runner_chunked.cpp`（夹具改构造期传参 + `ChunkLimitRejectedConfigs` 重写）、
+`test_llm_runner_packed.cpp`（夹具补字段）。**遗留**：交叉校验 ③ 在小夹具里无法独立触发
+（`max_positions` 的池上界先拦）→ 留 P6 真机；编译与用例仍待环境。
 
 ---
 
@@ -539,3 +542,18 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
   3. 随批增长的显存大头是 **prefill logits**（`S=512` 约 98 MiB/条），不是 K/V 池（64 块约 72 MiB）。
   4. 建图代码不进引擎指纹，**改图必须手工 bump `graph_version`**。
   5. 运行期常驻诊断（同步 D2H + 逐层扫 K/V）**没有任何开关**——D7 要解决的是它。
+
+---
+
+## 判据对照
+
+> 口径（技能 `SKILL.md` 的 Mandatory #8 / #10）：只在**异常路径**（出现"不适用 / 未满足 / 放行"）时写；
+> 行数 = 该阶段判据数；清单**只引用出处、逐项打勾**，不转述。本 feature 目前**只有 P4 有异常项**，
+> 其余阶段全绿（按轻量口径不写）。
+
+| 判据（出处：`phases/p4_baseline.md` 的 `### Dependency Missing`） | 状态 | 证据 / 放行 |
+|---|---|---|
+| `benchmark_before.md` 记 `N/A: <原因>`（缺依赖时视作通过本自检） | 满足 | `benchmark_before.md` 的 `## Result`（原因 + 恢复清单五项） |
+| 留痕 ①：`STATE.md` 的 Next Action / Current Blockers 写 `Gate-B: N/A（缺依赖：<原因>）` | 满足 | `## Current Blockers` 的"P4 / P7 搁置（2026-10-03）"那条（字面行 2026-10-05 补） |
+| 留痕 ②：`summary.md` 的 Performance 一节写 N/A + 原因 | **未满足（阻塞）** | P8 产物，P4 时点不可能产出。**放行记录**：作者 2026-10-05 指令"全落"（含本条）→ 放行范围 = **允许 P4 以"阻塞"状态继续**，义务锚定在 `## Next Action` 第 5 条，**P8 必清** |
+| 留痕 ③：`docs/PROGRESS.md` 的"已知问题与坑"留一条（性能未验证及原因） | 满足 | `docs/PROGRESS.md` §5.16（2026-10-05 补） |

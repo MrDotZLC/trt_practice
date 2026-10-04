@@ -66,7 +66,7 @@
 | `TS-049` | 49 | 资产闸门自证项"应当跳过"那条**继承了环境的 `MINI_TRT_REQUIRE_ASSETS`** → 真机验收时自己变红（已修复） | 已修复（沙箱可复现并验证） |
 | `TS-050` | 50 | 新的 ctest 项写在了 `find_package(Python3)` **之前** → 变量未定义、**静默不注册**（configure 成功、条数不变） | 已修复（沙箱验证：268 条） |
 | `TS-051` | 51 | S5-2 的提交里有 1 处编译错误 + 5 处缺陷（逐行读代码发现；作者点名"一并修掉"后全部修复） | 已修复（未编译验证） |
-| `TS-052` | 52 | REQ-016 静态自检：1 处 P0（host 指针进 kernel，已修 + 已加守卫）+ 1 处 P1（`chunk_limit` 口径，待定夺） | P0 已修（未编译验证）/ P1 待决策 |
+| `TS-052` | 52 | REQ-016 静态自检：1 处 P0（host 指针进 kernel，已修 + 已加守卫）+ 1 处 P1（`chunk_limit` 口径，已按"显式 `max_prefill_seq_len` + 交叉校验"落码） | 均已修（未编译验证） |
 
 > 索引用 `TS-NNN`；旧写法 `#NN` 仍可用（同号）。**正文只增不改**，新记录追加在末尾。
 
@@ -3212,6 +3212,10 @@ grep '^file=' /tmp/mini_trt_llm_resnet18_onnx_fp32.engine.fingerprint   # 应变
      断言 ① **设备端** `context_lens` 逐行 +1、② 未映射行 host 与设备都不动、③ K/V 落在各自行的
      块表位置（源行 0 → 目标行 2、源行 1 → 目标行 0）。旧代码在 ① 处会以 illegal access 变红 ——
      这正好证明该用例有判别力（不是"恒等映射也能过"的空断言）。
-  3. **发现 2 未动**：`chunk_limit` 的口径属设计决策（作者正在评估"显式声明 `max_prefill_seq_len`、
-     让 `chunk_limit` 与建图参数都从它派生"的方向），待决策后再改。
-- **状态**：发现 1 已修 + 已加回归守卫（**未编译验证**）；发现 2 待作者决策。
+  3. **发现 2 已修（2026-10-05，作者采纳"显式配置 + 交叉校验"方向后）**：`chunk_limit` 不再从 profile
+     反推，改为取 `Config::max_prefill_seq_len`（与建图侧同名同值）+ 构造期**五条交叉校验**
+     （①未声明 ②> `max_positions` ④> 插件上限 ⑤profile 查询失败 ③`L × rows_max > T_max`）；
+     `SetChunkLimitOverride` / `ChunkLimitOverride` **退役**；**不动图 / profile**（`graph_version` 保持 6）。
+     设计与复评见 `review.md` 的第三遍复评（P1-1 选 (a)、P1-3 退役）。**未编译验证**。
+- **状态**：发现 1 与发现 2 **均已修**（发现 2 走的是"改设计契约"这条路：P2 文档 + P3 复评 + 代码），
+  **全部未编译验证**；发现 1 的回归守卫 = `PagedKVCacheTest.AppendDecodeStepAdvancesMappedRowsOnly`。
