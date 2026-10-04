@@ -27,6 +27,23 @@
 
 ## Current Blockers
 
+- **【静态自检发现，未修，待定夺】`TS-052`：1 处 P0 + 1 处 P1**（2026-10-05，REQ-016 静态自检包；
+  本机无编译器 / GPU，纯读代码 + 机械配对；完整路径见 `docs/TROUBLESHOOTING.md` 的 `TS-052`）：
+  1. **P0 —— `AppendDecodeStep` 把 host 的 `rows` 直接交给设备端 kernel**：`paged_kv_cache.cpp:440`
+     把调用方的 host 数组传给 `LaunchAdvanceContextLens`，而 `AdvanceContextLensKernel` 在**设备上**
+     解引用 `rows[i]`（契约见 `paged_kv_cache.hpp:113`"rows 是 host 数组"）。**S5 的 packed 路径每一步
+     都走**（generation 段传 `generation_rows_host.data()`），S3 路径传 `nullptr` 所以既有用例抓不到。
+     **已修（2026-10-05，作者点名"执行 1、3"；未编译验证）**：改用已由 `AppendDecodeKV` 拷好的
+     `rows_device_.data()`（一行 + 注释，不动图/profile，**不需要 bump `graph_version`**）；
+     回归守卫 = `PagedKVCacheTest.AppendDecodeStepAdvancesMappedRowsOnly`（乱序 + 带洞映射，
+     断言设备端 `context_lens` 逐行 +1、未映射行不动、K/V 落点正确）。
+  2. **P1 —— `chunk_limit` 用了"总 token 上界"**（`max_prefill_batch × max_prefill_seq_len`，从
+     `input_ids` dim1 的 kMAX 查得）而不是 spec §2 / design D16 写的"单序列上限" → ① 真实配置下
+     `prompt_len ≤ n_positions ≈ max_prefill_seq_len`，切块条件几乎不可能成立（S5 变死代码）；
+     ② 真触发时多行同批的 Σ chunk 会超过 profile 的 T 上界 → `setInputShape` 响亮失败。
+     修法 A（推荐）：`chunk_limit = input_ids.dim1.max ÷ block_tables.dim0.max`；修法 B：现状 + 加
+     "t_total ≤ 引擎 T 上界"的拒绝（不解决 ①）。
+  **两条都不在"静态自检"的授权范围内 → 未动任何代码**，等作者定夺（1 是一行；2 需先定 A/B）。
 - **`TS-051` 的 1 处编译错误 + 5 处缺陷：已修（2026-10-04，作者点名"一并修掉"，提交 `a4dee90`；
   未编译验证）** —— 发现路径见 `docs/TROUBLESHOOTING.md` 的 `TS-051`。逐条（括号里是修法）：
   1. **编译错误（P0）**：`llm_runner.cpp` 的 packed 分支引用 `new_rows`，而声明在 `else` 分支内；

@@ -11,7 +11,7 @@
 >
 > 编号只增不改，新记录追加在末尾。
 
-## 索引（51 条，按编号）
+## 索引（52 条，按编号）
 
 | ID | # | 一句话 | 状态 |
 |---|---|---|---|
@@ -66,6 +66,7 @@
 | `TS-049` | 49 | 资产闸门自证项"应当跳过"那条**继承了环境的 `MINI_TRT_REQUIRE_ASSETS`** → 真机验收时自己变红（已修复） | 已修复（沙箱可复现并验证） |
 | `TS-050` | 50 | 新的 ctest 项写在了 `find_package(Python3)` **之前** → 变量未定义、**静默不注册**（configure 成功、条数不变） | 已修复（沙箱验证：268 条） |
 | `TS-051` | 51 | S5-2 的提交里有 1 处编译错误 + 5 处缺陷（逐行读代码发现；作者点名"一并修掉"后全部修复） | 已修复（未编译验证） |
+| `TS-052` | 52 | REQ-016 静态自检：1 处 P0（host 指针进 kernel，已修 + 已加守卫）+ 1 处 P1（`chunk_limit` 口径，待定夺） | P0 已修（未编译验证）/ P1 待决策 |
 
 > 索引用 `TS-NNN`；旧写法 `#NN` 仍可用（同号）。**正文只增不改**，新记录追加在末尾。
 
@@ -3138,3 +3139,79 @@ grep '^file=' /tmp/mini_trt_llm_resnet18_onnx_fp32.engine.fingerprint   # 应变
   按 `graph_version = 6` 重建一次 packed 引擎。回归守卫：S5-3 的 `ChunkedEqualsWholePrompt` /
   `ChunkedShortPromptsUnchanged` 断言 `generation_rows`，`ChunkLimitRejectedConfigs` 断言
   `max_positions` 的三种拒绝形态。
+
+---
+
+## 52. [TS-052] REQ-016 静态自检：1 处 P0（host 指针进 kernel）+ 1 处 P1（`chunk_limit` 口径）
+
+- **日期**：2026-10-05
+- **类型**：**静态审查**（本机无编译器 / GPU）；作者点名"REQ-016：静态自检包（编译面 + 不变量复核）"。
+  与 `TS-051` 同一路数：以"真机窗口很贵、每个编译错误 / 非法访存都要往返"为前提，用读代码 + 机械配对提前撞。
+- **覆盖范围（做了哪些检查）**：
+  1. **张量名契约**：runner 绑定的名字（`input_ids` / `position_ids` / `block_tables` / `context_lens` /
+     `cu_seqlens_ctx` / `context_seq_count` / `key_cache_i` / `value_cache_i` / `k_layeri` / `v_layeri` /
+     `logits`）↔ 建图侧 `addInput/addOutput` —— **一致**。
+  2. **插件输入顺序**：图里 9 个输入（q/k/v/cache×2/block_tables/context_lens/cu_seqlens_ctx/
+     context_seq_count）↔ 插件 `enqueue` 的下标使用 —— **一致**。
+  3. **kernel 签名 ↔ launch 实参配对**：packed 的 2 处 context launch（half/float）+ split-K 的 4 处
+     （split/merge × half/float）——**逐参数配平**；`PagedAttentionKernelArgs` 的新字段 `cu_seqlens_ctx` /
+     `context_seq_count` 在三条 kernel（单趟 / 第一阶段 / 归并）里按同一口径使用
+     `row_base = context_seq_count`、`token_base = cu_seqlens_ctx[context_seq_count]` —— **一致**。
+  4. **cache 层契约**：`WritePrefillKV` / `AppendDecodeKV` / `AppendDecodeStep` 的 `rows` / `row_starts` /
+     `row_lengths` / `cu_seqlens_ctx` 语义与 host 记账（累加口径）——**除"发现 1"外一致**。
+  5. **采样器链路**：`seeds` / `offsets` 从 `LLMRunner` 到 4 个 kernel 的 `RowUniform01` —— **一致**
+     （全是设备指针）。
+  6. **测试侧调用点 arity 抽查**：`WritePrefillKV` / `AppendDecodeStep` 在 4 个文件里共 11 处 ——
+     **与当前签名相容**（`stream` 之后的三个新参数都有默认值）。
+  7. **沙箱可跑的自检**：`check_skips` / `summarize_nsys` / `crosscheck_reports` / `int8_eval` 四个
+     `--self-test`（纯 stdlib，正是 ctest 注册项）—— **exit=0 全过**。
+- **发现 1（P0，本批最严重）：`AppendDecodeStep` 把 host 的 `rows` 直接交给设备端 kernel**
+  - 位置：`src/kv_cache/paged_kv_cache.cpp:440-441` → `LaunchAdvanceContextLens(..., rows)`；
+    被调 kernel 见 `src/kv_cache/paged_kv_cache_kernels.cu:119-127`：
+    `const int32_t b = (rows != nullptr) ? rows[i] : i;` —— **设备代码解引用 `rows[i]`**。
+  - 契约依据：`include/.../paged_kv_cache.hpp:113` 明写"**rows 是 host 数组**；本函数把它拷进构造期
+    备好的常驻设备缓冲，再交给 kernel"；`AppendDecodeKV` 的实现也正是按 host 处理的
+    （`cudaMemcpyAsync(rows_device_.data(), rows, ..., cudaMemcpyHostToDevice)`）——只有"推进长度"
+    这一步漏了同一份拷贝。
+  - **触发路径：S5 的 packed 路径每一步都走**——`RunPackedMixedStep` 给 generation 段传的是
+    `generation_rows_host.data()`（host 向量，`llm_runner.cpp:1737-1758`），因此 `rows != nullptr`
+    → 内核对 host 地址做设备解引用。S3 的既有路径传 `nullptr`（恒等），所以**既有用例抓不到**。
+  - 后果：非法访存（`cudaErrorIllegalAddress`）或按垃圾 `b` 推进 `context_lens[b]`（位置错 / 踩别的行）。
+  - 最小修法（一行）：复用已经拷好的设备缓冲 ——
+    `LaunchAdvanceContextLens(..., rows != nullptr ? static_cast<const int32_t*>(rows_device_.data()) : nullptr)`。
+  - 回归防护：`LlmRunnerChunkedTest.*` 里任一条**走 generation 步**的用例（如
+    `ChunkProgressStateIsCorrect` / `ChunkedSamplingRowSetIsCompacted`）在真机即会暴露；更强的判据是补一条
+    cache 层用例：传显式 `rows` 调 `AppendDecodeStep`，断言 `context_lens` **逐行** +1（现在只有恒等版本）。
+- **发现 2（P1，功能口径）：`chunk_limit` 用了"总 token 上界"而不是"单序列上界"**
+  - 位置：`src/core/builder.cpp:311-313` 把 packed 图 `input_ids` / `position_ids` 的 dim1 上界设成
+    `max_prefill_batch × max_prefill_seq_len`（**总 token 数 T 的上界**）；而 `src/core/llm_runner.cpp`
+    构造期取 `chunk_limit_ = GetProfileDim("input_ids", kMAX, 1)` —— 拿到的是 T 上界，而 `design.md` D16 /
+    `p5_s5_interface_spec.md` §2 写的是"**单序列上限**"。
+  - 后果（两条都不需要真机即可推出）：
+    ① **S5 的分块在真实配置下几乎不触发**：切块条件是 `prompt_len - written > B_max × L_max`，而
+       `prompt_len ≤ n_positions ≈ L_max` → 单行永远不切（等于 S5 是死代码）；
+    ② **一旦真的切块，多行同批会撞 profile**：每行本步最多 `chunk_limit = B_max × L_max` 个 token，
+       B 行求和可超过 `B_max × L_max` → `SetInputShape("input_ids", {1, t_total})` **响亮失败**
+       （runner 只查了 runner 侧的 `packed_capacity`，没对照引擎 profile 的 T 上界）。
+  - 两个修法（**属设计决策，未定**）：
+    A. 用"单序列上界"推导：`chunk_limit = GetProfileDim("input_ids", kMAX, 1) /
+       GetProfileDim("block_tables", kMAX, 0)`（= `max_prefill_seq_len`；两个量都能从 profile 查，
+       需断言整除）。这样 Σ 每行 chunk ≤ `B_max × L_max` = profile T 上界，**可证安全**，且符合 spec §2 原意。
+    B. 保留总上界，另在 `RunPackedMixedStep` 加 `t_total ≤ 引擎 T 上界` 的拒绝。这只把
+       "死代码 + 响亮失败"变成"死代码 + 明确报错"，不解决 ①。
+  - 建议：**A**；但它会让分块真的启用 → 需要 S5-3 的用例在真机上验（当前环境搁置）。
+- **本批**未**覆盖的部分（诚实登记）**：`gpt2_model_builder.cpp` 的建图细节（除输入名与插件输入顺序）、
+  `builder.cpp` 的指纹 / 缓存失效路径、`plugin_registry.cpp` 的 creator 细节、
+  `paged_attention_split.hpp` 的 workspace 布局数学、各测试文件内部的断言逻辑（只查了调用点 arity）。
+- **收口（作者 2026-10-05 点名"执行 1、3"；未编译验证）**：
+  1. **发现 1 已修**（`src/kv_cache/paged_kv_cache.cpp` 的 `AppendDecodeStep`）：推进长度那一处改用
+     已经拷好的设备缓冲 —— `rows != nullptr ? rows_device_.data() : nullptr`（同 stream 先行，
+     `AppendDecodeKV` 刚写完它）。**不改图 / 不改 profile → 不需要 bump `graph_version`**。
+  2. **回归守卫已加**：`PagedKVCacheTest.AppendDecodeStepAdvancesMappedRowsOnly`
+     （`tests/test_paged_kv_cache.cpp`）—— 3 行（prefill 5/3/4）、`rows = {2, 0}`（乱序 + 带洞），
+     断言 ① **设备端** `context_lens` 逐行 +1、② 未映射行 host 与设备都不动、③ K/V 落在各自行的
+     块表位置（源行 0 → 目标行 2、源行 1 → 目标行 0）。旧代码在 ① 处会以 illegal access 变红 ——
+     这正好证明该用例有判别力（不是"恒等映射也能过"的空断言）。
+  3. **发现 2 未动**：`chunk_limit` 的口径属设计决策（作者正在评估"显式声明 `max_prefill_seq_len`、
+     让 `chunk_limit` 与建图参数都从它派生"的方向），待决策后再改。
+- **状态**：发现 1 已修 + 已加回归守卫（**未编译验证**）；发现 2 待作者决策。
