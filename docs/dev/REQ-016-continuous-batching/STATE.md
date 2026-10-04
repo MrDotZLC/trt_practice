@@ -76,7 +76,10 @@
    profile 上限推导**（且必须落在 fused kernel 支持的常量集合内）；③ 接受"统一成分页因果"，
    并加**兜底纪律：无法走 fused kernel 的配置要显式拒绝，不许静默回退**；④ 不新增开关，
    **非末块对齐、末块按实际长度**。**S5 的 P3 增量复评已出**（review.md）：P0 无、P1 两条
-   （fused 收益绑 P4/P7；真机长 prompt）。**S5 的实现排在 S4 的真机收口（P6）之后。**
+   （fused 收益绑 P4/P7；真机长 prompt）。
+   **实现顺序（作者 2026-10-04 改判）**：S4 的**真机测试先搁置**，**S5 的代码先做**（共用同一张
+   packed 图；S5 只加 chunk 语义，不动图/profile/`graph_version`）。真机窗口恢复后按 S4 → S5
+   一起验证。**下个会话从 S5 的第 1 步开始**（交接 prompt 见本目录的 `next_session_prompt.md`）。
 3. **P5-S1（代码已落，待编译）**：改了 `llm_runner.hpp` / `llm_runner.cpp` /
    `sampler_common.hpp` / `sampler_kernels.cu`，新增 `tests/test_llm_runner_batch.cpp`。
    真机下一步：`cmake --build build -j` → 全量 `mini_trt_llm_tests` → 新增的
