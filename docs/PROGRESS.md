@@ -10,6 +10,10 @@
 
 - **项目一句话**：面向 Turing / `sm_75` 的极简多模态 TensorRT 推理框架，用 `mini_trt_llm` 统一承载 CV（ResNet18）与 LLM（GPT-2），替换两个历史 ONNX 示例工程。
 - **现在在哪**：Phase 0 / 1 / 1.5 / 2 / 3 / 4 / 5 全部交付；**活着的条目 4 条** → §4。
+  **这 4 条当前全部停在"等真机验证"**（作者 2026-10-06 决定；**本机可做的已做完**）——
+  真机窗口第一动作是**一次编译全量**（不是"编一条改一条"），顺序
+  `REQ-016 → REQ-018 → REQ-017 → REQ-019 的 S0/S2`；顺序与理由的唯一详述见
+  `docs/dev/REQ-019-onnx-subgraph/design.md` 的「跨条目串行顺序」。
 - **当前基线（唯一现状口径，2026-09-28）**：沙箱 **268 条 / 0 失败**；真机整轮 **267 条 / 1 红 / 0 跳过 / 301.72 s**。
   **待复跑**：2026-10-05 起新增 3 条用例（`docs_index_check` ×1 + REQ-018 的图 A / 图 C ×2，见
   `mini_trt_llm/tests/CMakeLists.txt` 与 `test_gpt2_generate.cpp`）→ 按 `gtest_discover_tests`
@@ -323,6 +327,7 @@ RMSNorm / RoPE / PagedAttention 三个 IPluginV3 插件 + 采样器（greedy / t
 **同日作者裁决**：① **暂时不真机** → ① 那条保持未闭环（`review.md` 的 P0-1），S2 不落码；② **接受**把 creator namespace 设为 `mini_trt_llm` 及可能的既有引擎连带重建（P0-2 闭合）；③ S0 的识别基线归属取 **B**（`--check` 只对源图生效）。当前唯一放行障碍 = P0-1。
 **同日落码（第二批放行后）**：**S1 已完成并在沙箱跑绿**——`inspect_onnx.py --check-topology`（T1 块边界不共享 / T2 块内 Q-K-V 同源 / T3 输出经投影回主线 / T4 位置编码为学习式查表）+ 夹具 `make_topology_fixture.py`（`good` / `swap-softmax-inputs` / `share-score`，三者**算子计数逐个相等**）+ ctest 条目 `onnx_topology_selftest`（**沙箱条目数 +1**）。**PF-7 用例 `OnnxVsNative.PerfPerBuildMedian` 已落码、未编译**（每边 3 次独立构建 × 20 次推理，纯打印）。S1 唯一没闭的是**真实图的串联形态**（需 652MB 资产，T7）。
 **同日 T12 裁决（跨条目串行顺序）**：**REQ-016 → REQ-018 → REQ-017 → REQ-019 的 S0/S2**；"收口"定义为**编译通过 + 沙箱用例全绿**（真机部分继续记搁置）；四条共用的文件在编译验证前**写冻结**。详述（唯一）见 `docs/dev/REQ-019-onnx-subgraph/design.md` 的「跨条目串行顺序」，REQ-016 / 017 / 018 各自的 `STATE.md` 留指针。
+**本条当前处置（作者 2026-10-06）**：**整体搁置，等真机环境就绪**——本机可做的已做完（S1 落码 + 沙箱自检通过；PF-7 用例落码未编译），S0 / S2 受 T12 写冻结。真机窗口按 `STATE.md` 的「真机窗口执行清单」走，**第一件是读 `NvOnnxParser.h` 清 P0-1**。
 
 ## 5. 已知问题与坑
 
@@ -453,7 +458,7 @@ dynamic shape 的 optimization profile 已打通（Phase 2 的双引擎直接依
 | **REQ-016** | 连续批 / packed 混合批 / 分块 prefill：代码已落（S1–S5）、**未编译验证**；性能未验证（§5.16） | `docs/dev/REQ-016-continuous-batching/STATE.md` |
 | **REQ-017** | LLM 权重 INT8（路线 C）：P6 用例与判据已落、**未编译未运行**；D7 与收益待真机（§5.17） | `docs/dev/REQ-017-llm-int8-quant/STATE.md` |
 | **REQ-018** | GPT-2 FP16 端到端 NaN（bugfix）：**离线部分已全部落码（未编译验证）**；方案已评审（BLOCK：P0-3 待真机）、**真机搁置**（§4.8） | `docs/dev/REQ-018-gpt2-fp16-nan/STATE.md` |
-| **REQ-019** | 外部图子图替换（乙框架）：S0 / S1 设计就绪，S2 **阻塞**（P0-1 待真机核实），S3 待定（PF-7 待真机）（§4.9） | `docs/dev/REQ-019-onnx-subgraph/STATE.md` |
+| **REQ-019** | 外部图子图替换（乙框架）：**S1 已落码 + 沙箱自检通过**（连接级识别与反例夹具）；S0 设计就绪但受 T12 写冻结；S2 **阻塞**（P0-1 待真机核实），S3 待定（PF-7 待真机）（§4.9） | `docs/dev/REQ-019-onnx-subgraph/STATE.md` |
 | **SP-1** | `SentencePieceTokenizer` 无用例、无资产、无调用方：正确性从未被任何参考裁决过 | `future_iterations.md` §0.1 / §11 |
 | **P4-INT8-b** | INT8 的绝对数值界未定（当前只用"FP32 余量子集一致率"判，阈值 ≥90%，实测 12/12；验收集无真值标签） | `future_iterations.md` §1.6 |
 | **P4-FP16-a** | FP16 路径仍用已废弃的 `BuilderFlag::kFP16`（TRT 10.12 起指向 strong typing）；实测可用 | `future_iterations.md` §11 |

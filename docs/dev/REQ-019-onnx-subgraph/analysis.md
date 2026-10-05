@@ -64,7 +64,8 @@ ONNX 文件
 | `mini_trt_llm/include/mini_trt_llm/core/builder.hpp` 的 `BuildOptions::detailed_profiling` | 控制是否把逐层精度写进引擎（`ProfilingVerbosity`），是"替换是否生效"的现成开关（默认关） |
 | `mini_trt_llm/src/plugins/plugin_registry.cpp` | 三个自研算子的创建器注册 |
 | `mini_trt_llm/src/plugins/*.cu` | 算子实现与（反）序列化 |
-| `mini_trt_llm/tools/inspect_onnx.py` | 计数级识别 + 基线比对 + 缺失算子护栏（`--check`） |
+| `mini_trt_llm/tools/inspect_onnx.py` | 计数级识别 + 基线比对 + 缺失算子护栏（`--check`）；**连接级判据（`--check-topology`，S1 落地）** |
+| `mini_trt_llm/tools/make_topology_fixture.py` | 造"注意力骨架"夹具（`good` / `swap-softmax-inputs` / `share-score`）并提供 `--self-test`：证明连接级判据**会拦人** |
 | `mini_trt_llm/tests/test_gpt2_onnx.cpp` | 两条路的对拍用例（含逐形状对比） |
 | `mini_trt_llm/tests/engine_layer_info_support.hpp` | 逐层 ONELINE 的共用读取器（可落盘），已有三个使用方 |
 | `mini_trt_llm/tools/make_tiny_onnx.py` | 造小图夹具（可用于替换的单元测试） |

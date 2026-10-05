@@ -43,6 +43,9 @@
 
 ## Current Blockers
 
+- **作者 2026-10-06 决定：本条整体搁置，等真机环境就绪**（本机可做的已做完：S1 落码 + 沙箱自检通过、
+  PF-7 用例落码未编译；S0 / S2 受 T12 写冻结）。**不在本机重建 ONNX 资产** —— 该决定同时关掉了
+  T6 / T7 原本"本机可做"的路径。
 - **Gate-A 未过（唯一障碍 = P0-1）**：`review.md` 已产出（52 / 12 / 12 三张表），结论 BLOCK；
   剩下的 P0 是"`createParser` 重载是否存在"，受作者 **"暂时不真机"** 的约束。
 - **S3 阻塞**：PF-7 需目标真机；`docs/future_iterations.md` §6.2（自定义算子导出）是 S2 的实现前置。
@@ -69,7 +72,7 @@
 | T4 | PF-7 的薄用例 | **已授权 + 已落码（未编译）**；待真机出数 | `design.md` 的 Performance Consideration；`docs/future_iterations_test_plan.md` 的 PF-7 行 | 授权已给、用例已写（`OnnxVsNative.PerfPerBuildMedian`）；剩"编译 + 真机窗口" | 否（挡 S3） |
 | T5 | S3 子图替换本身 | 未满足（阻塞，作者已接受长期） | `design.md` 的「待定项（阻塞）」 | 真机 + PF-7 判"可判" | 否 |
 | T6 | S0 的真实图形态（位置编码 A / B）与 `input_ids` 的 INT64 消费点清单 | 待核实 | `s0_contract_interface_spec.md` §2 / §7 第 2、3 条 | 真机跑 `inspect_onnx.py` 探针（需 652MB 资产） | 否（落码前置） |
-| T7 | S1 的真实注意力块边界形态 | 待核实（**部分降级**） | `s1_topology_interface_spec.md` §1 / §7 第 2 条 / §7.2 | 夹具级（F1/F2/F3）已在沙箱验过；**真实图的串联形态仍要资产**（`inspect_onnx.py <资产图> --check-topology`） | 否 |
+| T7 | S1 的真实注意力块边界形态 | 待核实（**部分降级**） | `s1_topology_interface_spec.md` §1 / §7 第 2 条 / §7.2 | 夹具级（F1/F2/F3）已在沙箱验过；真实图的串联形态要资产（`inspect_onnx.py <资产图> --check-topology`）——**作者 2026-10-06 决定不在本机重建资产 → 本项随真机窗口进行** | 否 |
 | T8 | 属性 → `PluginField` 的映射细节 | 待核实 | `s2_custom_op_interface_spec.md` §3 第 4 条 | 真机（读头文件 + 最小复现） | 否 |
 | T9 | P0-2 的"连带重建范围" | 待写死 | `s2_custom_op_interface_spec.md` §3.1；`review.md` 的 P0-2 | 先核实既有引擎是否受影响（§3 第 3 条），再由作者定范围 | 否 |
 > **T10 已于 2026-10-06 解除**（作者点名同步）：`docs/future_iterations_development_plan.md` 第 1278 行
