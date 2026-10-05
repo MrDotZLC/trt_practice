@@ -98,6 +98,10 @@ CUDA 初始化**——把它与"建引擎 + 数值"混在一起时，真机失�
 | **G2-3** | `LLMRunner` **只支持 `batch = 1`**（有意限定，见计划 `docs/dev/REQ-004-gpt2-native/phase2_development_plan.md` §4.11） | 批处理场景不可用 | 需要批处理时再扩（届时同时引入多序列 block 分配、各自 `context_lens` 与采样参数） |
 | **G2-4** | EOS 无法在循环内早停（**已知 workaround**，非缺陷） | EOS 前仍跑满 `max_new_tokens`，多余计算被丢弃；语义正确 | 见 `docs/PROGRESS.md` §5.0（含后续可选方案） |
 
+> **2026-10-06 更新**：上表 G2-1 里的"按政策不修"**已被作者撤销**（转独立条目 `REQ-018` 修复，
+> 依据 = 正确性：默认精度不可用即产品缺陷）→ 见 `docs/TROUBLESHOOTING.md` 18.2 与
+> `docs/dev/REQ-018-gpt2-fp16-nan/STATE.md`。本表其余结论不改写。
+
 ---
 
 ## 6. 执行方式

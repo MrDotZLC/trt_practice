@@ -57,6 +57,10 @@ Q：精度怎么处理的？　A：**向引擎查询**，不按配置假定；�
 
 Q：这阶段的已知缺陷？　A：FP16 端到端 NaN（层随构建变化），按政策不修、登记为已知限制，推荐用 FP32。
 
+> **2026-10-06 更新**：撤销"不修"，转修复（依据 = 正确性：默认精度不可用即产品缺陷）→
+> `docs/TROUBLESHOOTING.md` 18.2 与 `docs/dev/REQ-018-gpt2-fp16-nan/STATE.md`。
+> **FP32 仍是当前可用的 workaround**，回答其余部分不变。
+
 ---
 
 ## Follow-up Questions

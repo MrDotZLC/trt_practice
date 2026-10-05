@@ -37,3 +37,7 @@
 ## Decision
 
 **PASS**（FP16 端到端数值不稳定按政策**不修**，登记为已知限制——见 `summary.md`）。
+
+> **2026-10-06 更新**：其中的"不修"已被作者撤销（转 `REQ-018` 修复）→ 见
+> `docs/TROUBLESHOOTING.md` 18.2 与 `docs/dev/REQ-018-gpt2-fp16-nan/STATE.md`。
+> 本报告的 PASS 是**当年的**评审记录，正文不改写。
