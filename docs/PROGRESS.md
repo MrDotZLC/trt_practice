@@ -306,8 +306,10 @@ RMSNorm / RoPE / PagedAttention 三个 IPluginV3 插件 + 采样器（greedy / t
 
 ### 4.8 [DEC-REQ018-STATUS] REQ-018（GPT-2 FP16 端到端 NaN，bugfix）
 
-**现状**：停在"动手修之前"的人工关口（以它的 `STATE.md` 为准）。**在等作者裁决三件事**：① 是否撤销"按政策不修"；② 是否批准下一轮真机诊断；③ B2 若超预算，立为 Feature 还是停在诊断结论。
-候选修复方案与预算判定已按 Bugfix 规则并入它的 `analysis.md` 的 `## Candidate Fixes（B2）`（原 `design.md` 已删）。
+**现状**：策略已裁决、方案已重设计并评审过，**卡在设备**（以它的 `STATE.md` 为准）。作者 2026-10-06 裁决两件事：
+① **撤销"按政策不修"**——依据是**正确性**（默认精度不可用即产品缺陷），不是 §5.11 / `future_iterations.md` §1.4 的"低精度**性能**"触发（旧的收益结论本身仍成立）；② **当前设备无真机条件 → 真机部分整体搁置**，本轮不产出任何实测读数。
+候选修复方案与预算判定已按 Bugfix 规则并入它的 `analysis.md` 的 `## Candidate Fixes（B2）`（原 `design.md` 已删），2026-10-06 换成"重设计方案"（一次真机三图对照 + 定点一处显式精度）。
+评审结论在它的 `review.md`：**Decision = BLOCK**——4 条 P0，3 条同轮关闭，P0-3（Softmax 是否有精度接口）需真机读 `NvInfer.h`。
 它是真机上**唯一按设计的红**，别当成新回归（见 §5.11）。
 
 ### 4.9 [DEC-REQ019-STATUS] REQ-019（外部图子图替换）
@@ -363,10 +365,12 @@ RMSNorm / RoPE / PagedAttention 三个 IPluginV3 插件 + 采样器（greedy / t
 
 见 §5.5。**判定要点**："无设备"才是环境限制（允许跳过）；"有设备但 `createInferBuilder` 失败"是故障（必须红）。
 
-### 5.11 [DEC-GPT2-FP16-LIMIT] GPT-2 的 FP16 端到端不可用（已知限制，按政策不修）
+### 5.11 [DEC-GPT2-FP16-LIMIT] GPT-2 的 FP16 端到端不可用（已知限制 → **2026-10-06 撤销"按政策不修"**）
 
 问题：真实 GPT-2 在本项目的**弱类型 FP16** 引擎下端到端产生 NaN（贪心输出恒为 0）；出 NaN 的层随构建变化（实测 0/1/2），而激活幅值远未触及 65504。已排除：LayerNorm 计算精度、`c_fc` / GELU、残差溢出。
 workaround：**GPT-2 用 FP32**（8/8 贪心 token 命中、logits 相对偏差 `1e-6`）。后续路径 → `future_iterations.md` §1.4；完整定位（5 轮真机）→ `TROUBLESHOOTING.md` #18。
+
+**2026-10-06 口径变更**：本条不再作为策略前提——作者裁决撤销"按政策不修"，转修复（`REQ-018`）。撤销依据是**正确性**（默认构建精度不可用），**不是**"性能收益变好"；上面的 workaround 与收益判断本身仍然成立。后续以 `docs/dev/REQ-018-gpt2-fp16-nan/STATE.md` 为准，追加留痕见 `TROUBLESHOOTING.md` + 18.2。
 
 ### 5.12 Phase 2 修掉的缺陷（结论索引）
 
@@ -441,7 +445,7 @@ dynamic shape 的 optimization profile 已打通（Phase 2 的双引擎直接依
 |---|---|---|
 | **REQ-016** | 连续批 / packed 混合批 / 分块 prefill：代码已落（S1–S5）、**未编译验证**；性能未验证（§5.16） | `docs/dev/REQ-016-continuous-batching/STATE.md` |
 | **REQ-017** | LLM 权重 INT8（路线 C）：P6 用例与判据已落、**未编译未运行**；D7 与收益待真机（§5.17） | `docs/dev/REQ-017-llm-int8-quant/STATE.md` |
-| **REQ-018** | GPT-2 FP16 端到端 NaN（bugfix）：等作者裁决（§4.8） | `docs/dev/REQ-018-gpt2-fp16-nan/STATE.md` |
+| **REQ-018** | GPT-2 FP16 端到端 NaN（bugfix）：策略已裁决（撤销不修）、方案已评审（BLOCK：P0-3 待真机）、**真机搁置**（§4.8） | `docs/dev/REQ-018-gpt2-fp16-nan/STATE.md` |
 | **REQ-019** | 外部图子图替换：等 Gate-A，前置 PF-7 未跑（§4.9） | `docs/dev/REQ-019-onnx-subgraph/STATE.md` |
 | **SP-1** | `SentencePieceTokenizer` 无用例、无资产、无调用方：正确性从未被任何参考裁决过 | `future_iterations.md` §0.1 / §11 |
 | **P4-INT8-b** | INT8 的绝对数值界未定（当前只用"FP32 余量子集一致率"判，阈值 ≥90%，实测 12/12；验收集无真值标签） | `future_iterations.md` §1.6 |
