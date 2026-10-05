@@ -7,6 +7,7 @@
 #include "mini_trt_llm/utils/memory_pool.hpp"
 #include "test_gpu_guard.hpp"
 #include "test_asset_guard.hpp"
+#include "perf_stats.hpp"
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -30,6 +31,7 @@ using test_support::ComputeDiffStats;
 using test_support::DiffStats;
 using test_support::ArgmaxAgreement;
 using test_support::CompareArgmaxByDecidability;
+using test_support::Median;
 
 constexpr int32_t kVocab = 50257;
 constexpr int32_t kSeq = 4;
@@ -542,6 +544,105 @@ TEST(Gpt2OnnxTest, MatchesAcrossProfileShapes) {
                "若要改登记表，必须给出真机实测依据并写入 TROUBLESHOOTING.md + #34.9，"
                "不许为了让用例变绿而加行";
     }
+}
+
+// ---------------------------------------------------------------------------
+// PF-7：ONNX vs 原生 prefill 的**跨构建**对照
+// （`docs/future_iterations_test_plan.md` §10.2 的 P 层用例；它决定 REQ-019 的 S3 走向）
+//
+// 口径的唯一来源 = 测试计划 §10.2 与 `design.md` 的 Performance Consideration（本处不转述）。
+// **P 层 = 纯打印，不设阈值断言**：可判 / 未定的结论由人读打印值下
+// （测试计划 §10.2 的"明确不做"：P 层不许把观测值变成阈值判据；`AGENTS.md` §7 同）。
+//
+// 两个实现要点：
+//   * **每次构建都换文件名并先删旧产物**——缓存命中时"构建"退化成读文件（既有 P3-4 注释已点明），
+//     跨构建方差会被抹平；那样量到的是缓存读取，不是构建间差异。
+//   * **协议下限写死不从环境读**——若能靠环境变量把"≥3 次构建"改成 1，就会有人为了跑得快而改，
+//     那正是这条协议要防的（同 §7 的阈值纪律）。
+//
+// **代价提示**：本用例做 2 × 3 = 6 次全新的 GPT-2 构建 + 120 次推理，是全套里最重的一条；
+// 真机窗口若想单独跑它，用 `--gtest_filter=Gpt2OnnxTest.PerfPerBuildMedian`。
+// 用例名与测试计划 §10.2 的字面一致（`OnnxVsNative.PerfPerBuildMedian`）——它是那份计划的
+// 唯一来源，改名字要两边同改；本文件里另开一个 fixture 也正好让 `--gtest_filter=OnnxVsNative.*`
+// 只选这条重用例。
+TEST(OnnxVsNative, PerfPerBuildMedian) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    const std::string dir = FindModelDir();
+    const std::string onnx = FindOnnx();
+    if (dir.empty() || onnx.empty()) {
+        MINI_TRT_SKIP_IF_MISSING_ASSET("需要 models/gpt2 与 assets/legacy/gpt2_onnx/gpt2.onnx");
+    }
+
+    constexpr int32_t kBuilds = 3;  // 协议下限：≥3 次构建
+    constexpr int32_t kIters = 20;  // 协议下限：每次构建 ≥20 次推理
+
+    Logger logger;
+    EngineBuilder::Config config;
+    config.precision = Precision::FP32;  // 与既有对拍用例同精度（跨精度不可比）
+    config.min_prefill_seq_len = kSeq;
+    config.opt_prefill_seq_len = kSeq;
+    config.max_prefill_seq_len = kSeq;
+    EngineBuilder builder(logger, config);
+
+    // 逐次记时（不是"跑 N 次取平均"）：协议要的是**每次构建的中位数**，
+    // 平均值会被单次抖动带偏，而这里要判的恰恰是"抖动有多大"。
+    const auto per_run_ms = [&](Engine* engine) {
+        std::vector<double> samples;
+        samples.reserve(kIters);
+        RunEngine(engine, kPrompt);  // 暖机，不计入样本
+        for (int32_t i = 0; i < kIters; ++i) {
+            const auto begin = std::chrono::steady_clock::now();
+            RunEngine(engine, kPrompt);
+            samples.push_back(std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - begin).count());
+        }
+        return samples;
+    };
+
+    std::vector<double> onnx_medians;
+    std::vector<double> native_medians;
+    for (int32_t b = 0; b < kBuilds; ++b) {
+        const std::string onnx_engine =
+            "/tmp/mini_trt_llm_pf7_onnx_" + std::to_string(b) + ".engine";
+        const std::string native_engine =
+            "/tmp/mini_trt_llm_pf7_native_" + std::to_string(b) + ".engine";
+        std::error_code ec;
+        std::filesystem::remove(onnx_engine, ec);
+        std::filesystem::remove(native_engine, ec);
+
+        ASSERT_TRUE(builder.BuildFromOnnx(dir, onnx, onnx_engine, {}))
+            << "ONNX 引擎构建失败（第 " << b << " 次）";
+        ASSERT_TRUE(builder.BuildFromConfig(dir, native_engine, BuildStage::kSingle))
+            << "原生引擎构建失败（第 " << b << " 次）";
+
+        Engine onnx_ctx(onnx_engine, logger);
+        Engine native_ctx(native_engine, logger);
+        onnx_medians.push_back(Median(per_run_ms(&onnx_ctx)));
+        native_medians.push_back(Median(per_run_ms(&native_ctx)));
+        std::cout << "[PF-7] build " << b << "：ONNX " << onnx_medians.back()
+                  << " ms | 原生 " << native_medians.back() << " ms\n";
+    }
+
+    const auto range_of = [](const std::vector<double>& v) {
+        const auto mm = std::minmax_element(v.begin(), v.end());
+        return *mm.second - *mm.first;
+    };
+    const double onnx_med = Median(onnx_medians);
+    const double native_med = Median(native_medians);
+    const double onnx_range = range_of(onnx_medians);
+    const double native_range = range_of(native_medians);
+    const double diff = std::fabs(onnx_med - native_med);
+    const double worst_range = std::max(onnx_range, native_range);
+
+    std::cout << "[PF-7] 口径：同 session | 构建 " << kBuilds << " 次/边 | 每次推理 " << kIters << " 次\n"
+              << "[PF-7] ONNX 中位数 " << std::setprecision(4) << onnx_med
+              << " ms（极差 " << onnx_range << "）\n"
+              << "[PF-7] 原生 中位数 " << native_med << " ms（极差 " << native_range << "）\n"
+              << "[PF-7] 判定输入：中位数之差 " << diff << " ms vs 极差 " << worst_range << " ms → "
+              << (diff > worst_range ? "可判（差异超得出构建间噪声）"
+                                     : "未定（差异落在构建间噪声内）")
+              << "\n";
+    // 只打印，不断言：结论由人按协议下（"未定"同样是有价值的结论）。
 }
 
 }  // namespace mini_trt_llm
