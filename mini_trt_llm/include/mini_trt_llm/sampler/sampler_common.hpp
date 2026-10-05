@@ -80,8 +80,9 @@ constexpr int32_t kTopKFastMaxK = 64;
 // `LaunchTopKSampler` 一致 → 同一 `(seed, offset)` 下两者应给出**逐 token 相同**的结果。
 // 这条由 `SamplerKernelTest.TopKFastMatchesLegacyTokens` 锁住（不一致就是缺陷）。
 //
-// 为什么值得单独一条路径：基线实测（`PROGRESS.md` §3.0g）里 top-k(k=64) 在 50257 词表上是
-// greedy 的 12.8 倍、1.2 ms（128K 词表），而整行降序排序是主要成本。
+// 为什么值得单独一条路径：基线实测（`docs/future_iterations_development_plan.md` 的
+// `[OI-SAMPLER-KERNEL-ACCEPTANCE]`，P9_2-0 表）里 top-k(k=64) 在 50257 词表上是 greedy 的 12.8 倍、
+// 1.2 ms（128K 词表），而整行降序排序是主要成本。
 cudaError_t LaunchTopKSamplerFast(const TopKSamplerArgs& args, cudaStream_t stream);
 
 size_t TopPSamplerWorkspaceBytes(int32_t batch_size, int32_t vocab_size);

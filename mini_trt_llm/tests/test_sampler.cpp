@@ -861,7 +861,8 @@ TEST(SamplerKernelTest, TopPDistributionMatchesTruncatedSoftmaxProbabilities) {
 // P9_2-0：采样器性能基线（计划见 future_iterations_development_plan.md §10，用例编号 S-18）
 //
 // 为什么先有它：§9.2 的触发条件是"profile 确认 sampler 占比显著"，而这个数据至今不存在
-// （PROGRESS.md §3.0d 里只有 CVRunner 的 benchmark）。本用例量的是**采样器自身**的耗时，
+// （`PROGRESS.md` 里查不到这个数字；同类端到端数字只有 `CVRunner` 的 benchmark，
+// 见 `docs/dev/REQ-007-resnet18/phase4_development_plan.md` 的 P4-3 行）。本用例量的是**采样器自身**的耗时，
 // 用来做"改实现前后各跑一次"的对照。
 //
 // 协议按 G6（docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md §5）：先 warmup，再多次采样，**报中位数与极差**，

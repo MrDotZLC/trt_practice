@@ -52,7 +52,7 @@ const char* const kNativeFp32Engine = "/tmp/mini_trt_llm_resnet18_native_fp32.en
 // tactic 差异的余量，而**语义正确性另由 argmax 判据保证**。
 //
 // ⚠️ **不要**把 P4-2/P4-5 的 FP32 阈值（1e-4 / 1e-5）套到这里，也不要反着把这条放宽到
-// 掩盖真问题：`PROGRESS.md` §7 明令"阈值不跨精度复用"。D4 的 `rel < 1e-3` 同理——它是给
+// 掩盖真问题：`PROGRESS.md` §2.14（A 条）明令"阈值不跨精度复用"。D4 的 `rel < 1e-3` 同理——它是给
 // 单算子/同精度比较定的（实测本次纯舍入的 rel 已达 1.08e-3~2.0e-3，本来就超）。
 constexpr float kFp16MaxAbs = 0.1f;
 
