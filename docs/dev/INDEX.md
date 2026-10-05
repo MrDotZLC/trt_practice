@@ -44,8 +44,8 @@
 | `REQ-013` | `REQ-013-perf-profile` | 历史 | P9-Interview | completed | decode 性能画像与可复现测量方法 |
 | `REQ-014` | `REQ-014-attention-splitk` | 历史 | P9-Interview | completed | 长上下文 attention 的上下文维切分 |
 | `REQ-015` | `REQ-015-int8-perchannel` | 历史 | P9-Interview | completed | per-channel 整网退化根因 |
-| `REQ-016` | `REQ-016-continuous-batching` | 进行中 | P5-Implementation | in-progress | 批量 > 1 + 每序列 K/V + 最小连续批（S1/S2/S3 已落码未编译；S4 混合批设计已出、待作者确认后实现；S5 chunked prefill 已立项） |
-| `REQ-017` | `REQ-017-llm-int8-quant` | 进行中 | P3-Review | waiting-human-gate | 语言模型权重量化；KV 缓存量化另立里程碑 |
+| `REQ-016` | `REQ-016-continuous-batching` | 进行中 | P5-Implementation | in-progress | 批量 > 1 + 每序列 K/V + 最小连续批（S1–S5 已全部落码、**未编译验证**；P4 / P7 因缺 GPU 搁置，性能未验证见 `PROGRESS.md` §5.16） |
+| `REQ-017` | `REQ-017-llm-int8-quant` | 进行中 | P5-Implementation | in-progress | 语言模型权重量化（路线 C 端到端已落码、**未编译验证**）；KV 缓存量化另立里程碑；Gate-A 的 7 条 P1 已逐条裁决 |
 | `REQ-018` | `REQ-018-gpt2-fp16-nan` | 进行中（bugfix） | B2-MinimalFix | waiting-human-gate | 唯一的按设计红：FP16 端到端 NaN |
 | `REQ-019` | `REQ-019-onnx-subgraph` | 进行中 | P3-Review | waiting-human-gate | 外部图子图替换；前置 = 先跑跨构建对照 |
 
@@ -100,8 +100,9 @@
 | `REQ-008` | 同上 | `phase4_int8_plan` + `phase4-excerpts`（从 REQ-007 的两份原文**逐字摘出**的 INT8 条目） |
 | `REQ-009` | 同上 | `phase5_development_plan` |
 | `REQ-010`~`015` | 同上 | 无（来源是迭代计划与迭代测试计划，二者仍是活文档） |
-| `REQ-016` | STATE / requirement / analysis / design / **review** / **benchmark_before** / **test_plan**（+ `p5_s1_interface_spec.md` / `p5_s2_interface_spec.md` / `p5_s3_interface_spec.md` / `p5_s4_interface_spec.md` 作为 P5 补充） | 无（进行中，尚无归档原文） |
-| `REQ-017`~`019` | STATE / requirement / analysis / design | 无（进行中，尚无归档原文） |
+| `REQ-016` | STATE / requirement / analysis / design / **review** / **benchmark_before** / **test_plan**（+ `p5_s1_interface_spec.md` ~ `p5_s5_interface_spec.md` 五份作为 P5 补充） | 无（进行中，尚无归档原文） |
+| `REQ-017` | STATE / requirement / analysis / design / **review** / **benchmark_before** | 无（进行中，尚无归档原文） |
+| `REQ-018`~`019` | STATE / requirement / analysis / design | 无（进行中，尚无归档原文） |
 
 **执行回填明细、逐条判据状态、原始测量表**都在上表的"归档原文"里（不再单独上浮）；
 活文档里只在 `test_plan.md` 的 `Actual Result` 保留结论摘要。
