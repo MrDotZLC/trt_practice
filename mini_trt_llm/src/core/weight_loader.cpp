@@ -61,4 +61,26 @@ bool WeightLoader::HasWeight(const std::string& trt_name) const {
     return loader_.HasTensor(trt_name);
 }
 
+std::string WeightLoader::ResolveSourceKey(const std::string& trt_name) const {
+    auto it = weight_map_.find(trt_name);
+    return it != weight_map_.end() ? it->second : trt_name;
+}
+
+bool WeightLoader::LoadQuantized(const std::string& path) {
+    quantized_loaded_ = quantized_.LoadFromFile(path);
+    return quantized_loaded_;
+}
+
+const void* WeightLoader::GetQuantizedWeight(const std::string& trt_name,
+                                             size_t* bytes) const {
+    if (!quantized_loaded_) {
+        return nullptr;
+    }
+    const std::string source_key = ResolveSourceKey(trt_name);
+    if (!quantized_.HasTensor(source_key)) {
+        return nullptr;
+    }
+    return quantized_.GetConvertedData(source_key, nvinfer1::DataType::kINT8, bytes);
+}
+
 }  // namespace mini_trt_llm

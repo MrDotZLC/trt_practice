@@ -3377,3 +3377,109 @@ grep '^file=' /tmp/mini_trt_llm_resnet18_onnx_fp32.engine.fingerprint   # 应变
   本轮不做 —— 它要引入"测试依赖文档路径"这类新的脆弱点（`ctest` 的 CWD 与 `FindFile` 那套已经踩过
   `TS-048`），收益与风险不成正比；当清单再增两节以上时再评估。
 - **状态**：**4/4 已对齐**；改动**纯文档**（不动代码、不动 `graph_version` 与指纹）。
+
+---
+
+## 56. [TS-056] REQ-017 静态自检：2 处真缺陷（清单命名空间 / 字符串引号）+ 三项交叉核对（2026-10-05）
+
+**为什么只能做静态自检**：本沙箱**没有编译器**（无 nvcc / cmake / TensorRT，也没有 GPU），
+P5 的 Exit Gate（编译通过 / 无新增 warning）在这里不可能执行。所以本轮把"能跑的"（Python 侧）
+与"能机械对账的"（清单 ↔ 建图源码）全部做掉，其余按 `REQ-016` 的先例记为"未编译验证"。
+
+### 56.1 发现 1（真缺陷，属"会静默错"那一类）：清单的命名空间与建图侧不一致
+
+`quantize_gpt2.py` 原来按**文件里的 key** 选张量、并按文件 key 排除 `wpe.weight`，而建图侧
+只认 **TRT 名**（它拿 `config.json` 的 `weight_map` 去查文件）。当前 `models/gpt2/config.json`
+的映射是恒等的（148 条，`key_prefix: ""`），所以没暴露；但换一份带 `transformer.` 前缀的 HF
+原始导出，文件里的 key 是 `transformer.wpe.weight` → **排除失效 → wpe 被量化**，而建图侧照样按
+TRT 名消费它。两边"哪些张量需要量化"就此错位，且不报错。
+
+**修法**：清单改为**按 TRT 名**选（`load_weight_map()` + `plan_targets()`），产物仍按文件 key
+命名；`entries[]` 同时写 `tensor`（TRT 名）与 `source_key`（文件 key），三者可逐条核对。
+`--only` 也接受两种名字，但必须真的存在且是 2-D（给错就响亮失败）。
+
+**证据**：自检 fixture 改成**带前缀**的形态（`transformer.`），断言
+`tensor == ["h.0.attn.c_attn.weight", "wte.weight"]`、
+`source_key == ["transformer.h.0.attn.c_attn.weight", "transformer.wte.weight"]`
+——即 wpe 在前缀形态下仍被排除。
+
+### 56.2 发现 2（真缺陷，编译错误）：错误信息里混进了 ASCII 双引号
+
+`src/utils/safetensors_loader.cpp` 新增的报错串写成
+`"（INT8 只允许"文件即 int8"的零拷贝）"` —— 内层是 ASCII `"`，直接是**语法错**。
+**修法**：改用 `「」`。**怎么发现的**：对 11 个改动文件做逐行引号配平扫描（剥掉 `//` 注释后数
+`"`，奇数即可疑），它是本轮唯一能替代编译器的一道机械检查。
+
+### 56.3 发现 3（自检抓到的实现 bug）：`--exclude` 覆盖了默认排除项
+
+`quantize()` 原先把 `exclude or ()` 直接传给策略函数，把默认的 `_DEFAULT_EXCLUDE`（wpe）
+**覆盖**掉了——调用方一句 `--exclude foo` 就会把 wpe 放回清单。**修法**：默认名单与 `--exclude`
+取并集。这条是自检第一次运行时红出来的（`wpe.weight` 出现在选中列表里）。
+
+### 56.3b 发现 4（真缺陷，**性能级**）：`wte` 的转置被推到了 DQ 之后 → 每步真的转一遍权重
+
+**怎么发现的**：作者追问"为什么不先处理 P5 里不依赖环境的遗留"时，逐处重读 `Build()` 的
+`wte` 用法才看清楚——`wte` 在图上被**两处**消费：
+
+1. `addGather(wte, input_ids, 0)`：词嵌入，只读被选中的行；
+2. `AddTranspose(wte) → reshape → MatMul`：`lm_head`（GPT-2 绑定权重）。
+
+原实现里 `AddWeightConstant("wte.weight")` 直接返回 **DQ 的输出**，于是第 2 条的 `ITransposeLayer`
+作用在**非常量**上。未量化时它是常量，TRT 会把转置折成常量（代码注释也是这么写的）；量化之后
+**折不了**，TRT 只能每个 decode 步真的转一遍整张权重（FP32 下 154 MB）。
+
+**后果（为什么算性能级）**：decode 每步的权重读取量本来就 ≈496 MB（≈2.775 ms），
+多一次 154 MB 的读+写转置，等于把这条路线省下来的带宽当场还回去大半——**而且不报错**，
+只会表现为"INT8 没快多少"，从而被误判成"TRT 不支持 weight-only"。
+
+**修法**：把"取量化源"与"挂 DQ"拆成两个动作（`AddQuantizedWeightSource` / `AddDequantize`），
+让形状操作落在 **int8 常量**上，DQ 排到它们之后：
+
+- 词嵌入：`gather(int8) → DQ`（只反量化用到的行，比"先 DQ 再 gather"更省）；
+- `lm_head`：`transpose(int8) → reshape → DQ → MatMul`（转置仍可折成常量，DQ 的输出直接喂
+  MatMul，与普通权重的 `int8 常量 → DQ → MatMul` 形状一致）。
+
+三条防退回的硬约束也一并落地：取源失败时**绝不退回 FP32**（调用方靠 `out_entry` 是否非空区分
+"没点名"与"点名了但建不出来"）；`AddPlainWeightConstant` 只被分派器调用（无旁路）；
+清单"全消费"校验仍在收尾处拦"清单有、图里没有"。
+
+### 56.4 交叉核对 1：真实 `models/gpt2/config.json` 上的默认清单
+
+用真实 config 的 `weight_map`（148 条）与 `hyper_params` 合成长度正确的 header，跑
+`plan_targets()`：**选中 49 个张量 = 48 个 Linear 权重 + `wte.weight`**；`wpe.weight` 不在清单里。
+与 `design.md` D6 的表逐项一致（该表写 84.93 M Linear + 38.60 M wte）。
+
+### 56.5 交叉核对 2：清单名字 ↔ 建图源码的字面量
+
+从 `gpt2_model_builder.cpp` 抓全部字符串字面量，把清单里每个名字（`h.N.` 前缀折叠掉）逐个去查：
+**缺项 = 0**；同时确认 `wpe.weight` **仍在建图源码里被消费**（只是不进量化清单）——这正是
+"清单全消费"校验不会误报的前提。
+
+### 56.6 交叉核对 3：同名成员遮蔽与调用点全量对账
+
+`gpt2_model_builder.hpp` 里新增了一个与文件级函数**同名**的成员 `AddWeightConstant`
+（类作用域优先于命名空间作用域，调用点零改动），文件级函数改名 `AddPlainWeightConstant`
+只作纯 FP32/FP16 路径。对账：成员定义 1 处（`:340`）、文件级定义 1 处（`:83`）、
+**14 个调用点全部在 `Build()` 内**（`:607`–`:1015`）→ 都会走量化分派，没有"绕过量化"的旁路。
+
+### 56.7 本轮**没有**验证的（不得当成已通过）
+
+1. **编译**：无编译器。所有 C++ 改动（10 个已跟踪文件 +2 个新文件）都未编译。
+2. **`addDequantize` 的签名与广播约束**：沙箱无 `NvInfer.h`，按作者"假设有头文件"的指令写。
+3. **DQ 是否被 TRT 吸收**（`design.md` 的 D7）：判据是"引擎体积必须下降"，须真机最小图实验。
+4. **`wte` 量化后 lm_head 的融合**：只认 TRT 一种后端行为；显式 `ITransposeLayer` 夹在 DQ 与
+   MatMul 之间是否挡住融合，真机一并看（退路：改用 MatMul 的 transpose 标志，或让脚本多产一份
+   转置过的 int8 `lm_head`）。
+
+### 56.8 复核方式（可重放）
+
+- Python 侧：`python mini_trt_llm/tools/convert/quantize_gpt2.py --self-test`
+  → 6 道护栏（缺 config / 已存在产物 / 缺张量 / 非 2-D / 产物被改坏 / 清单 sha256 造假）
+  + 命名空间 / scale / 身份自检。
+- 引号配平：逐行剥 `//` 注释后数 `"`，奇数即可疑（本轮 11 个文件 → 0 处）。
+- 清单 ↔ 源码：抓 `gpt2_model_builder.cpp` 的全部字符串字面量，与 `plan_targets()` 的结果对账。
+
+- **状态**：发现 1/2/3/4 均已修（发现 2 是编译错误属 P0 级；发现 4 是性能级且**会静默**）；
+  三项核对全过；**未编译验证**，真机四项见 §56.7。发现 4 的修法改变了 `wte` 那条路径的建图
+  结构（新增 `AddQuantizedWeightSource` / `AddDequantize` 两个成员），真机核 D7 时要顺带确认
+  它在 FP32 与 FP16 两种构建下都建得出来。

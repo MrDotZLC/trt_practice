@@ -3,6 +3,7 @@
 #include "mini_trt_llm/core/imodel_builder.hpp"
 
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,45 @@ class GPT2ModelBuilder : public IModelBuilder {
                const ModelConfig& config, const BuildOptions& options) override;
 
  private:
+    // 把权重挂成常量层。
+    //
+    // **与文件级同名函数不是一回事**：本方法多一层"这个权重是否在量化清单里"的分派
+    // （REQ-017 路线 C），清单没点名时才落到那条纯 FP32/FP16 的老路径。
+    //
+    // 为什么用同名成员而不是给每个调用点加参数：改签名要动 14 个调用点，而同名成员在类
+    // 作用域里天然遮蔽文件级函数（名字查找先查类作用域），调用点一个字都不用改。
+    nvinfer1::ITensor* AddWeightConstant(nvinfer1::INetworkDefinition* network,
+                                        const WeightLoader& weights,
+                                        const std::string& name,
+                                        nvinfer1::DataType dtype,
+                                        const nvinfer1::Dims& dims);
+
+    // 取"量化源"——**int8 常量本身**，不挂 DQ。
+    //
+    // 为什么需要它：有的权重在图上要先做形状操作才参与计算（GPT-2 的 `wte` 既被 gather
+    // 又被转置给 lm_head）。DQ 的输出**不是常量**，对它做 `ITransposeLayer` 会退化成
+    // "每个 decode 步真的转一遍整张权重"——收益归零且不报错。所以这类权重必须
+    // **先做形状操作、后 DQ**，本方法就是给它们留的入口。
+    //
+    // 契约（调用方靠它区分三种结果）：
+    //   返回非空                → 取到 int8 常量，`*out_entry` = 对应条目；
+    //   返回空且 `*out_entry` 为空 → 该权重**不在清单里**（走原有 FP32/FP16 路径）；
+    //   返回空且 `*out_entry` 非空 → **失败**（已打日志）——调用方必须失败返回，
+    //                             绝不能退回 FP32（那正是"声明了量化却没量化"）。
+    nvinfer1::ITensor* AddQuantizedWeightSource(nvinfer1::INetworkDefinition* network,
+                                                const WeightLoader& weights,
+                                                const std::string& name,
+                                                const nvinfer1::Dims& dims,
+                                                const QuantEntry** out_entry);
+
+    // 在任意（可能是 int8、也可能已经过 gather/转置）张量上挂 DQ，得到可参与计算的浮点张量。
+    // 反量化公式：y = q * scale（对称量化，zero_point = 0）。
+    nvinfer1::ITensor* AddDequantize(nvinfer1::INetworkDefinition* network,
+                                     nvinfer1::ITensor* quantized,
+                                     const QuantEntry& entry,
+                                     nvinfer1::DataType dtype,
+                                     const std::string& name);
+
     // 建网期间需要存活到 buildSerializedNetwork 之后的主机侧缓冲。
     //
     // nvinfer1::Weights 只持有裸指针，而 addConstant 是否复制数据属于实现细节；
@@ -66,6 +106,18 @@ class GPT2ModelBuilder : public IModelBuilder {
     // （直接把 float 缓冲标成 kHALF 会让 TRT 按 half 解释 float 的位模式）。
     std::vector<float> causal_mask_;
     float attn_scale_value_ = 1.0f;
+
+    // ---- REQ-017 路线 C ----
+    // 本次 Build 的量化清单（由 BuildOptions 透传）。生命周期由 EngineBuilder 保证：
+    // 它和 buildSerializedNetwork 在同一个作用域里。
+    const QuantSpec* quant_ = nullptr;
+    // "清单里哪些条目真的被建进了图"。收尾时用它拒绝"清单有、图里没有"的条目——
+    // 少了这道闸，清单与模型不匹配会静默退化成纯 FP32 引擎。
+    std::set<std::string> quant_consumed_;
+    // DQ 的 scale / zeroPoint 常量缓冲。与 causal_mask_ 同一条理由：nvinfer1::Weights 只持
+    // 裸指针，必须活到 buildSerializedNetwork 之后。外层 vector 扩容不会搬内层缓冲的堆地址，
+    // 所以已交给 TRT 的指针在后续 push_back 之后仍然有效。
+    std::vector<std::vector<char>> quant_const_buffers_;
 };
 
 }  // namespace mini_trt_llm

@@ -92,6 +92,15 @@ class EngineBuilder {
         // 注意：packed 图与 padding 图的**指纹代次不同**（kPackedPrefillGraphVersion），
         // 所以两者可以共存，不会互相复用引擎。
         bool packed_mixed_prefill = false;
+
+        // **REQ-017 路线 C 的量化清单**（`quant_int8.json`），空 = 不做量化（既有行为逐位不变）。
+        //
+        // 相对路径按**模型目录**解释（与 config.json / model.safetensors 同口径），
+        // 这样调用方写 `quant_int8.json` 就够了，不必关心 cwd。
+        //
+        // 清单本身与它点名的 int8 权重都会进引擎指纹：**换 scale 不换模型也要重建**——
+        // 否则会复用"用旧 scale 建的引擎"，那是静默错（见 design.md 的 D5）。
+        std::string quant_manifest;
     };
 
     explicit EngineBuilder(Logger& logger, const Config& config);

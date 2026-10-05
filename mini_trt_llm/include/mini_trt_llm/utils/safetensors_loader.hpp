@@ -39,10 +39,11 @@ class SafetensorsLoader {
     // 注意：指针生命周期与 SafetensorsLoader 对象相同。
     const void* GetRawData(const std::string& name, size_t* bytes) const;
 
-    // 获取转换为 target_type 后的数据指针（仅支持目标 FP32 / FP16）。
+    // 获取转换为 target_type 后的数据指针。
     //
-    // 若源类型与目标类型本就一致（F32→F32、F16→F16），直接返回原始数据指针，零拷贝；
-    // 否则在内部按张量名缓存一份转换结果并返回其指针。
+    // 若源类型与目标类型本就一致（F32→F32、F16→F16、**I8→I8**），直接返回原始数据指针，
+    // 零拷贝；其余只在源为 F32/F16/BF16/F64 且目标为 FP32/FP16 时做逐元素转换。
+    // **不做 FP32 → INT8 的转换**：量化规则归离线脚本，见 quantize_gpt2.py 与 design.md 的 D1。
     //
     // 指针在 SafetensorsLoader 生命周期内稳定，且**不同张量的结果互不覆盖**——
     // 这一点是必须的：nvinfer1::Weights 只持有裸指针，要等到 buildSerializedNetwork

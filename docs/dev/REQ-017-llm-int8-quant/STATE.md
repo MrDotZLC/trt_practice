@@ -38,13 +38,15 @@
 
 ## Current Blockers
 
-- **Gate-A 待作者裁决**（`status = waiting-human-gate`）。7 条 P1 见 `review.md`，其中需要你拍板的
-  三条是：① D6 的默认量化清单（本设计按"每步读取量"推导，未经你点名）；② D7 的激活精度与
-  DQ 融合（若只有 FP16 激活才融合，会依赖 `REQ-018` 的 FP16 NaN）；③ `models/gpt2/` 权重资产
-  的存在性与规格。
-- **写冲突（2026-10-03 登记，仍有效）**：本 feature 与 `REQ-016-continuous-batching`（仍在
-  `P5-Implementation / in-progress`）、`REQ-019` 都要改同一段运行时入口。顺序由作者定：
-  **REQ-016 先做**（它定义批量契约）。它交付前，本 feature 不得开代码。
+- **Gate-A 的裁决仍未逐条确认**（`phase = P5-Implementation` / `status = in-progress`）。7 条 P1
+  见 `review.md`，其中需要你拍板的三条是：① D6 的默认量化清单（本设计按"每步读取量"推导，
+  未经你点名）；② D7 的激活精度与 DQ 融合（若只有 FP16 激活才融合，会依赖 `REQ-018` 的
+  FP16 NaN）；③ `models/gpt2/` 权重资产的存在性与规格。
+- **写冲突（2026-10-03 登记；2026-10-05 更新）**：本 feature 与 `REQ-016-continuous-batching`
+  （仍在 `P5-Implementation / in-progress`）、`REQ-019` 共用运行时入口。原定"REQ-016 先做、
+  本 feature 不得开代码"，实际按作者"真机测试搁置、先完成开发工作"的指令**并行推进**——该指令
+  被当作对写冲突的解除（当轮已标明这是假设，作者未叫停）。若你要严格串行，请指出，我按你给的
+  顺序退。
 - **`Gate-B: N/A（缺依赖：本设备暂不支持真机测试，无 GPU / 无 nvcc·cmake·TensorRT；作者
   2026-10-05 指示真机测试搁置）`** —— P4 未取基线、P7 随之不可执行，既不算通过也不算失败。
 - **P4 的"三处留痕"还剩一处按阻塞上报**（细节与口径见 `benchmark_before.md` 的末节）：
@@ -56,14 +58,18 @@
 - **P4 / P6 / P7 的真机项当前不可执行**：本机沙箱无编译器 / 无 GPU。`CPP-P0-8`（编译）与
   `CUDA-P0-6`（benchmark 证明）两条 P0 判据的验证时点分别在 P5 与 P7，已按"P3 不适用"记入
   `## 判据对照`（见 `review.md` 的 P1-5）。
+- **P5 未收口（实现面已提交；未完成项全部依赖环境）**：P5 的 Exit Gate 只剩"编译通过 / 无新增
+  warning"与真机四项。**未完成项与原因的唯一来源** = `docs/PROGRESS.md` §4.7；本文件
+  `## Implementation Plan` 的"真机必查"三条给出其中的技术细节。
 
 ---
 
 ## Next Action
 
-1. **继续 P5**：按 `## Implementation Plan` 的顺序把剩下的两处落完
-   （`builder.*` 的清单入口 / 指纹 / `graph_version`，`gpt2_model_builder.*` 的 int8 常量 + DQ）。
-2. **P6**：写 `test_plan.md` 与 host/GPU 用例，并把 `quantize_gpt2.py --self-test` 注册进 ctest。
+1. **P5 收口（唯一剩余动作在真机）**：真机窗口第一步 = 编译 + 跑既有用例；随后按
+   `## Implementation Plan` 的"真机必查"三条消掉 `docs/PROGRESS.md` §4.7 表里的第 1–4 项。
+2. **P6（需你点名）**：写 `test_plan.md` 与 host/GPU 用例，并把 `quantize_gpt2.py --self-test`
+   注册进 ctest。
 3. **待你点头的一件**：③ `summary.md` 的 Performance N/A（P8 时补；④ 已随 `PROGRESS` §5.17
    落地）。
 4. **真机窗口恢复后**：先做 `benchmark_before.md` 里列的 D7 最小图实验（它决定这条路线的收益
@@ -109,7 +115,30 @@
      真机要确认两件事：① 这两种形状在 FP32 与 FP16 下都建得出来；② 转置确实被折成常量
      （逐层信息里不该出现每步执行的 Transpose，引擎体积也应随之下降）。
   3. **逐层精度自证要覆盖 DQ 层**：`detailed_profiling` 下确认量化层确实带 Int8，
-     而不是被静默折叠。
+    而不是被静默折叠。
+
+### P5 设计符合性对账（静态，2026-10-05；P5 Exit Gate 的"修改符合 design"一支）
+
+口径：逐条把 `design.md` 的落点与代码对账，**只记结论与证据指针**，不重抄 design 条文
+（`SKILL.md` 的 Mandatory #8）。`CPP-P0-8`（编译）与 `CUDA-P0-6`（benchmark）**不在此表**——
+它们的验证时点在 P5 真机窗口与 P7，已按"P3 不适用"记入 `## 判据对照`。
+
+| design 落点 | 代码证据 | 结论 |
+|---|---|---|
+| D1 路线 C：Python 产 int8 权重 + 清单，C++ 只读常量挂 DQ | `tools/convert/quantize_gpt2.py`；`safetensors_loader` 的 `IsDirectCopy`（只加 int8→int8，FP32→int8 仍拒绝）；`gpt2_model_builder` 的 `AddQuantizedWeightSource` + `AddDequantize` | 符合 |
+| Data Structure：清单字段与契约表的五条判据 | schema 机械核对（脚本写 ↔ C++ 读，缺项 0）；`QuantSpec::LoadFromFile` 的拒绝面；`AddQuantizedWeightSource` 的 source_key / 元素数检查；`--verify` 的 sha256 复核 | 符合 |
+| Module Design：构建配置只加**独立入口**，不动精度档位语义 | `Builder::Config::quant_manifest`（新增字段）；`precision` / `ToTrtDataType` / builder flag 逻辑**零改动** | 符合 |
+| Module Design：prefill 与 decode 用**同一份清单** | 两次 `BuildFromConfig`（各一引擎）都从同一个 `Config::quant_manifest` 取清单 → 同一路径、同一内容、同一指纹口径 | 符合 |
+| Module Design：**运行时本轮不改** | `llm_runner.*` / `plugins/` / `kv_cache/` / `precision.*` **均不在改动清单里** | 符合 |
+| D5：`graph_version` 3→4 / 6→7；清单与 int8 权重进指纹 | `builder.cpp` 的两个常量 + `MakeFingerprintInputs` 的两处 `source_files.push_back` | 符合 |
+| D6：清单驱动 + 缺项失败；**清单内容**仍待 Gate-A | `plan_targets()`（按 TRT 名选、排除也按 TRT 名判）+ Build 收尾的"全消费"校验 | 符合（内容属待裁决项） |
+| D7：判据 = **引擎体积必须下降** | 代码里没有任何"自行改判据"的分支；未验证项已登记 | 符合（判据待真机执行） |
+| Resource Lifecycle：常量缓冲要活到 `buildSerializedNetwork` 之后 | `quant_const_buffers_` 是 builder 成员（与 `causal_mask_` 同一条理由） | 符合 |
+| 例外节三条"不得跳过" | 本轮未动运行时 / kernel / 插件 / cache；AC2、AC5 的用例归 P6 | 符合 |
+| **未量化路径逐位不变**（`design.md` Architecture 的隐含前提） | `quant == nullptr` 时 `AddQuantizedWeightSource` 返回空且 `out_entry` 为空 → 走原调用；wte / gather / lm_head 三条路径的图操作与改动前逐条相同 | 符合（**读代码得出**，非编译验证） |
+
+**结论**：静态对账**未发现代码偏离 design**。P5 的 Exit Gate 因此只剩两支：编译通过 / 无新增
+warning（本环境无编译器）+ 上面"真机必查"三条与 D7 的判据执行。
 
 ---
 

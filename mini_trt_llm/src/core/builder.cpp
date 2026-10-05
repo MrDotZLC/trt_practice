@@ -1,6 +1,7 @@
 #include "mini_trt_llm/core/builder.hpp"
 #include "mini_trt_llm/utils/logger.hpp"
 #include "mini_trt_llm/core/model_config.hpp"
+#include "mini_trt_llm/core/quant_spec.hpp"
 #include "mini_trt_llm/core/gpt2_model_builder.hpp"
 #include "mini_trt_llm/core/resnet18_model_builder.hpp"
 #include "mini_trt_llm/core/weight_loader.hpp"
@@ -37,7 +38,10 @@ namespace {
 // 建图代码代次。任何改变图行为的改动都必须 +1，否则引擎缓存会判定"未过期"而沿用旧图
 // （指纹不含建图代码本身）。
 // 3: prefill 图新增 padding_bias 输入（REQ-016 S3，支持批内 prompt 长度不齐）
-constexpr int32_t kEngineGraphVersion = 3;
+// **3 → 4（2026-10-05，REQ-017）**：建图期新增"按量化清单挂 int8 常量 + DQ"（路线 C）。清单为空时
+// 图与 3 逐位相同，但指纹看不见"建图代码里的分支"，所以仍然 +1——否则旧引擎会被复用，
+// 而它烘的是 FP32 常量。
+constexpr int32_t kEngineGraphVersion = 4;
 // **4: S4 的 packed 混合批 prefill 图**（一个 packed 张量装两相、attention 按段分派）。
 // 它与 version 3 的 padding prefill 图**并存**（由 `Config::packed_mixed_prefill` 选），
 // 两套图的 I/O 契约不同（多 6 个输入、K/V 输出换成 token-major 的 [T,NH,D]、去掉 padding_bias），
@@ -51,7 +55,9 @@ constexpr int32_t kEngineGraphVersion = 3;
 // 改成 `max_prefill_batch + 1`（它的长度是 B_ctx + 1，最后一个元素是段内 token 总数；用行维范围
 // 会让"整批都是 context 行"的首步 `setInputShape` 直接失败）。profile 区间也是指纹看不见的
 // 建图产物 → 同样手工 +1，否则缓存里的旧引擎会带着过小的上界被复用。
-constexpr int32_t kPackedPrefillGraphVersion = 6;
+// **6 → 7（2026-10-05，REQ-017）**：与 3 → 4 同一条理由——packed prefill 图也由同一个 GPT-2
+// 构建器产出，所以"按清单挂 int8 + DQ"同样改变了它的图。
+constexpr int32_t kPackedPrefillGraphVersion = 7;
 
 const char* StageName(BuildStage stage) {
     switch (stage) {
@@ -165,6 +171,46 @@ bool TryGetModelPositions(const std::string& model_dir, int64_t* out) {
     }
 }
 
+// `Config::quant_manifest` → 可直接打开的路径：相对路径按模型目录解释。
+std::string ResolveQuantManifest(const std::string& manifest, const std::string& model_dir) {
+    const std::filesystem::path candidate(manifest);
+    if (candidate.is_absolute()) {
+        return candidate.lexically_normal().string();
+    }
+    std::string base = model_dir;
+    if (!base.empty() && base.back() != '/') {
+        base += '/';
+    }
+    return (std::filesystem::path(base) / candidate).lexically_normal().string();
+}
+
+// 只读清单里的 `int8_weights.path`，**给指纹用**（缓存检查必须排在任何昂贵动作之前，
+// 见 BuildFromConfig 开头）。
+//
+// 刻意不复用 QuantSpec::LoadFromFile：那条路径会在清单有问题时打错误日志，而这里只是算指纹；
+// 真正该报错的时点是 BuildFromConfig 里的正式载入。读不出来就不往指纹里加这一项——
+// 少了它只会让"换了 int8 产物"晚一步被察觉，不会让引擎建错。
+bool TryGetQuantInt8Path(const std::string& manifest_path, std::string* out) {
+    try {
+        const JsonValue json = LoadJson(manifest_path);
+        if (!json.IsObject() || !json.Has("int8_weights")) {
+            return false;
+        }
+        const JsonValue& int8_weights = json["int8_weights"];
+        if (!int8_weights.IsObject() || !int8_weights.Has("path") ||
+            !int8_weights["path"].IsString()) {
+            return false;
+        }
+        const std::filesystem::path manifest_dir =
+            std::filesystem::path(manifest_path).parent_path();
+        const std::filesystem::path raw(int8_weights["path"].AsString());
+        *out = (raw.is_absolute() ? raw : manifest_dir / raw).lexically_normal().string();
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 }  // namespace
 
 EngineBuilder::EngineBuilder(Logger& logger, const Config& config)
@@ -257,6 +303,19 @@ EngineFingerprintInputs EngineBuilder::MakeFingerprintInputs(const std::string& 
         inputs.source_files.push_back(model_dir + "/model.safetensors");
     } else {
         inputs.source_files.push_back(onnx_path);
+    }
+
+    // **量化产物的身份必须进指纹**（design.md 的 D5）：清单与 int8 权重都是独立文件，
+    // 改 scale 而不改模型时，指纹若看不见它们就会复用"用旧 scale 建的引擎"——静默错。
+    // 这里只解析出路径，不做完整校验（完整校验在 BuildFromConfig 里，失败会响亮报错）。
+    if (!config_.quant_manifest.empty()) {
+        const std::string manifest_path =
+            ResolveQuantManifest(config_.quant_manifest, model_dir);
+        inputs.source_files.push_back(manifest_path);
+        std::string int8_path;
+        if (TryGetQuantInt8Path(manifest_path, &int8_path)) {
+            inputs.source_files.push_back(int8_path);
+        }
     }
 
     // 所有影响建图的数值参数都要进来：漏掉任何一个都会让"改了范围却复用旧引擎"重新变成一个坑。
@@ -449,6 +508,36 @@ bool EngineBuilder::BuildFromConfig(const std::string& model_dir,
     weights.SetWeightMap(model_config.weight_map);
     weights.SetDefaultPrecision(ToTrtDataType(config_.precision));
 
+    // REQ-017 路线 C：量化清单 + int8 权重。**纯文件校验，排在 createInferBuilder 之前**
+    // （与上面"先做纯数据校验"同一条理由：createInferBuilder 既慢又依赖驱动）。
+    //
+    // quant_spec 是本函数的局部量，指针交给 BuildOptions 后只在本次 Build 期间被使用；
+    // buildSerializedNetwork 也在本函数内完成，所以生命周期足够（见 BuildOptions::quant 的说明）。
+    QuantSpec quant_spec;
+    const QuantSpec* quant = nullptr;
+    if (!config_.quant_manifest.empty()) {
+        if (model_config.model_type != "gpt2") {
+            // 量化清单驱动的是**原生建图**里的常量层；ONNX 那条路（B）尚不接运行时
+            // （见 design.md 的 D1）。与其让别的模型静默忽略清单，不如当场拒绝。
+            MINI_TRT_LOG_ERROR("量化清单目前只支持 gpt2 原生建图（model_type="
+                               << model_config.model_type << "）");
+            return false;
+        }
+        const std::string manifest_path =
+            ResolveQuantManifest(config_.quant_manifest, model_dir);
+        if (!QuantSpec::LoadFromFile(manifest_path, &quant_spec)) {
+            return false;
+        }
+        if (!weights.LoadQuantized(quant_spec.int8_weights_path())) {
+            MINI_TRT_LOG_ERROR("量化产物载入失败: " << quant_spec.int8_weights_path()
+                               << "（清单 " << manifest_path << "）");
+            return false;
+        }
+        quant = &quant_spec;
+        MINI_TRT_LOG_INFO("量化清单已载入: " << quant_spec.entries().size()
+                          << " 个张量；int8 权重 " << quant_spec.int8_weights_path());
+    }
+
     std::unique_ptr<nvinfer1::IBuilder> builder;
     std::unique_ptr<nvinfer1::INetworkDefinition> network;
     std::unique_ptr<nvinfer1::IBuilderConfig> trt_config;
@@ -462,6 +551,8 @@ bool EngineBuilder::BuildFromConfig(const std::string& model_dir,
     build_options.export_diagnostics = config_.export_diagnostics;
     // S4：把 packed 混合批图的开关透给模型构建器（只有 prefill 阶段有意义，构建器会自行校验）。
     build_options.packed_mixed = config_.packed_mixed_prefill;
+    // REQ-017：量化清单为空时指针为空，建图路径逐位回到改动前。
+    build_options.quant = quant;
 
     if (!builder_impl->Build(network.get(), weights, model_config, build_options)) {
         MINI_TRT_LOG_ERROR("Model builder failed: " << builder_impl->Name());

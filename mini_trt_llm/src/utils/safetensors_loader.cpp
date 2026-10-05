@@ -24,9 +24,15 @@ inline float Fp16BitsToFloat(uint16_t bits) {
 // 源类型与目标类型本就一致时可直接零拷贝。刻意不用 SafetensorsToTrtDtype 做这个判断：
 // 该函数对 BF16 / FLOAT64 会回退成 kFLOAT，会让「源是 BF16、目标是 kFLOAT」被误判为同类型，
 // 从而把 BF16 原始数据当成 FP32 返回。
+//
+// int8 这一对是 REQ-017 加的：**只开"文件本来就是 int8、目标也是 int8"这一条**，
+// 用来零拷贝读取离线量化产物。不做 FP32 → int8 的转换是刻意的——那等于把量化规则
+// 搬进加载器，而 scale 与量化对象必须同源这条判据（见 design.md 的 Data Structure）
+// 就再也追不到文件级证据了。
 bool IsDirectCopy(safetensors::dtype src, nvinfer1::DataType target) {
     return (src == safetensors::kFLOAT32 && target == nvinfer1::DataType::kFLOAT) ||
-           (src == safetensors::kFLOAT16 && target == nvinfer1::DataType::kHALF);
+           (src == safetensors::kFLOAT16 && target == nvinfer1::DataType::kHALF) ||
+           (src == safetensors::kINT8 && target == nvinfer1::DataType::kINT8);
 }
 
 // 把受支持的源 dtype 转成 FP32 / FP16。累加统一走 FP32，只在写回时降到目标精度。
@@ -183,7 +189,9 @@ const void* SafetensorsLoader::GetConvertedData(const std::string& name,
 
     if (target_type != nvinfer1::DataType::kFLOAT &&
         target_type != nvinfer1::DataType::kHALF) {
-        MINI_TRT_LOG_ERROR("Conversion target must be FP32 or FP16");
+        // 走到这里说明源类型不是 int8（int8→int8 在 IsDirectCopy 就已经返回了）。
+        MINI_TRT_LOG_ERROR("Conversion target must be FP32 or FP16"
+                           "（INT8 只允许「文件即 int8」的零拷贝）");
         return nullptr;
     }
 

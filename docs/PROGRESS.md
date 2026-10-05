@@ -1436,6 +1436,34 @@ Phase 1 明确不在本次范围内、留待后续的项：
 
 </details>
 
+### 4.7 [DEC-REQ017-P5-STATUS] REQ-017（LLM weight-only INT8）的 P5 状态与未完成项（2026-10-05）
+
+**当前阶段**：`REQ-017-llm-int8-quant` 停在 `P5-Implementation / in-progress`（设计见
+`docs/dev/REQ-017-llm-int8-quant/`；P5 的设计符合性对账在它的 `STATE.md`）。
+
+**已落地（路线 C 的端到端实现）**：`tools/convert/quantize_gpt2.py`（离线算 scale → int8 权重 +
+`quant_int8.json`；含来源自证 / 饱和比例 / 产物身份）；`core/quant_spec.{hpp,cpp}`（清单解析与
+拒绝面）；`safetensors_loader` 的 **int8 零拷贝**（FP32→int8 仍拒绝）；`weight_loader` 的量化
+产物入口；`BuildOptions::quant`；`builder` 的 `Config::quant_manifest` + 指纹加项 +
+`graph_version` **3→4 / 6→7**；`gpt2_model_builder` 的 int8 常量 + DQ + 清单"全消费"校验，
+以及 `wte` 的**"形状操作先于 DQ"**（否则每步真的转一遍 154 MB 权重，收益归零且不报错）。
+
+**未完成项与原因**（都不是实现缺口，而是本环境不具备的条件）：
+
+| # | 未完成项 | 原因 | 解除条件 |
+|---|---|---|---|
+| 1 | P5 Exit Gate 的"编译通过 / 无新增 warning" | 本沙箱**没有编译器**（无 nvcc / cmake / TensorRT） | 真机窗口第一步 |
+| 2 | `addDequantize` 的签名与 scale / zeroPoint 广播约束核对 | 沙箱无 `NvInfer.h`；按作者"假设有头文件"的指令写 | 真机（读头文件 + 建最小图） |
+| 3 | **D7 判据**：DQ 是否被吸收（**引擎体积必须下降**） | 需要真机建引擎 | 真机最小图实验 |
+| 4 | `wte` 新路径在 FP32 / FP16 下的确认 | 同上 | 真机 |
+| 5 | P6 的用例与 `test_plan.md` | 属 P6，作者尚未点名 | 点名后开工 |
+
+**能在这里做完的都已做完**：Python 侧自检（6 道护栏 + `--only` 正向断言）与三项机械核对（清单
+schema ↔ C++ 解析器、`wte` 的 gather 单点、无调试遗留）全部跑过；其余一律记"**未验证**"，
+不得当成已通过（`AGENTS.md` §7）。性能未验证另有 §5.17。
+
+---
+
 ## 5. 已知问题与坑
 
 ### 5.0 [DEC-EOS-EARLY-STOP] `LLMRunner` 无法在解码循环内早停 EOS（有意为之的 workaround）

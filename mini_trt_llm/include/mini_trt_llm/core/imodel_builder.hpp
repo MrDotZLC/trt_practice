@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mini_trt_llm/core/model_config.hpp"
+#include "mini_trt_llm/core/quant_spec.hpp"
 #include "mini_trt_llm/core/weight_loader.hpp"
 #include <NvInfer.h>
 #include <memory>
@@ -23,6 +24,11 @@ enum class BuildStage {
 
 struct BuildOptions {
     BuildStage stage = BuildStage::kSingle;
+
+    // 量化清单（REQ-017 路线 C）。非空时，清单点名的权重走"int8 常量 + DQ"，
+    // 其余权重走原有路径。**指针的生命周期只覆盖本次 Build**：调用方（EngineBuilder）
+    // 在同一个作用域里持有 QuantSpec，并保证它在 buildSerializedNetwork 之前不析构。
+    const QuantSpec* quant = nullptr;
 
     // 权重常量要建成的精度。由 EngineBuilder 从 Precision 映射而来：
     // builder 必须显式知道目标 dtype 才能建出正确精度的常量层，

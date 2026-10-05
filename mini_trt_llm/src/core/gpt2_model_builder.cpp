@@ -7,7 +7,9 @@
 #include <NvInfer.h>
 
 #include <cmath>
+#include <cstring>
 #include <cstdint>
+#include <cuda_fp16.h>
 #include <string>
 #include <vector>
 
@@ -76,11 +78,13 @@ nvinfer1::Dims Dims4(int32_t a, int32_t b, int32_t c, int32_t d) {
 //   1. 权重取不到 → 立即失败。GPT-2 有 148 个权重，静默跳过任何一个都会建出错误网络；
 //   2. 张量元素数与声明的常量形状不一致 → 失败。weight_map 指错张量时形状通常就对不上，
 //      这条检查能把"key 改名 / 映射写反"这类问题当场暴露。
-nvinfer1::ITensor* AddWeightConstant(nvinfer1::INetworkDefinition* network,
-                                     const WeightLoader& weights,
-                                     const std::string& name,
-                                     nvinfer1::DataType dtype,
-                                     const nvinfer1::Dims& dims) {
+// 名字里带 "Plain"：类里有一个同名成员负责"先查量化清单"的分派（见 gpt2_model_builder.hpp）。
+// 类作用域优先于命名空间作用域，所以 Build() 里的同名调用都会走到那个成员上去。
+nvinfer1::ITensor* AddPlainWeightConstant(nvinfer1::INetworkDefinition* network,
+                                          const WeightLoader& weights,
+                                          const std::string& name,
+                                          nvinfer1::DataType dtype,
+                                          const nvinfer1::Dims& dims) {
     size_t bytes = 0;
     const void* data = weights.GetWeight(name, dtype, &bytes);
     if (data == nullptr) {
@@ -333,6 +337,139 @@ std::vector<std::string> GPT2WeightNames(const GPT2Config& config) {
     return names;
 }
 
+nvinfer1::ITensor* GPT2ModelBuilder::AddQuantizedWeightSource(
+    nvinfer1::INetworkDefinition* network, const WeightLoader& weights,
+    const std::string& name, const nvinfer1::Dims& dims, const QuantEntry** out_entry) {
+    if (out_entry != nullptr) {
+        *out_entry = nullptr;
+    }
+    const QuantEntry* entry = (quant_ != nullptr) ? quant_->Find(name) : nullptr;
+    if (entry == nullptr) {
+        return nullptr;  // 不在清单里：调用方走原有 FP32/FP16 路径
+    }
+    // **先登记再校验**：下面任何一步失败都返回空指针，调用方靠"out_entry 非空"区分
+    // "没点名"与"点名了但建不出来"——后者必须失败，不能退回 FP32。
+    if (out_entry != nullptr) {
+        *out_entry = entry;
+    }
+
+    // ---- 量化路径：只建 int8 常量 ----
+    //
+    // DQ 由 AddDequantize 负责，且**允许排在形状操作之后**：有的权重（GPT-2 的 wte）
+    // 要先 gather 或转置才参与计算，而那些操作必须在常量上做——DQ 的输出已经不是常量。
+    //
+    // 对称量化（zero_point = 0）的反量化就是 y = q * scale。为什么先核对 source_key：
+    // 清单里的 source_key 是**算 scale 时用的那个名字**，这里把它和 weight_map 解析出的名字
+    // 逐字对齐；不一致就是"尺子量 A、裁剪 B"（docs/PROGRESS.md §3.0j），必须当场失败
+    // 而不是照建——那类错误不报错，只会数值崩坏。
+    if (!weights.has_quantized()) {
+        MINI_TRT_LOG_ERROR("量化清单点名了 " << name << "，但没有任何 int8 权重产物被载入");
+        return nullptr;
+    }
+    const std::string resolved = weights.ResolveSourceKey(name);
+    if (resolved != entry->source_key) {
+        MINI_TRT_LOG_ERROR("量化清单的 source_key 与权重映射不一致: 清单 "
+                           << entry->source_key << " vs 解析出 " << resolved
+                           << "（tensor=" << name << "）—— scale 与量化对象不是同一份张量，拒绝建图");
+        return nullptr;
+    }
+
+    size_t bytes = 0;
+    const void* data = weights.GetQuantizedWeight(name, &bytes);
+    if (data == nullptr) {
+        MINI_TRT_LOG_ERROR("量化产物里缺少权重: " << name << " (source_key=" << resolved << ")");
+        return nullptr;
+    }
+    // int8 一个元素一个字节，所以字节数就是元素数。
+    const int64_t declared = Volume(dims);
+    const int64_t actual = static_cast<int64_t>(bytes);
+    if (declared >= 0 && declared != actual) {
+        MINI_TRT_LOG_ERROR("量化权重 " << name << ": 声明形状要 " << declared
+                                       << " 个元素，但产物里有 " << actual);
+        return nullptr;
+    }
+
+    nvinfer1::IConstantLayer* quant_layer = network->addConstant(
+        dims, nvinfer1::Weights{nvinfer1::DataType::kINT8, data, actual});
+    if (quant_layer == nullptr) {
+        MINI_TRT_LOG_ERROR("GPT-2 量化常量层失败: " << name);
+        return nullptr;
+    }
+    quant_layer->setName(LayerName("q_" + name).c_str());
+    return quant_layer->getOutput(0);
+}
+
+nvinfer1::ITensor* GPT2ModelBuilder::AddDequantize(
+    nvinfer1::INetworkDefinition* network, nvinfer1::ITensor* quantized,
+    const QuantEntry& entry, nvinfer1::DataType dtype, const std::string& name) {
+    // scale / zeroPoint 必须是构建期常量，且它们的 dtype 决定 DQ 的输出类型。
+    // 跟随 weight_dtype 是刻意的：下游 MatMul 看到的类型与未量化路径**完全一致**，
+    // 不额外引入 Cast——多一层 Cast 既可能挡住 DQ 与 GEMM 的融合，也会让逐层精度自证变复杂。
+    //
+    // 形状取"与输入同秩、各维为 1"而不是 [1]：DQ 要求 scale 能广播到输入，
+    // 同秩全 1 在任意 rank 下都是合法广播形状。
+    const bool to_half = (dtype == nvinfer1::DataType::kHALF);
+    const size_t scalar_bytes = to_half ? sizeof(uint16_t) : sizeof(float);
+    nvinfer1::Dims scalar_dims = quantized->getDimensions();
+    for (int32_t i = 0; i < scalar_dims.nbDims; ++i) {
+        scalar_dims.d[i] = 1;
+    }
+
+    std::vector<char> scale_buffer(scalar_bytes, 0);
+    std::vector<char> zero_point_buffer(scalar_bytes, 0);
+    if (to_half) {
+        const __half scale_half = __float2half_rn(entry.scale());
+        std::memcpy(scale_buffer.data(), &scale_half, sizeof(uint16_t));
+    } else {
+        const float scale_float = entry.scale();
+        std::memcpy(scale_buffer.data(), &scale_float, sizeof(float));
+    }
+    // 先 push 再取 data()：内层缓冲的堆地址在 push_back 之后才被交给 TRT，避免"取完地址又扩容"。
+    quant_const_buffers_.push_back(std::move(scale_buffer));
+    quant_const_buffers_.push_back(std::move(zero_point_buffer));
+    char* scale_data = quant_const_buffers_[quant_const_buffers_.size() - 2].data();
+    char* zero_point_data = quant_const_buffers_.back().data();
+
+    nvinfer1::IConstantLayer* scale_layer = network->addConstant(
+        scalar_dims, nvinfer1::Weights{dtype, scale_data, 1});
+    nvinfer1::IConstantLayer* zero_layer = network->addConstant(
+        scalar_dims, nvinfer1::Weights{dtype, zero_point_data, 1});
+    if (scale_layer == nullptr || zero_layer == nullptr) {
+        MINI_TRT_LOG_ERROR("GPT-2 量化参数常量层失败: " << name);
+        return nullptr;
+    }
+    scale_layer->setName(LayerName("dq_scale_" + name).c_str());
+    zero_layer->setName(LayerName("dq_zero_point_" + name).c_str());
+
+    nvinfer1::IDequantizeLayer* dequant = network->addDequantize(
+        *quantized, *scale_layer->getOutput(0), *zero_layer->getOutput(0));
+    if (dequant == nullptr) {
+        MINI_TRT_LOG_ERROR("GPT-2 反量化层失败: " << name
+                           << "（若是 scale / zeroPoint 的形状或类型被 TRT 拒绝，"
+                              "见 design.md 的 D7 与 P5 首步的核对义务）");
+        return nullptr;
+    }
+    dequant->setName(LayerName("dq_" + name).c_str());
+
+    quant_consumed_.insert(entry.tensor);
+    return dequant->getOutput(0);
+}
+
+nvinfer1::ITensor* GPT2ModelBuilder::AddWeightConstant(
+    nvinfer1::INetworkDefinition* network, const WeightLoader& weights,
+    const std::string& name, nvinfer1::DataType dtype, const nvinfer1::Dims& dims) {
+    const QuantEntry* entry = nullptr;
+    nvinfer1::ITensor* quantized =
+        AddQuantizedWeightSource(network, weights, name, dims, &entry);
+    if (quantized == nullptr) {
+        if (entry != nullptr) {
+            return nullptr;  // 点名了却建不出来：细节已打日志，绝不退回 FP32
+        }
+        return AddPlainWeightConstant(network, weights, name, dtype, dims);
+    }
+    return AddDequantize(network, quantized, *entry, dtype, name);
+}
+
 bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
                              const WeightLoader& weights, const ModelConfig& config,
                              const BuildOptions& options) {
@@ -340,6 +477,12 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
     if (!GPT2Config::FromModelConfig(config, &cfg)) {
         return false;
     }
+
+    // 同一个 builder 实例会被反复 Build（registry 里只注册一份），所以每次进来都要把量化状态
+    // 清干净——不清的话，上一轮的"已消费"集合会让这一轮的清单校验看不出缺项。
+    quant_ = options.quant;
+    quant_consumed_.clear();
+    quant_const_buffers_.clear();
 
     const bool is_decode = options.stage == BuildStage::kDecode;
     // **S4 的 packed 混合批图**（只对 prefill 有效）：一个 packed 张量里装两相
@@ -490,8 +633,21 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
     }
 
     // ---- 权重常量 ----
-    nvinfer1::ITensor* wte =
-        AddWeightConstant(network, weights, "wte.weight", dtype, Dims2(vocab, hidden));
+    //
+    // `wte` 是特例：它在图上被**两处**消费——embedding 的 gather 与 lm_head 的转置。
+    // 量化时不能直接对它挂 DQ 再用：DQ 的输出不是常量，转置就折不成常量了。所以这里取的是
+    // **int8 常量本身**，DQ 排到各自的形状操作之后（gather 之后 / transpose+reshape 之后）。
+    const QuantEntry* wte_entry = nullptr;
+    nvinfer1::ITensor* wte_int8 =
+        AddQuantizedWeightSource(network, weights, "wte.weight", Dims2(vocab, hidden),
+                                 &wte_entry);
+    if (wte_int8 == nullptr && wte_entry != nullptr) {
+        return false;  // 清单点名了 wte 却建不出来：细节已打日志，绝不退回 FP32
+    }
+    nvinfer1::ITensor* wte = (wte_int8 != nullptr)
+                                 ? wte_int8
+                                 : AddWeightConstant(network, weights, "wte.weight", dtype,
+                                                     Dims2(vocab, hidden));
     nvinfer1::ITensor* wpe = AddWeightConstant(network, weights, "wpe.weight", dtype,
                                                Dims2(cfg.n_positions, hidden));
     if (wte == nullptr || wpe == nullptr) {
@@ -508,8 +664,17 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
     }
     token_embed->setName(LayerName("token_embed").c_str());
     position_embed->setName(LayerName("position_embed").c_str());
+    // gather 只读被选中的那几行，所以 DQ 排在 gather 之后最省：只反量化用到的行。
+    nvinfer1::ITensor* token_embed_out = token_embed->getOutput(0);
+    if (wte_entry != nullptr) {
+        token_embed_out = AddDequantize(network, token_embed_out, *wte_entry, dtype,
+                                        "wte.weight");
+        if (token_embed_out == nullptr) {
+            return false;
+        }
+    }
     nvinfer1::ITensor* hidden_state =
-        AddElementWise(network, token_embed->getOutput(0), position_embed->getOutput(0),
+        AddElementWise(network, token_embed_out, position_embed->getOutput(0),
                        nvinfer1::ElementWiseOperation::kSUM, LayerName("embed_sum"));
     if (hidden_state == nullptr) {
         return false;
@@ -919,6 +1084,11 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
         // 输出第 2 维没有对应的输入维，写 0 会被当成字面量 0（reshape 到空张量）。
         head_w = AddReshape(network, transposed, Dims3(1, hidden, vocab),
                             LayerName("lm_head_weight"));
+        // 量化时，转置与 reshape 都落在 **int8 常量**上（见 wte 那段的说明），DQ 排在最后——
+        // 这样 DQ 的输出直接喂给 MatMul，与普通权重的"int8 常量 → DQ → MatMul"形状一致。
+        if (head_w != nullptr && wte_entry != nullptr) {
+            head_w = AddDequantize(network, head_w, *wte_entry, dtype, "lm_head_from_wte");
+        }
     } else {
         head_w = AddWeightConstant(network, weights, "lm_head.weight", dtype,
                                    Dims3(1, hidden, vocab));
@@ -938,6 +1108,22 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
     // 同 K/V：输出类型由 TRT 决定（FP16 引擎下实测为 FP32），不在图上钉（见上方说明）
     logits_mm->getOutput(0)->setName("logits");
     network->markOutput(*logits_mm->getOutput(0));
+
+    // 清单"全消费"校验（REQ-017）：清单里点名、却没被建进图的张量说明清单与模型不匹配。
+    // 不校验的后果正是本 feature 要防的失败模式——"声明了量化、实际静默退回 FP32"。
+    if (quant_ != nullptr) {
+        if (quant_consumed_.size() != quant_->entries().size()) {
+            for (const QuantEntry& entry : quant_->entries()) {
+                if (quant_consumed_.count(entry.tensor) == 0) {
+                    MINI_TRT_LOG_ERROR("量化清单里的张量没有被建进图: " << entry.tensor);
+                }
+            }
+            return false;
+        }
+        MINI_TRT_LOG_INFO("量化清单全部兑现: " << quant_consumed_.size()
+                          << " 个张量以 int8 常量 + DQ 建入本图（stage="
+                          << static_cast<int32_t>(options.stage) << "）");
+    }
     return true;
 }
 
