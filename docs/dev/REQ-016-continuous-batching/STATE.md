@@ -672,6 +672,9 @@ kMAX = `max_prefill_batch × max_prefill_seq_len`），既让分块在真实配�
   `top_k` / `top_p` / `seed` 均可逐行独立。
 - **写冲突**：本 feature 与 `REQ-017` / `REQ-019` 共用运行时入口。`REQ-019` 早已登记；
   `REQ-017` 已于 2026-10-03 补登记。三者不并行改同一文件，本 feature 先做。
+  **2026-10-06 作者裁决（取代上句）**：串行顺序 = **本 feature → REQ-018 → REQ-017 → REQ-019 的 S0/S2**；
+  "收口" = 编译通过 + 沙箱用例全绿（真机部分继续记搁置）；冻结面与理由的**唯一详述**见
+  `docs/dev/REQ-019-onnx-subgraph/design.md` 的「跨条目串行顺序」。
 - **复核过、仍成立的既有事实**：
   1. 元数据缓冲设备分配容量够就复用；正确性依赖"decode 每步重绑"，不是"指针不变"。
   2. 引擎把 cache 第 0 维声明成 `ceil(n_positions / block_size)`，同一个数又当块表宽度用；

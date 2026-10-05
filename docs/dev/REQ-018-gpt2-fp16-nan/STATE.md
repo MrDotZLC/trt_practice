@@ -146,6 +146,12 @@ Bugfix 没有 P5，这里按 `AGENTS.md` §5 的"改代码前置"落 B1' 的仪�
   `Fp16PrefillOutputsDiagnostic`（诊断打印，按设计通过）。
 - **改这条会动测试基线**：它目前是全量里唯一的红，修好之后红数归零，
   需要同步回填 `PROGRESS.md` 的当前基线 / §5.11 / `interview_summary.md`。
+- **跨条目串行顺序（作者 2026-10-06 裁决）**：本 feature 排在 **REQ-016 之后、REQ-017 与 REQ-019 之前**
+  （顺序 = `016 → 018 → 017 → 019` 的 S0/S2）。"收口" = 编译通过 + 沙箱用例全绿（真机部分继续搁置）。
+  **写冻结期间**不改 `builder.*` / `llm_runner.*` / `engine_cache.*` / `gpt2_model_builder.*`。
+  排在本 feature 第二位的原因（影响后面几条的可信度）：`export_diagnostics` 会加图输出，
+  而实测已证明**探针图会改变 TRT 的融合与 tactic 选择**——不先清干净，后面读到的逐层信息可能是本条的探针形态。
+  详述（唯一）见 `docs/dev/REQ-019-onnx-subgraph/design.md` 的「跨条目串行顺序」。
 
 ---
 

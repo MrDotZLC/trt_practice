@@ -322,6 +322,7 @@ RMSNorm / RoPE / PagedAttention 三个 IPluginV3 插件 + 采样器（greedy / t
 **P3 复评结论（2026-10-06）= BLOCK**：`review.md` 逐条回答四份 checklists 的 35 条 P0 + 17 条 P1，问题集中在 S2——① `createParser` 带 `IPluginRegistry` 的重载**未核实**（本机无 TRT 头）；② 四个 creator 的 `getPluginNamespace()` 返回**空串**，而 ONNX 自定义域必须非空（已核实的代码事实，修法有连带重建的影响面待裁决）。**S0 / S1 的设计不需返工**，只欠两处落码前置探针（真实图的形态）。
 **同日作者裁决**：① **暂时不真机** → ① 那条保持未闭环（`review.md` 的 P0-1），S2 不落码；② **接受**把 creator namespace 设为 `mini_trt_llm` 及可能的既有引擎连带重建（P0-2 闭合）；③ S0 的识别基线归属取 **B**（`--check` 只对源图生效）。当前唯一放行障碍 = P0-1。
 **同日落码（第二批放行后）**：**S1 已完成并在沙箱跑绿**——`inspect_onnx.py --check-topology`（T1 块边界不共享 / T2 块内 Q-K-V 同源 / T3 输出经投影回主线 / T4 位置编码为学习式查表）+ 夹具 `make_topology_fixture.py`（`good` / `swap-softmax-inputs` / `share-score`，三者**算子计数逐个相等**）+ ctest 条目 `onnx_topology_selftest`（**沙箱条目数 +1**）。**PF-7 用例 `OnnxVsNative.PerfPerBuildMedian` 已落码、未编译**（每边 3 次独立构建 × 20 次推理，纯打印）。S1 唯一没闭的是**真实图的串联形态**（需 652MB 资产，T7）。
+**同日 T12 裁决（跨条目串行顺序）**：**REQ-016 → REQ-018 → REQ-017 → REQ-019 的 S0/S2**；"收口"定义为**编译通过 + 沙箱用例全绿**（真机部分继续记搁置）；四条共用的文件在编译验证前**写冻结**。详述（唯一）见 `docs/dev/REQ-019-onnx-subgraph/design.md` 的「跨条目串行顺序」，REQ-016 / 017 / 018 各自的 `STATE.md` 留指针。
 
 ## 5. 已知问题与坑
 
