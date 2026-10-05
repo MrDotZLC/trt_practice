@@ -4,8 +4,8 @@
 | --- | --- |
 | workflow | feature |
 | feature | REQ-017-llm-int8-quant |
-| phase | P5-Implementation |
-| phase_index | 5 |
+| phase | P6-Test |
+| phase_index | 6 |
 | status | in-progress |
 | updated | 2026-10-05 |
 | owner | Codex |
@@ -17,11 +17,10 @@
 产物清单与计数口径以 `.agents/skills/trt-inference-engineering/workflows/feature.md` 的
 `## Required Artifacts`（10 件）为唯一来源，本节只登记现状，不复述定义。
 
-**实到 6 / 10**：`STATE.md`、`requirement.md`、`analysis.md`、`design.md`、`review.md`、
-`benchmark_before.md`。
+**实到 7 / 10**：`STATE.md`、`requirement.md`、`analysis.md`、`design.md`、`review.md`、
+`benchmark_before.md`、`test_plan.md`。
 
-缺 4 件，且分属后续阶段：`test_plan.md`（P6）、`benchmark.md`（P7）、`summary.md`（P8）、
-`interview_notes.md`（P9）。**开发前的文档部分（P0–P3）至此齐套。**
+缺 3 件，且分属后续阶段：`benchmark.md`（P7）、`summary.md`（P8）、`interview_notes.md`（P9）。
 
 - `requirement.md`（P0-Requirement，2026-10-01；2026-10-05 按作者裁决把 K/V 缓存量化的
   可行性评估移入 Excluded）
@@ -33,6 +32,8 @@
   三张对齐表 + "已定 / 必须拒绝"条目的来源核对；**P0 = 0，P1 = 7**）
 - `benchmark_before.md`（P4-Baseline，2026-10-05：记 `N/A: <原因>` + 恢复后必补的五项 +
   "三处留痕"逐项打勾；其中 `summary.md` 与 `PROGRESS.md` 两处按阻塞上报，见该文件末节）
+- `test_plan.md`（P6-Test，2026-10-05：四类用例清单 17 行 + `Requirement Traceability` 9 行 +
+  "待真机窗口的数值对照"口径；结果一律记"未验证"）
 
 ---
 
@@ -58,15 +59,19 @@
 - **P5 未收口（实现面已提交；未完成项全部依赖环境）**：P5 的 Exit Gate 只剩"编译通过 / 无新增
   warning"与真机四项。**未完成项与原因的唯一来源** = `docs/PROGRESS.md` §4.7；本文件
   `## Implementation Plan` 的"真机必查"三条给出其中的技术细节。
+- **P6 未收口（用例与判据已落，结果未取）**：`test_plan.md` 的四类用例要求**实际通过**，而本
+  环境无编译器 / 无 GPU → 只落了"用例 + 判据 + 口径"，**不写通过**。解除条件 = 真机窗口
+  （见 `## Next Action` 第 1 条）。
 
 ---
 
 ## Next Action
 
-1. **P5 收口（唯一剩余动作在真机）**：真机窗口第一步 = 编译 + 跑既有用例；随后按
-   `## Implementation Plan` 的"真机必查"三条消掉 `docs/PROGRESS.md` §4.7 表里的第 1–4 项。
-2. **P6（需你点名）**：写 `test_plan.md` 与 host/GPU 用例，并把 `quantize_gpt2.py --self-test`
-   注册进 ctest。
+1. **真机窗口（把 P5 的 Exit Gate 与 P6 的 Exit Gate 一起收口）**：① `cmake --build build -j`；
+   ② 按 `test_plan.md` 逐条跑 Unit / Integration / Regression / Failure 并回填 `## Actual Result`
+   与 `## Status`；③ 顺带消掉"真机必查"三条（`addDequantize` 的约束、`wte` 新路径在 FP32/FP16 下
+   的行为、D7 的引擎体积判据）——它们与 `test_plan.md` 的 I2 / I3 是同一件事。
+2. **P7 / P8 / P9**：`benchmark.md` / `summary.md` / `interview_notes.md`，均等真机出数后写。
 3. **待你点头的一件**：③ `summary.md` 的 Performance N/A（P8 时补；④ 已随 `PROGRESS` §5.17
    落地）。
 4. **真机窗口恢复后**：先做 `benchmark_before.md` 里列的 D7 最小图实验（它决定这条路线的收益
@@ -169,6 +174,8 @@ warning（本环境无编译器）+ 上面"真机必查"三条与 D7 的判据�
   （`status = waiting-human-gate`）
 - 2026-10-05: 作者指令"真机测试搁置、先完成开发工作" → 记为 Gate-A 放行（放行范围见
   `## 判据对照`）→ P4（Dependency Missing，记 N/A）→ P5-Implementation（`status = in-progress`）
+- 2026-10-05: Gate-A 的 7 条 P1 逐条裁决（D6 / D7 纳入开发计划）→ P5 实现面提交（`2fa02ce`）
+  → 作者点名 **P6** → P5 -> P6-Test（`status = in-progress`）
 
 ---
 
@@ -252,6 +259,7 @@ warning（本环境无编译器）+ 上面"真机必查"三条与 D7 的判据�
 | Gate-A P1-7：与 `REQ-016` 的写冲突（同上） | 满足（已裁决） | 作者 2026-10-05：**按问题三的建议执行**——S1 已并行完成；**S2 等 `REQ-016` 交付**；谁改图谁 bump（改前先看当前值）；真机窗口两个 feature 分开做、分开记 |
 | P4 留痕 ①：`benchmark_before.md` 记 `N/A: <原因>`（`phases/p4_baseline.md` 的 Dependency Missing） | 满足 | `benchmark_before.md` 的 `## Result` |
 | P4 留痕 ②：本文件写 `Gate-B: N/A（缺依赖：<原因>）` | 满足 | `## Current Blockers` 首条 |
-| P4 留痕 ③：`summary.md` 的 Performance 一节写 N/A + 原因 | 未满足（阻塞） | P8 产物，P4 时点不可能产出。按 `AGENTS.md` §5 第 5 条登记并上报（`benchmark_before.md` 的留痕表第 ③ 行）；义务锚定在 `## Next Action` 第 5 条，**P8 必清** |
+| P4 留痕 ③：`summary.md` 的 Performance 一节写 N/A + 原因 | 未满足（阻塞；**P6 已放行**） | P8 产物，P4 时点不可能产出。按 `AGENTS.md` §5 第 5 条登记并上报（`benchmark_before.md` 的留痕表第 ③ 行）；义务锚定在 `## Next Action` 第 5 条，**P8 必清**。**放行记录（2026-10-05）**：作者点名 **`P6`**；**放行范围** = 允许在该行仍为"未满足（阻塞）"的前提下进入 P6（它是 P8 产物，与 P6 无依赖）。**不得**用于跳过 P6 的四类用例与 Exit Gate，也不得把未验证写成通过 |
 | P4 附加留痕：`docs/PROGRESS.md` 的"已知问题与坑"一条 | 满足 | `docs/PROGRESS.md` §5.17（作者 2026-10-05 放行后追加） |
 | P5 的 Implementation Plan 前置（`phases/p5_implementation.md` 的 Actions 1） | 满足（补记） | 本轮补进 `## Implementation Plan`；顺序偏差见 `## Recovery Notes` 的同名条目 |
+| P6 Exit Gate：Unit / Integration / Regression / Failure **四类实际通过**（`phases/p6_test.md`） | 未满足（阻塞） | 本环境无编译器 / 无 GPU，而四类都要求实际通过。`test_plan.md` 已落用例、判据与口径，但结果一律记"未验证"。**解除条件** = 真机窗口（`## Next Action` 第 1 条）；**不得**把"用例已写"当成"已通过" |

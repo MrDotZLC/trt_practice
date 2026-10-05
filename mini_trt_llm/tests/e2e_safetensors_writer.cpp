@@ -3,6 +3,8 @@
 #include <cuda_fp16.h>
 #include <safetensors.hh>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -30,6 +32,9 @@ void AppendTensor(safetensors::safetensors_t* file, const std::string& name,
     } else if (spec.dtype == TensorSpec::Dtype::kBF16) {
         element_size = 2;
         dtype = safetensors::kBFLOAT16;
+    } else if (spec.dtype == TensorSpec::Dtype::kI8) {
+        element_size = 1;
+        dtype = safetensors::kINT8;
     }
 
     const size_t count = spec.values.size();
@@ -44,6 +49,13 @@ void AppendTensor(safetensors::safetensors_t* file, const std::string& name,
         } else if (dtype == safetensors::kFLOAT16) {
             const __half half = __float2half_rn(value);
             std::memcpy(dst + i * 2, &half, 2);
+        } else if (dtype == safetensors::kINT8) {
+            // 与产出脚本同一条公式：round 到最近整数后 clamp 到对称 int8 范围。
+            // 夹具里的值都是小整数或已量化好的码值，所以这里的 round 不引入额外误差。
+            int32_t code = static_cast<int32_t>(std::lround(value));
+            code = std::max(-127, std::min(127, code));
+            const int8_t quantized = static_cast<int8_t>(code);
+            std::memcpy(dst + i, &quantized, 1);
         } else {
             const uint16_t bf16 = FloatToBf16Bits(value);
             std::memcpy(dst + i * 2, &bf16, 2);

@@ -14,7 +14,10 @@ namespace test_support {
 // 有了它，端到端测试可以在临时目录里自包含地造出模型文件——既不用往仓库提交二进制夹具，
 // 也不用在测试运行时依赖 Python。
 struct TensorSpec {
-    enum class Dtype { kF32, kF16, kBF16 };
+    // `kI8` 是 REQ-017 加的：离线量化产物的夹具需要写 int8 张量。
+    // `values` 仍以 float 提供，编码时按 round + clamp 到 [-127, 127] 落成 int8
+    // ——与产出脚本 `quantize_gpt2.py` 同一条对称量化公式（scale = max|x| / 127）。
+    enum class Dtype { kF32, kF16, kBF16, kI8 };
 
     std::vector<size_t> shape;
     Dtype dtype = Dtype::kF32;

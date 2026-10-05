@@ -138,6 +138,23 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 # ---------------------------------------------------------------------------
+# REQ-017 的量化脚本自检（`docs/dev/REQ-017-llm-int8-quant/test_plan.md` 的 U3）
+#
+# 为什么进 ctest：脚本里有 6 道护栏（缺 config / 已存在产物 / 缺张量 / 非 2-D / 产物被改坏 /
+# 清单 sha256 造假）+ 命名空间与 scale 的身份自检。**护栏没有用例证明"它会拦人"就等于没有
+# 护栏**（同 `resnet18_convert_selftest` 的理由）。
+#
+# 环境语义：只用标准库（numpy 存在时走快路径），自造 fixture、不依赖 GPU 与外部数据 →
+# 沙箱即可跑，因此**不用** SKIP_RETURN_CODE。**必须放在 `find_package(Python3)` 之后**：
+# 放在前面时 `Python3_Interpreter_FOUND` 还没定义，这条会被静默不注册（`TS-050` 踩过）。
+# ---------------------------------------------------------------------------
+if(Python3_Interpreter_FOUND)
+    add_test(NAME quantize_gpt2_selftest
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/convert/quantize_gpt2.py --self-test)
+endif()
+
+# ---------------------------------------------------------------------------
 # P4-INT8-a（`future_iterations.md` §1.5）的两件仪器自检
 #
 # 为什么进 ctest：这一条排查的结论全建立在两件仪器上——
