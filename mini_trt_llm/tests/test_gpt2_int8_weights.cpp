@@ -4,6 +4,7 @@
 // **清单里点名的东西必须真的被建进图**。全部需要 GPU / TensorRT，沙箱内显式跳过。
 
 #include "gpt2_test_support.hpp"
+#include "engine_layer_info_support.hpp"
 #include "logger.hpp"
 #include "mini_trt_llm/core/builder.hpp"
 #include "mini_trt_llm/core/engine.hpp"
@@ -125,29 +126,8 @@ QuantFixture MakeQuantFixture(const std::string& tag, bool write_int8_file = tru
     return fixture;
 }
 
-// 统计引擎逐层信息里的 Int8 证据。
-//
-// 与 `test_resnet18_int8.cpp` 里的同名统计**口径一致**（读 `Format/Datatype: Int8`；
-// 那里记着一条教训：**没有 `[I8]` 这种标签**，按标签判会把"确实跑了 INT8"误判成"没跑"）。
-// 若将来出现第三个使用方，再把这份统计提到共享头，避免两份实现各自演化。
-int32_t CountInt8Layers(Engine* engine) {
-    nvinfer1::ICudaEngine* cuda = engine->GetCudaEngine();
-    if (cuda == nullptr) {
-        return -1;
-    }
-    std::unique_ptr<nvinfer1::IEngineInspector> inspector(cuda->createEngineInspector());
-    if (inspector == nullptr) {
-        return -1;
-    }
-    int32_t int8_tensors = 0;
-    for (int32_t i = 0; i < cuda->getNbLayers(); ++i) {
-        const char* line = inspector->getLayerInformation(i, nvinfer1::LayerInformationFormat::kONELINE);
-        if (line != nullptr && std::string(line).find("Format/Datatype: Int8") != std::string::npos) {
-            ++int8_tensors;
-        }
-    }
-    return int8_tensors;
-}
+// 逐层信息的读取已收到共享头 `engine_layer_info_support.hpp`（第三个使用方出现后按既有约定收拢）；
+// 里面写明了"没有 `[I8]` 这种标签、要读 `Format/Datatype: Int8`"这条口径，以及为什么该合并。
 
 // 真实 GPT-2 的目录（与既有真机用例同一套候选路径）。
 std::string FindRealGpt2Dir() {
@@ -198,7 +178,7 @@ TEST(Gpt2Int8WeightsTest, EngineLayerInfoShowsInt8) {
                                        BuildStage::kPrefill));
 
     Engine engine(engine_path, logger);
-    const int32_t int8_layers = CountInt8Layers(&engine);
+    const int32_t int8_layers = test_support::InspectLayerInfo(&engine).int8_tensors;
     std::cout << "[REQ-017] int8 引擎的含 Int8 张量层数 = " << int8_layers << "\n";
     EXPECT_GE(int8_layers, 1)
         << "层信息里没有 Int8 张量：int8 常量 + DQ 很可能被构建期折叠成了 FP32（D7 的失败模式）";

@@ -244,6 +244,11 @@ LayerProbe {                  // 每条 = 一次诊断读数
 "只到层、不到算子"，并把 ② / ④ 的 tactic 指纹一并写进结论。
 **不做无限二分**：真机往返是这条目里最稀缺的资源。
 
+**三张图的落地用例（2026-10-06 落码）**：图 A = `Gpt2GenerateTest.Fp16PlainPrefillLayersDiagnostic`
+（无探针输出、有 detailed_profiling）、图 B = `Gpt2GenerateTest.Fp16PrefillOutputsDiagnostic`、
+图 C = `Gpt2GenerateTest.Fp32PrefillOutputsDiagnostic`。三者共用 `test_gpt2_generate.cpp` 内的同一个
+辅助函数（同一份绑定与读数逻辑，避免三份实现各自演化），逐层 ONELINE 各落一份到 `<引擎路径>.layers.tsv`。
+
 ### Resource Lifecycle
 
 | 资源 | 变化 |

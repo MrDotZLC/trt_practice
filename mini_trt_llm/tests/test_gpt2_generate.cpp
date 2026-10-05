@@ -1,3 +1,4 @@
+#include "engine_layer_info_support.hpp"
 #include "gpt2_test_support.hpp"
 #include "tokenizer_test_support.hpp"
 #include "logger.hpp"
@@ -449,19 +450,26 @@ TEST(Gpt2GenerateTest, RealGpt2Fp16GreedyMatchesReferenceTokens) {
 //
 // 它取代了"猜哪个算子产生 NaN"：逐输出给出 max|v| 与 NaN 标记，
 // 先把范围钉到**具体的张量**，再决定改什么（见 TROUBLESHOOTING + TS-018）。
-TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
-    MINI_TRT_SKIP_IF_NO_CUDA();
-    const std::string dir = FindRealModelDir();
-    if (dir.empty()) {
-        MINI_TRT_SKIP_IF_MISSING_ASSET("models/gpt2 不存在");
-    }
-
+// 跑一次"带探针的 prefill"并逐张量打印读数；同时把逐层 ONELINE 落到 `<引擎路径>.layers.tsv`。
+//
+// 为什么要抽成函数：**要跑三张图**（设计 v2 的 `### Architecture`）——
+//   图 A：生产图（`export_probes=false`，不加任何探针输出）+ detailed_profiling
+//         → 逐层 K/V 的首个非有限层 L_A，以及**生产图自己的** tactic 指纹；
+//   图 B：全探针图（FP16，`export_probes=true`）→ 层内首个非有限张量；
+//   图 C：FP32 对照臂（同一套探针）→ 仪器自证 + 健康幅值剖面。
+// 图 C 不能省（见 `analysis.md` 的 D1a 与 `### Data Structure` 第 3 条）：
+//   ① 仪器自证：FP32 路径已知正确，它若也出现非有限值，说明问题在仪器/绑定而不在模型；
+//   ② 健康幅值剖面：给 H1 的"LN 输入 RMS"判据提供同模型、同 prompt 的对照量。
+// 三张图共用同一份绑定与读数逻辑，避免"三份实现各自演化"。
+void RunPrefillProbeDiagnostics(const std::string& dir, const std::string& label,
+                                Precision precision, const std::string& engine_path,
+                                bool export_probes) {
     Logger logger;
     EngineBuilder::Config builder_config;
-    builder_config.precision = Precision::FP16;
-    // 这是**唯一**该打开诊断输出的用例：它逐输出读回中途张量，正是靠这些输出才不用猜
-    // 哪个算子产生 NaN。默认关闭是刻意的——诊断输出会改 I/O 契约（见 TROUBLESHOOTING + TS-019）。
-    builder_config.export_diagnostics = true;
+    builder_config.precision = precision;
+    // 探针（中途张量输出）只在图 B / 图 C 上开：图 A 要的是**未被仪器改动过**的生产图。
+    // 默认关闭是刻意的——诊断输出会改 I/O 契约（见 TROUBLESHOOTING + TS-019）。
+    builder_config.export_diagnostics = export_probes;
     // 逐层信息里的**计算精度与 TacticName** 只在 DETAILED 下写进引擎（`src/core/builder.cpp:254`），
     // 而这两样正是设计 v2 里 H1（"那 3 个 Normalization 层是否真是 FP32"）与
     // H2（"图一变、tactic 变没有"）的判别量；不开它，落盘的 ONELINE 读出来没有精度字段。
@@ -474,12 +482,10 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
     builder_config.max_prefill_seq_len = static_cast<int32_t>(kExpectedPrompt.size());
     EngineBuilder builder(logger, builder_config);
 
-    // 引擎路径必须与 `RealGpt2Fp16Greedy...` 用的那个分开：引擎缓存只按路径名区分、
-    // 不随代码或开关失效，共用一条路径会让"要诊断输出"与"不要诊断输出"互相踩成假结果。
-    const std::string prefill_path = "/tmp/mini_trt_llm_gpt2_real_prefill_fp16_diag.engine";
-    // 同 `RealGpt2Fp16Greedy...`：复用与否交给指纹，不做"文件存在就跳过"（`docs/TROUBLESHOOTING.md` + TS-040）。
-    ASSERT_TRUE(builder.BuildFromConfig(dir, prefill_path, BuildStage::kPrefill));
-    Engine engine(prefill_path, logger);
+    // 引擎路径由调用方给：两条臂**必须用不同路径**（引擎缓存只按路径名区分，共用一条会让两条臂
+    // 互相踩成假结果）。复用与否交给指纹，不做"文件存在就跳过"（TROUBLESHOOTING + TS-040）。
+    ASSERT_TRUE(builder.BuildFromConfig(dir, engine_path, BuildStage::kPrefill));
+    Engine engine(engine_path, logger);
     nvinfer1::ICudaEngine* cuda = engine.GetCudaEngine();
     ASSERT_NE(cuda, nullptr);
 
@@ -576,7 +582,9 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
     // 读数三项：幅值（max|v|）、RMS、以及**首个非有限元素的下标**。
     // 只看"有没有 NaN"分不清"整行坏"还是"某个位置坏"，只看 max 又分不清"突变"与"逐步膨胀"；
     // 而 H1（行内归约溢出/塌陷）的判别量正是 **LN 输入的 RMS**（阈值推导见 analysis.md 的 D1）。
-    std::cout << "[诊断] FP16 prefill 各输出（max|v| / rms / 是否非有限 / 首个非有限下标）\n";
+    std::cout << "[诊断] " << label
+              << " prefill 各输出（max|v| / rms / 是否非有限 / 首个非有限下标）\n";
+    std::string first_non_finite_tensor;  // 结论行：判定 1 / 2 都先看这个名字
     for (const Binding& binding : bindings) {
         if (binding.is_input) {
             continue;
@@ -597,6 +605,9 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
             max_abs = std::max(max_abs, std::fabs(v));
             sum_sq += static_cast<double>(v) * static_cast<double>(v);
         }
+        if (first_non_finite >= 0 && first_non_finite_tensor.empty()) {
+            first_non_finite_tensor = binding.name;
+        }
         const double rms = binding.count == 0
                                ? 0.0
                                : std::sqrt(sum_sq / static_cast<double>(binding.count));
@@ -605,29 +616,29 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
                   << (first_non_finite >= 0 ? "是" : "否")
                   << "  首个非有限下标=" << first_non_finite << "\n";
     }
+    std::cout << "[诊断] " << label << "：首个含非有限值的输出 = "
+              << (first_non_finite_tensor.empty() ? std::string("(无)")
+                                                  : first_non_finite_tensor)
+              << "\n";
 
     // 逐层信息落盘（层类型 / 计算精度 / TacticName）+ 逐层 K/V 声明精度。
     //
     // 落盘是设计 v2 里 H1 / H2 的判别量来源：H1 要确认那 3 个 Normalization 层是否**真是** FP32
     // （"位置不变"不能当否证，见 TROUBLESHOOTING 18.2 的教训 2）；H2 要比较"图/构建变了 tactic 变没有"。
+    // 读取走共享头 `engine_layer_info_support.hpp`（第三个使用方出现后按仓库既有约定收拢）。
     // 逐层打印 K/V 精度是 `analysis.md` 的 D1a 留下的窄假设：runner 的 dtype 只查了第 0 层，
     // 其余层**假定相同**——这里把 12 层全打出来，全层一致才算这条假设被排除。
     {
-        const std::string layer_dump_path = "/tmp/mini_trt_llm_gpt2_fp16_diag_layers.tsv";
-        std::unique_ptr<nvinfer1::IEngineInspector> inspector(cuda->createEngineInspector());
-        std::ofstream dump(layer_dump_path);
-        for (int32_t i = 0; i < cuda->getNbLayers(); ++i) {
-            const char* line =
-                inspector == nullptr
-                    ? nullptr
-                    : inspector->getLayerInformation(i, nvinfer1::LayerInformationFormat::kONELINE);
-            if (line != nullptr && dump) {
-                dump << i << "\t" << line << "\n";
-            }
-        }
-        std::cout << "[诊断] 逐层信息（含精度 / TacticName，需 detailed_profiling）→ "
-                  << layer_dump_path << "，共 " << cuda->getNbLayers() << " 层\n";
-        std::cout << "[诊断] 逐层 K/V 声明精度（必须全层一致；runner 只查了第 0 层）\n";
+        // 路径从引擎路径派生：三张图各落一份，互不覆盖。
+        const std::string layer_dump_path = engine_path + ".layers.tsv";
+        const test_support::LayerInfo layer_info =
+            test_support::InspectLayerInfo(&engine, layer_dump_path);
+        std::cout << "[诊断] " << label << " 逐层信息（含精度 / TacticName，需 detailed_profiling）→ "
+                  << layer_info.dump_path << "，共 " << layer_info.layers
+                  << " 层；含 Int8 张量层数=" << layer_info.int8_tensors << "；tactic 种类："
+                  << test_support::TacticSummary(layer_info, 4) << "\n";
+        std::cout << "[诊断] " << label
+                  << " 逐层 K/V 声明精度（必须全层一致；runner 只查了第 0 层）\n";
         const auto dtype_name = [](nvinfer1::DataType t) {
             return t == nvinfer1::DataType::kHALF ? "FP16" : "FP32";
         };
@@ -640,6 +651,48 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
                       << dtype_name(cuda->getTensorDataType(v_name.c_str())) << "\n";
         }
     }
+}
+
+// 图 B：FP16（被测臂）。保留旧用例名，历史引用（TROUBLESHOOTING 18.x / PROGRESS §5.11）继续可读。
+TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    const std::string dir = FindRealModelDir();
+    if (dir.empty()) {
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/gpt2 不存在");
+    }
+    RunPrefillProbeDiagnostics(dir, "FP16", Precision::FP16,
+                               "/tmp/mini_trt_llm_gpt2_real_prefill_fp16_diag.engine",
+                               /*export_probes=*/true);
+}
+
+// 图 C：FP32 对照臂（同一套探针、同一个 prompt）。**判据 = 这一臂必须全有限**；
+// 一旦它也出现非有限值，先怀疑仪器/绑定，而不是模型——这是设计 v2 里"仪器自证"那一条。
+TEST(Gpt2GenerateTest, Fp32PrefillOutputsDiagnostic) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    const std::string dir = FindRealModelDir();
+    if (dir.empty()) {
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/gpt2 不存在");
+    }
+    RunPrefillProbeDiagnostics(dir, "FP32", Precision::FP32,
+                               "/tmp/mini_trt_llm_gpt2_real_prefill_fp32_diag.engine",
+                               /*export_probes=*/true);
+}
+
+// 图 A：生产图（**不加任何探针输出**）+ detailed_profiling。
+//
+// 它的作用是不可替代的：图 B 挂了 85 个额外输出，而"多挂输出会改变 TRT 的融合与 tactic 选择"
+// 本仓库实测过（`test_resnet18_int8_probe.cpp` 的注释）。所以"首个非有限层"必须在**没被仪器
+// 动过的图**上量一次（L_A），与图 B 的 L_B 比较：相等才能说仪器没扰动被测对象。
+// 这条用例不打印中途张量（没有探针），只有 logits + 每层 K/V；tactic 指纹照样落盘。
+TEST(Gpt2GenerateTest, Fp16PlainPrefillLayersDiagnostic) {
+    MINI_TRT_SKIP_IF_NO_CUDA();
+    const std::string dir = FindRealModelDir();
+    if (dir.empty()) {
+        MINI_TRT_SKIP_IF_MISSING_ASSET("models/gpt2 不存在");
+    }
+    RunPrefillProbeDiagnostics(dir, "FP16-plain", Precision::FP16,
+                               "/tmp/mini_trt_llm_gpt2_real_prefill_fp16_plain.engine",
+                               /*export_probes=*/false);
 }
 
 // A1-10：把"文本 → prompt token"这一段桥接起来验证（future_iterations A1 的收口用例）。

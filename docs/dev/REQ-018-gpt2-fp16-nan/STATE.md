@@ -58,6 +58,17 @@
   （已搁置）、预算（已在范围内）。
 - **真机窗口出现时**，按 `analysis.md` 的 `## Candidate Fixes（B2）` 的 `### Runtime Flow` 执行：
   图 A / 图 B / 图 C 一次建完、六条读数、判定 `L_A` 与 `L_B`；顺带读 `NvInfer.h` 关掉 P0-3。
+  **执行顺序（点名到用例）**：
+  1. `Gpt2GenerateTest.Fp16PlainPrefillLayersDiagnostic`（**图 A**：生产图、无探针）→ 记 `L_A` 与生产图的 tactic 指纹；不要跳过它——图 B 挂了 85 个输出，只有图 A 能说"仪器没扰动被测对象"；
+  2. `Gpt2GenerateTest.Fp16PrefillOutputsDiagnostic`（**图 B**：全探针）→ 记 `L_B`、层内首个非有限张量、逐层 RMS / 幅值；
+  3. `Gpt2GenerateTest.Fp32PrefillOutputsDiagnostic`（**图 C**：对照臂）→ **必须全有限**，并给出健康幅值剖面；
+  4. 读 `NvInfer.h` 关 P0-3；`RealGpt2Fp16GreedyMatchesReferenceTokens` 作复现器（此时应仍红）。
+  判据：`L_A == L_B` 才能直接用图 B 的层内读数；不等则走 `### Runtime Flow` 的兜底分支
+  （上限 = 1 次全导 + 3 次切层二分）。
+- **用例条目数的影响**：本次新增 2 条用例（图 A / 图 C）。按 `gtest_discover_tests`
+  （`mini_trt_llm/tests/CMakeLists.txt:22`）"一条 case = 一条 ctest 条目"的口径，**沙箱条目数预计 +2**
+  → 从 §0 的 269 变 **271**，仍标"待复跑"。`PROGRESS.md` §0 的那个数因此需要同步——
+  PROGRESS 属结构类文档，**等作者点名后再改**（本条只记录影响，不代改）。
 - **H4 的静态对账已做**（2026-10-06，零真机成本）→ `analysis.md` 的 `#### D1a`：
   产物路径**排除**；留下一条窄假设 = 逐层 K/V 声明精度是否全层一致（已在诊断用例里逐层打印，等真机）。
 - 真机窗口内除三图对照外，还要顺带跑：逐层 dtype 打印（D1a 的窄假设）、`NvInfer.h` 与
@@ -86,6 +97,9 @@ Bugfix 没有 P5，这里按 `AGENTS.md` §5 的"改代码前置"落 B1' 的仪�
      **逐层 K/V 与逐层 cache 的声明精度必须一致**——把 D1a 的"假定全层相同"变成"不一致就拒绝启动"。
      全层一致时是 no-op；命名写错（`getTensorDataType` 对不存在的名字按 TRT 约定返回 kFLOAT）
      也会在这里响亮失败。
+  5. `mini_trt_llm/tests/engine_layer_info_support.hpp`（**新增**，2026-10-06，属 P2 收口不属修复）：
+     把"遍历逐层 ONELINE、统计 Int8 张量与 tactic 名、可选落盘"收到一处，并改造两个既有使用方
+     `test_resnet18_int8_probe.cpp` / `test_gpt2_int8_weights.cpp`（原各有一份实现）。
 - **测试方式**：本机**无编译器 / 无 GPU**，只能做静态自检（符号与参数逐个核对 + 名字/尺寸分类表逐条走查），
   编译与运行**全部记"未编译验证"**，等真机窗口一次性执行。
   **归类口径（作者 2026-10-06 裁决）**：护栏与仪器按"非修复"归类，**不计入 B2 的修复预算**
@@ -106,6 +120,8 @@ Bugfix 没有 P5，这里按 `AGENTS.md` §5 的"改代码前置"落 B1' 的仪�
 - 2026-10-06: B1' 的仪器改动落码（建图器探针 / 指纹开关项 / 诊断用例自证，共 3 文件），**未编译验证**
 - 2026-10-06: P0-3 的离线取头文件路径**全部试过并排除**（含联网取 wheel：cu13 线只有元包 sdist、无任何包带 `NvInfer.h`）→ 只剩真机
 - 2026-10-06: D1a 的窄假设落成**启动检查**（`llm_runner.cpp`，属护栏；未编译验证）
+- 2026-10-06: 补齐设计里的**图 A / 图 C 两臂**（原 B1' 漏项）：抽公共辅助函数 + 新增 2 条用例（未编译验证）
+- 2026-10-06: 评审 P2 收口（C）：逐层信息读取提到共享头 `engine_layer_info_support.hpp`，三处实现收拢为一处（未编译验证）
 
 ---
 

@@ -13,6 +13,7 @@
 
 #include "cv_test_support.hpp"
 #include "diff_stats.hpp"
+#include "engine_layer_info_support.hpp"
 #include "logger.hpp"
 #include "mini_trt_llm/core/builder.hpp"
 #include "mini_trt_llm/core/engine.hpp"
@@ -45,10 +46,13 @@ using test_support::ArgmaxOfRow;
 using test_support::ComputeDiffStats;
 using test_support::DiffStats;
 using test_support::FindFile;
+using test_support::InspectLayerInfo;
+using test_support::LayerInfo;
 using test_support::kCvChannels;
 using test_support::kCvClasses;
 using test_support::kCvSize;
 using test_support::ReadF32File;
+using test_support::TacticSummary;
 
 // 逐层曲线只跑一个 batch —— 与参考落盘（`--num-images 8`）严格对齐。
 constexpr int32_t kProbeBatch = 8;
@@ -295,79 +299,8 @@ bool RunProbeEngine(Engine* engine, const std::vector<float>& input, int32_t bat
     return true;
 }
 
-// 逐层信息里的 INT8 证据（计数口径与 `test_resnet18_int8.cpp` 一致），外加**逐层落盘**。
-//
-// 为什么要落盘：探针图多了 21 个图输出，**会改变 TRT 的融合与 tactic 选择**（实测：产物图有
-// `i8i8` tactic，探针图上这个计数变成 0）。这正是开发计划 §13.3 D6 要防的那件事，所以
-// 不能只看一个计数——把每层的 ONELINE 原文写下来，才能判断"变的是哪几层、变成了什么"。
-struct TacticStats {
-    int32_t layers = 0;
-    int32_t int8_tensors = 0;
-    int32_t i8i8_tactics = 0;
-    std::vector<std::string> distinct_tactics;
-    std::string dump_path;  // 落盘成功时非空
-};
-
-TacticStats InspectTactics(Engine* engine, const std::string& dump_path) {
-    TacticStats stats;
-    nvinfer1::ICudaEngine* cuda = engine->GetCudaEngine();
-    if (cuda == nullptr) {
-        return stats;
-    }
-    std::unique_ptr<nvinfer1::IEngineInspector> inspector(cuda->createEngineInspector());
-    if (inspector == nullptr) {
-        return stats;
-    }
-    std::ofstream dump(dump_path);
-    stats.layers = cuda->getNbLayers();
-    for (int32_t i = 0; i < stats.layers; ++i) {
-        const char* line =
-            inspector->getLayerInformation(i, nvinfer1::LayerInformationFormat::kONELINE);
-        if (line == nullptr) {
-            continue;
-        }
-        const std::string text(line);
-        if (dump) {
-            dump << i << "\t" << text << "\n";
-        }
-        if (text.find("Format/Datatype: Int8") != std::string::npos) {
-            ++stats.int8_tensors;
-        }
-        if (text.find("i8i8") != std::string::npos) {
-            ++stats.i8i8_tactics;
-        }
-        // TacticName 的原文（供人核对"两臂到底换没换 kernel"）。
-        const size_t at = text.find("TacticName: ");
-        if (at != std::string::npos) {
-            const size_t begin = at + std::string("TacticName: ").size();
-            const size_t end = text.find(',', begin);
-            const std::string name = text.substr(begin, end - begin);
-            if (std::find(stats.distinct_tactics.begin(), stats.distinct_tactics.end(), name) ==
-                stats.distinct_tactics.end()) {
-                stats.distinct_tactics.push_back(name);
-            }
-        }
-    }
-    if (dump) {
-        stats.dump_path = dump_path;
-    }
-    return stats;
-}
-
-std::string TacticSummary(const TacticStats& stats, size_t limit) {
-    std::string text;
-    for (size_t i = 0; i < stats.distinct_tactics.size() && i < limit; ++i) {
-        text += (i == 0 ? "" : " | ");
-        text += stats.distinct_tactics[i];
-    }
-    if (stats.distinct_tactics.size() > limit) {
-        text += " | …(共 " + std::to_string(stats.distinct_tactics.size()) + " 种)";
-    }
-    if (text.empty()) {
-        text = "(没有 TacticName —— 逐层信息里读不到 tactic)";
-    }
-    return text;
-}
+// 逐层信息的读取（INT8 计数 / tactic 种类 / 逐层落盘）已收到共享头
+// `engine_layer_info_support.hpp`：第三个使用方出现后按既有约定收拢，读数口径与落盘理由都写在那里。
 
 std::vector<float> ReadBatchInput(const std::vector<std::string>& files, int32_t start,
                                   int32_t batch) {
@@ -522,8 +455,8 @@ TEST(Int8ProbeTest, LayerwiseErrorGrowthVsOnnxReference) {
     Engine pt_engine(setup.pt_engine, logger);
     Engine pc_engine(setup.pc_engine, logger);
 
-    const TacticStats pt_tactics = InspectTactics(&pt_engine, setup.pt_ref + "/layers_pt.txt");
-    const TacticStats pc_tactics = InspectTactics(&pc_engine, setup.pc_ref + "/layers_pc.txt");
+    const LayerInfo pt_tactics = InspectLayerInfo(&pt_engine, setup.pt_ref + "/layers_pt.txt");
+    const LayerInfo pc_tactics = InspectLayerInfo(&pc_engine, setup.pc_ref + "/layers_pc.txt");
     std::cout << "[Int8Probe] PT 引擎：层=" << pt_tactics.layers
               << " 含 Int8 张量=" << pt_tactics.int8_tensors
               << " i8i8 tactic=" << pt_tactics.i8i8_tactics << "\n"
