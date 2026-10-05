@@ -73,6 +73,14 @@ BASELINE = {
     "absent_ops": ["RMSNormalization", "RotaryEmbedding", "RoPE", "Attention"],
 }
 
+# 位置编码"学习式"的判据用到的算子名（与 BASELINE["absent_ops"] 同源，改一处要两处同改）。
+ROPE_LIKE_OPS = ("RotaryEmbedding", "RoPE")
+
+# T2 允许"穿过"的搬运类算子：导出器换版本时这些会多一层或少一层，
+# 但不改变"张量从哪来"的语义。不放进来的算子是**有语义**的（Mul/Add/MatMul/Gemm…），
+# 让它们挡住追溯路径正是判据要抓的东西。
+PASS_THROUGH_OPS = ("Transpose", "Reshape", "Squeeze", "Unsqueeze", "Cast", "Identity")
+
 
 def summarize(model) -> dict:
     graph = model.graph
@@ -151,11 +159,195 @@ def check(summary: dict) -> int:
     return 0
 
 
+def _producers(graph) -> dict:
+    """张量名 → 生产它的节点下标。"""
+    out = {}
+    for idx, node in enumerate(graph.node):
+        for name in node.output:
+            if name:
+                out[name] = idx
+    return out
+
+
+def _consumers(graph) -> dict:
+    """张量名 → 消费它的节点下标列表（保持出现顺序）。"""
+    out = {}
+    for idx, node in enumerate(graph.node):
+        for name in node.input:
+            if name:
+                out.setdefault(name, []).append(idx)
+    return out
+
+
+def _trace_back(nodes, producers, start_tensor, wanted_ops, max_hops=8):
+    """从某个张量往回走，穿过 PASS_THROUGH_OPS，收集 op_type ∈ wanted_ops 的节点下标。
+
+    返回的是**集合**：同一个张量可能经多条路径到达同一类算子（例如 K 与 V 都来自 Split），
+    比较集合是否相等比比较"第一个命中的节点"更稳——后者依赖遍历顺序。
+    """
+    found = set()
+    frontier = [start_tensor]
+    for _ in range(max_hops):
+        nxt = []
+        for tensor in frontier:
+            idx = producers.get(tensor)
+            if idx is None:
+                continue
+            node = nodes[idx]
+            if node.op_type in wanted_ops:
+                found.add(idx)
+                continue
+            if node.op_type in PASS_THROUGH_OPS:
+                nxt.extend(t for t in node.input if t)
+            # 其它算子：语义边界，停止追溯（正是不让 MatMul/Gemm 穿过的原因）
+        if not nxt:
+            break
+        frontier = nxt
+    return found
+
+
+def _trace_forward(nodes, consumers, start_tensor, wanted_ops, max_hops=8):
+    """从某个张量往前走，穿过 PASS_THROUGH_OPS，收集 op_type ∈ wanted_ops 的节点下标。"""
+    found = set()
+    frontier = [start_tensor]
+    for _ in range(max_hops):
+        nxt = []
+        for tensor in frontier:
+            for idx in consumers.get(tensor, []):
+                node = nodes[idx]
+                if node.op_type in wanted_ops:
+                    found.add(idx)
+                    continue
+                if node.op_type in PASS_THROUGH_OPS:
+                    nxt.extend(t for t in node.output if t)
+        if not nxt:
+            break
+        frontier = nxt
+    return found
+
+
+def check_topology(model):
+    """连接级判据：T1 块边界不共享 / T2 块内自洽 / T3 输出投影 / T4 位置编码形态。
+
+    **与 `check()` 的分工**：数量（12 个 Softmax、25 处 LayerNorm…）由 `check()` 盯；
+    这里只盯"谁喂谁"。两者都要过——`--check` 抓"换模型/换导出器"，这里抓"重新接线"。
+
+    返回 (failures, summary)；failures 为空表示通过。
+    """
+    graph = model.graph
+    nodes = list(graph.node)
+    producers = _producers(graph)
+    consumers = _consumers(graph)
+    failures = []
+    summary = {"softmax_blocks": 0, "blocks": []}
+
+    softmax_idx = [i for i, n in enumerate(nodes) if n.op_type == "Softmax"]
+    summary["softmax_blocks"] = len(softmax_idx)
+    if not softmax_idx:
+        failures.append("T1 图里没有 Softmax——注意力块无法切边界")
+        return failures, summary
+
+    # T1：score 张量不得被多个 Softmax 共用（共用即"两个块叠在一起"）
+    by_score = {}
+    for i in softmax_idx:
+        ins = [t for t in nodes[i].input if t]
+        if not ins:
+            failures.append(f"T2 Softmax 无输入（节点 {nodes[i].name or i}）")
+            continue
+        by_score.setdefault(ins[0], []).append(i)
+    for score, users in by_score.items():
+        if len(users) > 1:
+            failures.append(
+                f"T1 score 张量 '{score}' 被 {len(users)} 个 Softmax 共用（块边界重叠）")
+
+    # T2 / T3：逐块核对"Q/K 的 Split == V 的 Split"与"输出经 Gemm 回到主线"
+    for i in softmax_idx:
+        tag = nodes[i].name or f"#{i}"
+        ins = [t for t in nodes[i].input if t]
+        if not ins:
+            continue
+        score_tensor = ins[0]
+        score_idx = producers.get(score_tensor)
+        if score_idx is None:
+            failures.append(f"T2 Softmax({tag}) 的输入 '{score_tensor}' 不是图内节点的输出")
+            continue
+        score_node = nodes[score_idx]
+        if score_node.op_type not in ("MatMul", "Gemm"):
+            failures.append(
+                f"T2 Softmax({tag}) 的 score 生产者是 {score_node.op_type}，"
+                "不是 MatMul/Gemm（QK^T）")
+            continue
+
+        qk_splits = set()
+        ok = True
+        for tensor in [t for t in score_node.input if t]:
+            hit = _trace_back(nodes, producers, tensor, {"Split"})
+            if not hit:
+                failures.append(
+                    f"T2 Softmax({tag}) 的 score 输入 '{tensor}' 追不到 Split"
+                    "（块边界切不出来）")
+                ok = False
+            qk_splits |= hit
+        if not ok:
+            continue
+
+        # V 侧：Softmax 之后第一个 MatMul/Gemm 即"乘 V"那一步
+        outs = [t for t in nodes[i].output if t]
+        ctx = []
+        for t in outs:
+            ctx.extend(sorted(_trace_forward(nodes, consumers, t, {"MatMul", "Gemm"})))
+        if not ctx:
+            failures.append(f"T3 Softmax({tag}) 的下游追不到 MatMul/Gemm（乘 V / 输出投影）")
+            continue
+        ctx_idx = ctx[0]
+        v_splits = set()
+        for tensor in [t for t in nodes[ctx_idx].input if t][1:]:
+            v_splits |= _trace_back(nodes, producers, tensor, {"Split"})
+
+        if not v_splits:
+            failures.append(f"T2 Softmax({tag}) 的 V 侧追不到 Split")
+            continue
+        if v_splits != qk_splits:
+            failures.append(
+                f"T2 Softmax({tag}) 的 Q/K 与 V 不来自同一个 Split"
+                f"（Q/K←{sorted(qk_splits)}，V←{sorted(v_splits)}）——块内不自洽")
+
+        proj = _trace_forward(nodes, consumers, nodes[ctx_idx].output[0],
+                              {"Gemm", "MatMul"})
+        if not proj:
+            failures.append(f"T3 Softmax({tag}) 的输出没有经 Gemm/MatMul 回到主线")
+
+        summary["blocks"].append({
+            "softmax": tag,
+            "splits": sorted(qk_splits),
+            "ctx_matmul": nodes[ctx_idx].name or ctx_idx,
+            "proj": sorted(proj),
+        })
+
+    # T4：位置编码仍是学习式（有查表、且没有 RoPE 类算子）
+    # **缩窄说明**（见 s1_topology_interface_spec.md §7 第 4 条）：原定义还要求"位置编码先于
+    # 第一个注意力块进入主线"，那半条需要真实图才能核对（本机无资产），记为待核实；
+    # 这里只断言"有 Gather 且无 RoPE 类算子"——**缩窄不是放宽阈值**，顺序那半条没被写进断言。
+    op_counts = {}
+    for node in nodes:
+        op_counts[node.op_type] = op_counts.get(node.op_type, 0) + 1
+    rope_like = sum(op_counts.get(op, 0) for op in ROPE_LIKE_OPS)
+    if rope_like:
+        failures.append(f"T4 出现 RoPE 类算子（{rope_like} 个）——位置编码不再是学习式查表")
+    if op_counts.get("Gather", 0) == 0:
+        failures.append("T4 找不到 Gather——位置编码不是学习式查表形态")
+    summary["gather"] = op_counts.get("Gather", 0)
+
+    return failures, summary
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="ONNX 图结构探针")
     parser.add_argument("onnx_path", help="ONNX 文件路径")
     parser.add_argument("--check", action="store_true",
                         help="与内置基线对比（图变了就返回非零）")
+    parser.add_argument("--check-topology", action="store_true",
+                        help="连接级判据：块边界不共享 / 块内自洽 / 输出投影 / 位置编码形态")
     parser.add_argument("--json", action="store_true", help="以 JSON 打印摘要")
     parser.add_argument("--skip-if-missing", action="store_true",
                         help="文件不存在时返回 SKIP_EXIT_CODE（供 ctest 使用）")
@@ -189,6 +381,7 @@ def main() -> int:
         for op, count in sorted(summary["op_counts"].items(), key=lambda kv: -kv[1]):
             print(f"  {op:<24} {count}")
 
+    status = 0
     if args.check:
         status = check(summary)
         # 三项识别断言（注意力 / LayerNorm / 位置编码）。
@@ -212,8 +405,22 @@ def main() -> int:
         print(f"子图识别通过：注意力 {subgraphs['attention']}；"
               f"LayerNorm {subgraphs['layernorm']['count']} 处；"
               f"位置编码为学习式（无 RoPE 类算子）。")
-        return status
-    return 0
+
+    # 连接级判据（T1–T4）。与 `--check` 的计数判据**各管一半**：两条都要过。
+    # 为什么单独一条开关：夹具图的算子分布本来就不等于真实图基线，调 `--check` 必然红——
+    # 那不是夹具的问题，所以夹具自检只调这一条（见 s1_topology_interface_spec.md §7.1）。
+    if args.check_topology:
+        failures, topology = check_topology(model)
+        if failures:
+            print("拓扑识别失败：")
+            for item in failures:
+                print(f"  - {item}")
+            return 1
+        print(f"拓扑识别通过：{topology['softmax_blocks']} 个注意力块——"
+              f"块内 Q/K/V 同源、输出经投影回到主线、位置编码为学习式查表"
+              f"（Gather {topology['gather']} 处）。")
+
+    return status
 
 
 if __name__ == "__main__":

@@ -109,6 +109,25 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 # ---------------------------------------------------------------------------
+# 连接级判据的反例自检（REQ-019 的 S1）
+#
+# 为什么进 ctest：S1 把识别从"计数"升级到"连接级"，判据是"能拒绝**计数相同、连接不同**的图"。
+# 护栏没有反例证明"它会拦人"就等于没有护栏（同 resnet18_convert_selftest 的理由，
+# 见 docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md + PH3-GAPS 的 G1c）。
+# 夹具自造（make_topology_fixture.py）、只依赖 onnx 包：**不需要 652MB 资产、不需要 GPU**，
+# 沙箱即可跑——这正是 S1 在"暂时不真机"期间仍能收口的原因。
+#
+# 环境语义：缺 Python / 缺 onnx 包时**跳过**（返回 77），与 onnx_graph_probe 同口径。
+# ---------------------------------------------------------------------------
+if(Python3_Interpreter_FOUND)
+    add_test(NAME onnx_topology_selftest
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/make_topology_fixture.py
+                --self-test --skip-if-missing)
+    set_tests_properties(onnx_topology_selftest PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
+# ---------------------------------------------------------------------------
 # ResNet18 转换脚本的"护栏自检"（Phase 4 P4-4）
 #
 # 为什么进 ctest：转换脚本里有 5 道自检（拒绝未消费的 initializer / 拒绝不支持的带权算子 /
