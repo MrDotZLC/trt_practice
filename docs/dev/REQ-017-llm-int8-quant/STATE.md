@@ -38,10 +38,10 @@
 
 ## Current Blockers
 
-- **Gate-A 的裁决仍未逐条确认**（`phase = P5-Implementation` / `status = in-progress`）。7 条 P1
-  见 `review.md`，其中需要你拍板的三条是：① D6 的默认量化清单（本设计按"每步读取量"推导，
-  未经你点名）；② D7 的激活精度与 DQ 融合（若只有 FP16 激活才融合，会依赖 `REQ-018` 的
-  FP16 NaN）；③ `models/gpt2/` 权重资产的存在性与规格。
+- **Gate-A 已逐条裁决（2026-10-05）**：7 条 P1 的处置见 `## 判据对照` 的 `P1-1` ~ `P1-7` 行
+  （D6 默认清单同意、D7 同意做、与 `REQ-018` 不合并、权重资产按设备纪律、收益量级真机后更新、
+  编译 / benchmark 维持绑 P5 Exit Gate / P7）。**D6 的最终确认**放在 D7 之后（见
+  `## Implementation Plan` 的"后续执行项"第 1–2 条）。
 - **写冲突（2026-10-03 登记；2026-10-05 更新）**：本 feature 与 `REQ-016-continuous-batching`
   （仍在 `P5-Implementation / in-progress`）、`REQ-019` 共用运行时入口。原定"REQ-016 先做、
   本 feature 不得开代码"，实际按作者"真机测试搁置、先完成开发工作"的指令**并行推进**——该指令
@@ -52,9 +52,6 @@
 - **P4 的"三处留痕"还剩一处按阻塞上报**（细节与口径见 `benchmark_before.md` 的末节）：
   ③ `summary.md` 的 Performance 一节 = P8 产物，P4 时点不可能产出；④ 的附加留痕已由作者
   2026-10-05 放行后追加（`docs/PROGRESS.md` §5.17）。
-- **Gate-A 的 7 条 P1 仍未逐条确认**：作者 2026-10-05 的指令（"真机测试搁置、先完成开发工作"）
-  被当作**放行**处理，放行范围与不适用条款见 `## 判据对照`。**D6 的量化清单**与 **D7 的激活
-  精度**仍是未确认项——本轮把它们做成"清单驱动 + 可配置"，代码不替你锁定取值。
 - **P4 / P6 / P7 的真机项当前不可执行**：本机沙箱无编译器 / 无 GPU。`CPP-P0-8`（编译）与
   `CUDA-P0-6`（benchmark 证明）两条 P0 判据的验证时点分别在 P5 与 P7，已按"P3 不适用"记入
   `## 判据对照`（见 `review.md` 的 P1-5）。
@@ -150,7 +147,7 @@
 | Module Design：prefill 与 decode 用**同一份清单** | 两次 `BuildFromConfig`（各一引擎）都从同一个 `Config::quant_manifest` 取清单 → 同一路径、同一内容、同一指纹口径 | 符合 |
 | Module Design：**运行时本轮不改** | `llm_runner.*` / `plugins/` / `kv_cache/` / `precision.*` **均不在改动清单里** | 符合 |
 | D5：`graph_version` 3→4 / 6→7；清单与 int8 权重进指纹 | `builder.cpp` 的两个常量 + `MakeFingerprintInputs` 的两处 `source_files.push_back` | 符合 |
-| D6：清单驱动 + 缺项失败；**清单内容**仍待 Gate-A | `plan_targets()`（按 TRT 名选、排除也按 TRT 名判）+ Build 收尾的"全消费"校验 | 符合（内容属待裁决项） |
+| D6：清单驱动 + 缺项失败；清单内容**已裁决**（默认值 + `wte` / `lm_head` 可摘除） | `plan_targets()`（按 TRT 名选、排除也按 TRT 名判）+ Build 收尾的"全消费"校验 | 符合 |
 | D7：判据 = **引擎体积必须下降** | 代码里没有任何"自行改判据"的分支；未验证项已登记 | 符合（判据待真机执行） |
 | Resource Lifecycle：常量缓冲要活到 `buildSerializedNetwork` 之后 | `quant_const_buffers_` 是 builder 成员（与 `causal_mask_` 同一条理由） | 符合 |
 | 例外节三条"不得跳过" | 本轮未动运行时 / kernel / 插件 / cache；AC2、AC5 的用例归 P6 | 符合 |
@@ -182,9 +179,10 @@ warning（本环境无编译器）+ 上面"真机必查"三条与 D7 的判据�
 - **作者裁决记录（2026-10-05）**：① D1 采纳 C；② K/V 缓存量化维持 D3、另立里程碑；③ 设备信息与
   产物规格按 `AGENTS.md` §1 + `docs/PROGRESS.md` §6.5 当作既有前提。第 ③ 条已按"假定 + 核对
   义务"落进 `design.md`，**不得**当成已验证结论引用。
-- **D6 的清单是设计推导的默认值，不是作者点名**（`design.md` D6 的"来源登记"）：清单内容在
-  `requirement.md` 与既有文档里没有可引用的依据，因此不作为"已定"条目使用，改由 Gate-A 裁决
-  （`review.md` 的 P1-1）。这是本 feature 唯一一处"默认值待确认"，**不要**在下个会话当成已定。
+- **D6 清单的来源与裁决**（`design.md` D6 的"来源登记"）：清单内容在 `requirement.md` 与既有
+  文档里**没有**可引用的依据——上表是按"每步读取量"推导的，**不是作者点名**。2026-10-05
+  Gate-A 已裁决：**同意该默认值**（48 个 Linear + `wte`），并把 `wte` / `lm_head` 定为
+  **可摘除项**；**最终确认放在 D7 之后**（见 `## Implementation Plan` 的"后续执行项"第 2 条）。
 - **旧 STATE 的流程缺口**：`phase = P3-Review / status = waiting-human-gate` 曾与"`review.md`
   不存在"并存，即"没有评审也能挂 Gate-A"。这类"状态与产物不一致"按 `AGENTS.md` §5 第 4 条属
   必须当场修的项，本轮已补齐 `review.md` 并把阶段历史写清。
@@ -243,7 +241,6 @@ warning（本环境无编译器）+ 上面"真机必查"三条与 D7 的判据�
 | P3 表二：需求落点表行数 = Included + AC（同上） | 满足 | `review.md` 的 Requirement Coverage Result：9 行 |
 | P3 表三：术语定义表行数 = 模糊名词数（同上） | 满足 | `review.md` 的 Terminology Check：10 行 |
 | K/V 缓存量化的可行性评估（原 Included 5） | 不适用（移出本轮） | **放行记录**：作者 2026-10-05 裁决"另立里程碑"；`requirement.md` 已把该项移入 Excluded（含理由）。**放行范围** = 本轮不交付该评估的独立产物；**不得**用于跳过 Included 1–4 与 AC1–AC5 |
-| D6 量化对象清单 | 满足（默认值待 Gate-A 裁决） | `design.md` D6 的默认清单 + `review.md` 的 P1-1；来源口径 = 按"每步读取量"推导（**非**作者点名） |
 | `CPP-P0-8`（Debug/Release 编译）与 `CUDA-P0-6`（benchmark 证明）在 P3 的可判性 | 不适用 | 理由：验证时点分别在 P5 的 Exit Gate 与 P7；已登记为 `review.md` 的 P1-5。**不得**用于跳过这两条判据本身，也不得用于跳过 `review.md` 的条款④ |
 | `design.md` 的「例外与不得跳过」三条（S2 不纳入本轮 / 运行时本轮不改 / K/V 移出本轮） | 不适用 | **放行记录**：作者 2026-10-05 裁决"只做权重、缓存另立里程碑"；**放行范围** = 本轮不为 S2 出实现落点、运行时契约不动。**不得**用于跳过各条款点名的判据（原文见 `design.md` 该节） |
 | Gate-A P1-1：D6 默认量化清单非作者点名（`review.md` 的 P1 Risks） | 满足（已裁决） | 作者 2026-10-05 **同意**默认值（48 个 Linear + `wte`；排除 `wpe` / LayerNorm / bias），并把 `wte` / `lm_head` 标为**可摘除项**（判据不过时先摘它复测）；**最终确认放在 D7 之后** |
