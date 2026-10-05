@@ -18,7 +18,7 @@
 
 ### 0.1 红线（这些话说出口会被当场问穿）
 
-- 别说"实现了 TensorRT-LLM"、"支持 continuous batching"、"支持 batch > 1"——runner **有意限定** `batch = 1`。
+- 别说"实现了 TensorRT-LLM"、"支持 continuous batching"、"支持 batch > 1"——批量与调度路径**已落码、未编译未验证**（`GenerateBatch` / `RunScheduler`，默认 `max_batch = 2`）。被追问时按三段答："**已写 / 未验 / 默认入口仍是单请求**"；把它说成"支持"才是 §7 禁止的"把未验证写成通过"。
 - 别说"支持 LLaMA / Qwen / 任意 HuggingFace 模型"——注册表里只有 `gpt2` 与 `resnet18`；
   **算子件齐 ≠ 能跑**（LLaMA 缺 builder、SentencePiece 未验证）。也说不出"支持任意
   decoder-only Transformer"：每个新架构都要新 builder + 一轮对拍。
@@ -62,7 +62,7 @@
 | 分页 KV + split-K | 2.1 / 3.3 集群适配 / 4.1 最难技术点 | 讲实现 / 讲扩展 / 讲约束 |
 | 阈值必须写出处 | 2.3 / 4.4 / 5.3 | 讲量化判据时讲"为什么不用绝对误差" |
 | 引擎构建指纹 | 1.4 流程 / 2.2 主线 B / 3.2 快速部署 | 讲缓存机制 / 讲手工 bump 图版本 |
-| `batch = 1` 是有意限定 | 3.3 / 3.4 / 红线 | 讲取舍，不讲缺陷 |
+| 批量的现状 = 已落码未验证、默认单请求 | 3.3 / 3.4 / 红线 | 讲"已写 / 未验 / 默认单请求"，不讲"有意限定" |
 
 ---
 
@@ -298,7 +298,7 @@ decode 单步与 prefill 对应位置在 `1e-5` 下一致；引擎指纹上线�
 
 - greedy / top-k / top-p 三个设备侧 kernel，token 直接写回显存；k/p 是 per-batch 张量；
   随机源为 host seed + device Philox（确定性可复现）；Top-P 生产路径 = 保留 CUB 排序 + 行内并行。
-- **参数要按 per-batch 设计**，否则做连续批处理就得改接口；当前 runner 仍是 `batch = 1`。
+- **参数按 per-batch 设计**（k/p 已是 `[batch_size]` 张量），否则做连续批处理就得改接口；runner 侧的批量入口（`GenerateBatch`）也已按此落地，但**未编译未验证**。
 - **绕开整段排序的尝试失败了**：手写 fast top-k 正确性与旧实现逐 token 相同，但慢 **6~9 倍**。
   结论：看起来更聪明的算法在真实访存模式下可能更差，必须实测才能下结论。已撤出生产，代码保留作 A/B 入口。
 - 证据：Top-P 对旧实现的配对净收益 **12.6 / 22.4 / 15.7 / 17.6×**；
@@ -346,7 +346,9 @@ decode 单步与 prefill 对应位置在 `1e-5` 下一致；引擎指纹上线�
 `docs/dev/REQ-004-gpt2-native/phase2_development_plan.md` **D1 的明确取舍**——备选就是
 `IAttention(causal=true)`，当时选手搭的三条理由是：可按算子对拍定位差异、把同一份 K/V 张量复用给
 KV Cache、以及 Turing 上融合 kernel 的可用性需真机确认。代价是两条路各自建引擎。
-要不要换成 `IAttention` 属**待测量决定**（Phase 3 D1，前置 PF-7）。
+要不要换成 `IAttention` 属**待测量决定**：该决定归 `REQ-019` 的 **S3（子图替换）**，
+所以前置是 **PF-7**——注意 PF-7 只决定 **S3**，不再决定整条 `REQ-019`（2026-10-06 乙框架；
+契约统一 / 拓扑识别 / 自定义算子进图三项与它解耦）。
 
 ### 2.7 与 TRT-LLM 的能力对照表
 
@@ -360,7 +362,7 @@ KV Cache、以及 Turing 上融合 kernel 的可用性需真机确认。代价�
 | 构建指纹 / workspace / 缓冲复用 | 已实现 |
 | 量化 | 仅 CV 侧 INT8 Q/DQ；LLM 量化未做 |
 | INT4 / FP8 / KV cache 量化 | 未做（硬件与 API 代次都不支持） |
-| in-flight / continuous batching | 未做（runner 有意限定 `batch = 1`） |
+| in-flight / continuous batching | **已落码未验证**（`RunScheduler` + packed 混合批 + 分块 prefill；默认关） |
 | TP / PP / EP 多卡 | 未做（单卡环境） |
 | CUDA Graph / chunked prefill / 投机解码 / LoRA / beam search | 未做 |
 
@@ -405,7 +407,7 @@ KV Cache、以及 Turing 上融合 kernel 的可用性需真机确认。代价�
 - *70B 为什么"不现实"*：两条叠加——① decode 网络**每层一对** KV cache 输入（这是真 bug 修出来的设计），
   80 层 = 160 个 I/O，引擎体积与构建时间都成规模瓶颈；② 单卡显存。不是"慢"，是装不下。
 - *和 TRT-LLM 在模型覆盖上的差距*：它覆盖几十种架构 + TP/PP + 量化 + in-flight batching；
-  我们只有 2 个模型、单卡、`batch = 1`。诚实说法是"**同一套机制的极小复刻**"。
+  我们只有 2 个模型、单卡；批量与调度路径**已写但未验证**，默认仍是单请求。诚实说法是"**同一套机制的极小复刻**"。
 - *给你三个月先接哪个*：**LLaMA 类**——算子件最齐（RMSNorm / RoPE / GQA 分页注意力都在），
   收益最大（能顺带把 SentencePiece 与 GQA 的生产路径验通）。前提是**先造参考再动实现**，
   不要拿模型去试 tokenizer。
@@ -433,7 +435,7 @@ KV Cache、以及 Turing 上融合 kernel 的可用性需真机确认。代价�
 > （端侧主力是 Jetson / 手机 NPU，集群是 A100/H100 多卡）。所以这题不声称"适配了哪个场景"，
 > 只讲两件事：现有设计踩在哪一边，往两个方向各要补什么。
 
-**现有设计的取向**：单卡、`batch = 1`、分页 KV 按需分配不预留、无 Tensor Core 只能靠访存与并行优化——
+**现有设计的取向**：单卡、**默认单请求**（批量路径已落码未验证）、分页 KV 按需分配不预留、无 Tensor Core 只能靠访存与并行优化——
 这些更接近**端侧单请求低延迟**的形态，但硬件不代表端侧。
 
 **上端侧要做什么**
@@ -450,8 +452,8 @@ KV Cache、以及 Turing 上融合 kernel 的可用性需真机确认。代价�
 
 **上集群要做什么**
 
-- **调度**：continuous / in-flight batching 现在是空的，`LLMRunner` 是单序列 →
-  要加请求队列、每请求独立 block table、完成序列的块回收与抢占（preemption）。
+- **调度**：请求队列、每请求独立 block table、完成序列的块回收与调度循环**已落码未验证**
+  （`RunScheduler`）；**抢占（preemption）仍未做**——那才是上集群前的真实缺口。
 - **好消息**：分页注意力插件本身**已经支持 `batch > 1`**（真机用例验过），
   槽位留在 **runner 与调度层**，不用推倒 kernel。
 - **并行**：TP / PP 需要按 head 维切 MatMul 与 attention + NCCL 通信；
@@ -460,15 +462,16 @@ KV Cache、以及 Turing 上融合 kernel 的可用性需真机确认。代价�
   流式返回（早停需要 device 侧标志，而不是每步同步）。
 - **低精度**：只有到 `sm_80+` 才谈得上 FP8 / INT4 的收益，而这条路线本机根本跑不了。
 
-**要支持 `batch = 8` 和 continuous batching 具体改什么**：`LLMRunner` 从 `batch = 1` 扩开——
-多序列 block 分配与回收、每序列各自的 `context_lens`、per-batch 采样参数、请求级调度。
+**要支持 `batch = 8` 和 continuous batching 现在还差什么**：多序列 block 分配与回收、每序列各自的
+`context_lens`、per-batch 采样参数、请求级调度**都已落码**（`GenerateBatch` / `RunScheduler`，未编译未验证）；
+差的是**编译 + 真机验证**、**抢占策略**，以及 `max_batch` 的实验定值（暂定 2）。
 KV cache 的追加接口已按"每层一次、只推进一次长度"设计，扩 batch 时不用推倒。
 
 ### 3.4 生产化缺口
 
 | 能力 | 状态 |
 |---|---|
-| in-flight / continuous batching、runner 的 `batch > 1` | 未做（有意限定） |
+| in-flight / continuous batching、runner 的 `batch > 1` | **已落码未验证**（默认关 / 默认单请求） |
 | LLM 侧量化（INT8 / INT4 / FP8）、KV cache 量化 | 未做 |
 | ONNX 路径接进 `LLMRunner` | 未做（两条路 I/O 契约不同：INT64 vs INT32、无 `position_ids`） |
 | prefill 阶段的 paged attention kernel / 单引擎含 prefill | 未做（prefill 走原生子图 + 独立引擎） |
@@ -552,7 +555,9 @@ KV cache 的追加接口已按"每层一次、只推进一次长度"设计，扩
 - **条目化**：每个功能一个 `docs/dev/REQ-NNN-*/` 目录，按需产出
   `requirement` / `analysis` / `design` / `review` / `benchmark_before` / `benchmark` /
   `test_plan` / `summary` / `interview_notes` + `STATE.md`（当前状态与 blocker 的唯一落点）。
-  已推进 19 个条目：15 个完整件套，4 个进行中（`REQ-016`~`REQ-019`，只有四件套）。
+  已推进 19 个条目：15 个完整件套，4 个进行中（`REQ-016`~`REQ-019`）。
+  四条进行中的目录文件数分别是 **12 / 7 / 4 / 8**（含 `STATE.md` 与各自的接口细化）——
+  早先写的"只有四件套"已不准确，缺口以各条目 `## Completed Artifacts` 为准。
 - **开工前"计划对账"四问**：有没有计划文档 / 本次任务与文档是否一致 / 不一致先改文档再动代码 /
   反向也要查（文档与代码矛盾属于必须当场修的问题，并写明原因）。
 
@@ -630,7 +635,7 @@ KV cache 的追加接口已按"每层一次、只推进一次长度"设计，扩
 - 生成选项：`max_new_tokens`、greedy / top-k / top-p、固定 seed、EOS 后截断；
   `temperature != 1.0` 显式报错而不是静默忽略。
 - 已验证：FP32 贪心 8 token 与 HF 逐 token 一致，prefill logits 相对偏差 `9.19e-07`。
-- 限制：`batch = 1`（有意限定）；EOS 只能在循环后截断。
+- 限制：默认单请求（批量与调度路径已落码未验证）；EOS 只能在循环后截断。
 
 **自定义插件（`IPluginV3`）**
 
