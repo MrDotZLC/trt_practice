@@ -2,128 +2,222 @@
 
 <!--
 只描述当前系统，不写设计方案。
+证据口径：本文所有"现状"均在 2026-10-05 逐条撞过源码；引用的行号以当时工作区为准。
 -->
 
 ## Current Architecture
 
-### 精度是怎么决定的
+### 1. 精度档位、builder flag、权重常量类型是三件事
 
-- 构建配置里只有一个精度档位（FP32 / FP16 / INT8）。FP16 会设一个"整网倾向 FP16"的
-  builder flag；**INT8 不设任何 flag**——按注释与实测，`kINT8` 自 TensorRT 10.12 起废弃，
-  引擎精度由网络里的显式量化 / 反量化节点决定。
-- 权重以常量层的形式进入网络，其元素类型由构建选项单独给出（不是由 builder flag 决定）。
-  也就是说：**"整网倾向"与"这个常量是什么类型"是两件事**，代码里已经这么区分了。
-- 弱类型网络下，边界张量的实际精度由 TRT 决定，不由配置决定。运行时会**查询**引擎声明的
-  精度来分配缓冲（这是本项目踩过坑之后确立的规则，见 `docs/TROUBLESHOOTING.md` + TS-018）。
+- `Precision{FP32, FP16, INT8}` 与 TRT 类型的映射在 `include/mini_trt_llm/core/precision.hpp`
+  与 `src/core/precision.cpp`。
+- `EngineBuilder::Config::precision` 只驱动两个动作：FP16 时 `setFlag(kFP16)`；
+  `detailed_profiling` 时 `setProfilingVerbosity(kDETAILED)`。**INT8 不设任何 flag**
+  （`src/core/builder.cpp:198-212`），依据写在同处注释：`kINT8` 自 TRT 10.12 起废弃，
+  精度由网络里的显式量化节点决定。
+- 权重常量用什么 dtype 是另一个字段：`BuildOptions::weight_dtype`
+  （`include/mini_trt_llm/core/imodel_builder.hpp`），与 builder flag 无关。
+- 弱类型网络里**边界张量的实际精度由 TRT 决定**，不由配置决定：`LLMRunner` 构造期用
+  `ICudaEngine::getTensorDataType` 查询后按实际精度分配缓冲
+  （`src/core/llm_runner.cpp:96-140`；出处 `docs/TROUBLESHOOTING.md` + TS-018）。
 
-### 视觉模型侧已有的 INT8 闭环（可复用的部分）
+### 2. 权重如何进入原生图（量化的落点在这一步）
 
-视觉模型走的是**外部图量化**：Python 工具在 ONNX 图上插入对称量化 / 反量化节点，再由
-ONNX 解析路径建引擎；配套还有判据脚本与交叉校验脚本。它已经解决了两件事：
+链路：`WeightLoader::GetWeight(trt_name, target_type, &bytes)`
+→ `SafetensorsLoader::GetConvertedData` → `ConvertTensorData` / `GetRawData`
+（`src/core/weight_loader.cpp`、`src/utils/safetensors_loader.cpp`）。
 
-1. **"引擎真的在跑 INT8"的自证**：把逐层精度写进引擎，再用引擎检查器把每层的实际精度读出来。
-2. **判据与真值的分层**：区分"整体一致率"（测噪声）与"有判别力子集的一致率"（测质量）。
+取数路径的实际转换面（逐条读源码得到）：
 
-**但它的阈值与本 feature 不可复用**：那套阈值是在图像分类网 + 校准图集上量出来的，
-口径不同（`AGENTS.md` §7 明确禁止跨精度 / 跨口径复用）。
+- 零拷贝只有两条：源 FLOAT32→目标 kFLOAT、源 FLOAT16→目标 kHALF（`IsDirectCopy`）；
+- 逐元素转换：源 FLOAT32 / FLOAT16 / BFLOAT16 / FLOAT64 → 目标 **FP32 / FP16**，
+  累加走 FP32；
+- **目标不是 kFLOAT / kHALF 时直接失败**：`GetConvertedData` 命中
+  `"Conversion target must be FP32 or FP16"` 分支后返回 nullptr；
+- `SafetensorsToTrtDtype` 里**有** `safetensors::kINT8 → nvinfer1::DataType::kINT8` 的枚举映射
+  （`src/utils/safetensors_loader.cpp` 的该函数），但它不在取数路径上，也不解锁任何用法；
+  `IsDirectCopy` 同样不含 kINT8 —— 连"文件本来就是 INT8、目标也是 INT8"这条零拷贝都没开。
 
-### 语言模型侧的现状
+建图侧：`AddWeightConstant` 调 `weights.GetWeight(name, dtype, &bytes)` 成功后
+`addConstant(dims, Weights{dtype, data, actual})`（`src/core/gpt2_model_builder.cpp:74-110`）。
+因此 `weight_dtype = kINT8` 时**每个权重都会在取数处失败**（日志会打成
+`GPT-2 weight not found`，但真实原因是被取数路径拒绝）。
 
-- 语言模型只有**原生建图**一条端到端路径：两张图（prefill / decode），decode 用分页 K/V 与
-  自研注意力插件。ONNX 路径（`docs/future_iterations.md` §10）目前只有整段前向，
-  **没有 K/V 缓存输入、没有 decode 图、不进运行时**。
-- 原生建图把权重直接作为常量加进网络，**没有任何量化节点**。
-- 权重加载支持从 safetensors 读入并转换到目标类型，包括 INT8 的映射已经存在。
-- 引擎缓存的指纹覆盖精度档位与构建开关 → 换精度会自动重建，不存在"复用旧引擎"的假象。
+图上没有任何量化节点：全仓库对 `addDequantize` / `IDequantizeLayer` / `setDynamicRange`
+的引用为 0（`rg` 复核）。
+
+**结论（现状陈述）**：`Precision::INT8` 目前是"能枚举、不能建图、不能端到端"。
+
+### 3. GPT-2 权重的布局与来源
+
+- 转换脚本**不做任何重排**：`convert()` 直接 `save_file(tensor_dict, ...)`，
+  全文件无 transpose / permute / reshape（`tools/convert/hf_to_mini_trt_llm.py`）。
+- 布局作为显式契约写进产物：`_build_gpt2_native_config` 输出
+  `"source": {"conv1d_layout": "in_out", ...}`（同文件 `:153-186`）——HF GPT-2 的 Conv1D
+  权重本来就是 `[in, out]`。
+- 建图按 rank-3 声明 `[1, in, out]`：`c_attn.weight → Dims3(1, hidden, 3*hidden)` 等
+  （`gpt2_model_builder.cpp:546-562`）；`AddLinear` 用 `kNONE × kNONE` 的
+  `addMatrixMultiply`（`:208-222`），**不做转置**。
+- `lm_head` 与 `wte` 绑定时没有独立常量：靠 `AddTranspose(wte)` 拿到 `[out, in]`
+  再 reshape 成 `[1, hidden, vocab]`（`gpt2_model_builder.cpp:912-925`）。
+- 资产现状：`models/gpt2/` 目前只有 `config.json`；548 MB 的 `model.safetensors` 由转换脚本
+  生成、被 `.gitignore` 忽略（`docs/PROGRESS.md` §6.5）。
+
+### 4. 视觉模型侧的 INT8 闭环（可复用的部分，且在另一条路径上）
+
+- 路线：Python 侧**把权重预先量化成 int8 initializer**，图上只保留 `DequantizeLinear`
+  （`tools/convert/quantize_resnet18.py:297-343`）。
+- 自证：`detailed_profiling` 打开后，用
+  `IEngineInspector::getLayerInformation(i, kONELINE)` 读每层文本，统计
+  `"Format/Datatype: Int8"` 的层数与 `i8i8` tactic 数
+  （`tests/test_resnet18_int8.cpp:166-200` 的 `InspectEngine`，用例 `IsActuallyInt8`）。
+  该处注释明确写着：**没有 `[I8]` 这类标签**，按标签判会把"确实跑了 INT8"误判成"没跑"。
+- 这条路线走 ONNX 解析路径，不是原生建图；配套的来源自检 / 饱和比例统计 / 判据分层见
+  `docs/PROGRESS.md` §3.0j 与 `docs/TROUBLESHOOTING.md` #46。
+
+### 5. ONNX 路径接不进运行时
+
+- `BuildFromOnnx` 校验 I/O 名（`OnnxIoContractFor(architecture)`），非 cnn 时只挂
+  **prefill 一组 profile**，图上没有 K/V 输入（`src/core/builder.cpp:568-610`）。
+- ONNX 侧 `input_ids` 是 INT64，原生侧是 INT32 的 `input_ids` + `position_ids`
+  （`docs/future_iterations.md` §10.1 / TS-017）。
+- 因此 ONNX 路径承担不了 decode 与端到端生成。
+
+### 6. 运行时的精度契约（REQ-016 落地后的现状）
+
+- `LLMRunner::Config::is_half` 是 bool（`include/mini_trt_llm/core/llm_runner.hpp:55`）。
+  构造期 `expected = is_half ? kHALF : kFLOAT`，decode 的 `key_cache_0` 必须与之一致，
+  否则拒绝启动（`src/core/llm_runner.cpp:99-121`）；报错文案只区分 kHALF 与"其他"
+  （`:110-113`，非 kHALF 一律印成 FP32）。
+- 引擎边界精度逐个查询并记录：prefill / decode 各自的 K/V 与 logits（`:124-140`）；
+  两侧 K/V 精度不一致 → 拒绝启动。
+- cache 宽度是**两个 bool**：`PagedKVCache::Config::is_half`（cache 元素）+
+  `source_is_half`（引擎导出的 K/V）（`include/mini_trt_llm/kv_cache/paged_kv_cache.hpp:36-40`）；
+  写入内核按四种"源 / 目标"组合显式分发（`src/kv_cache/paged_kv_cache_kernels.cu:175-205`）。
+- "元素宽度 → 字节数"**不是一个函数点**：`ElementSize(bool)` 在
+  `src/core/llm_runner.cpp:24` 与 `src/kv_cache/paged_kv_cache.cpp:14` 各有一份。
+- REQ-016 之后同一段入口还承载批量契约：padded / packed mixed 两套 prefill 图
+  （`BuildOptions::packed_mixed`、`Builder::Config::packed_mixed_prefill`）、活跃批行号与
+  写回 `rows` 映射（`paged_kv_cache.hpp` 的公开入口说明；设计口径见
+  `docs/dev/REQ-016-continuous-batching/design.md` 的 D11 / D13 / D14）。
+
+### 7. 引擎身份与缓存指纹的覆盖面
+
+- 指纹字段：stage / precision / source_kind / graph_version / TRT 版本 / CUDA runtime 版本 /
+  源文件身份（`config.json` + `model.safetensors`，或 ONNX 图）/ numeric_params（profile 区间、
+  `n_positions`）/ flags（`src/core/builder.cpp` 的 `MakeFingerprintInputs`）。
+- 建图代码**不进指纹**：`kEngineGraphVersion` / `kPackedPrefillGraphVersion` 是手工代次，
+  改图必须 +1（同文件顶部注释）。
+- 现状事实：**只有落在 `source_files` 里的产物**才会让引擎失效重建。
 
 ## Module Structure
 
 | 模块 | 与量化的关系 | 现状 |
 |---|---|---|
-| 精度枚举与映射 | 精度档位 → TRT 数据类型 | 已有 FP32 / FP16 / INT8 三档 |
-| 构建配置（flag） | 整网倾向 | FP16 设 flag；INT8 无 flag（显式节点决定） |
-| 权重加载器 | 读出 safetensors → 目标类型 | 已支持多源类型，含 INT8 目标类型映射 |
-| 语言模型构建器 | 把权重作为常量加进图 | **无量化节点** |
-| ONNX 构建路径 | 解析并建引擎 | 只挂整段前向的 profile；无 K/V 输入 |
-| 注意力插件 | decode 注意力，读写分页 cache | **只接受 FP32 / FP16 元素** |
-| 分页 K/V 缓存 | 缓存元素宽度 | 只有 `is_half` 一个布尔（2 或 4 字节） |
-| 运行时 | 校验 cache 输入精度与配置一致 | 精度契约写死为 FP32 / FP16 |
-| 引擎检查器 | 读逐层精度 | 已具备（视觉模型侧在用） |
-| Python 量化工具链 | 图量化 + 判据 + 探针 | 已有，针对视觉模型 |
+| 精度枚举与映射 | 档位 → TRT dtype | 三档齐全 |
+| 构建配置（flag） | 整网倾向 | 只有 FP16 设 flag；INT8 无 flag |
+| 权重加载器 | safetensors → 目标类型 | **目标只支持 FP32 / FP16**；INT8 取数被拒 |
+| 语言模型构建器 | 权重 → 常量层 | 无量化节点；声明形状为 rank-3 `[1, in, out]` |
+| ONNX 构建路径 | 解析 + 建引擎 | 只挂 prefill profile；无 K/V 输入 |
+| 注意力插件 / 分页 cache | 元素宽度 | 两个 bool（2 / 4 字节）；内核四组合分发 |
+| 运行时 | cache 精度校验与缓冲分配 | 契约按 `is_half` 写死为两档 |
+| 引擎检查器 | 读逐层精度 | 已具备（视觉侧在用，需 `detailed_profiling`） |
+| Python 量化工具链 | 图量化 + 判据 + 探针 | 已有，**针对视觉模型的 ONNX 图** |
+| Python 权重转换 | HF → safetensors + config | 已有；无任何量化能力 |
 
 ## Data Flow
 
-当前语言模型路径的数据流（与量化相关的部分）：
+现有语言模型路径（与量化相关的部分）：
 
 ```text
-safetensors（FP32/FP16/BF16 权重）
-   ↓ 权重加载（按目标类型转换、缓存裸指针）
-构建期：权重 → 常量层（目标类型 = 构建选项给的类型）
+safetensors（FP32 / FP16 / BF16）
+   ↓ WeightLoader::GetWeight(name, weight_dtype, &bytes)
+   ↓ （目标不是 FP32 / FP16 → 取数直接失败）
+构建期：addConstant(dims, Weights{dtype, data, count})
    ↓
-网络（无量化节点）→ 引擎（精度档位只影响 flag）
+网络（无 Q / DQ 节点）→ builder（只有 FP16 才有 flag）→ 引擎
    ↓
-运行时：按**引擎声明的**边界精度分配缓冲 → 前向 → 采样
+运行时：getTensorDataType 查询边界精度 → 按实际精度分配缓冲 → 前向 → 采样
 ```
-
-关键事实：**没有任何一步在做权重量化**；`Precision::INT8` 这个枚举值当前无法端到端使用。
 
 ## Runtime Flow
 
-与量化有关的运行时行为：
-
-1. 构造期校验：decode 引擎的 cache 输入精度必须与配置一致，否则**拒绝启动**并打印两侧精度。
-2. 缓冲分配：按各张量的实际声明精度分别分配（`logits` 与 K/V 可能不同）。
-3. K/V 写入：按"源精度 → cache 精度"做转换，四种组合显式分发。
-4. 采样：按 logits 的实际声明精度读。
-
-也就是说，运行时的精度契约是"**向引擎查询**"而不是"按配置假定"——这条已经固化，
-扩展 INT8 时必须沿用。
+1. 构造期：由 `is_half` 推出 `expected`；decode 的 `key_cache_0` 必须等于它，否则拒绝启动。
+2. 逐个查询 prefill / decode 的 K/V 与 logits 精度并记录；两侧 K/V 不一致 → 拒绝启动。
+3. cache 建 `is_half` + `source_is_half`；宽度换算按 bool 取 2 / 4 字节。
+4. 写入 K/V 时按"源精度 → cache 精度"四组合分发；同一份逻辑也服务 REQ-016 的批量写回。
+5. 采样按 logits 的**声明**精度读；`logits_half` 是运行期查询值。
 
 ## Relevant Code Path
 
 | 位置 | 与本次相关的行为 |
 |---|---|
-| `mini_trt_llm/include/mini_trt_llm/core/precision.hpp`、`src/core/precision.cpp` | 三档精度枚举与 TRT 类型映射 |
-| `mini_trt_llm/src/core/builder.cpp` | 构建 flag 的设置（仅 FP16）；逐层精度开关；ONNX 路径解析 |
-| `mini_trt_llm/include/mini_trt_llm/core/imodel_builder.hpp` | 构建选项里的"权重常量目标类型" |
-| `mini_trt_llm/src/core/gpt2_model_builder.cpp` | 权重 → 常量层；无量化节点 |
-| `mini_trt_llm/src/plugins/paged_attention_plugin.cu` | 元素类型只接受 FP32 / FP16 |
-| `mini_trt_llm/include/mini_trt_llm/kv_cache/paged_kv_cache.hpp` | cache 元素宽度只有 `is_half` |
-| `mini_trt_llm/src/core/llm_runner.cpp` | cache 输入精度校验；按实际精度分配缓冲 |
-| `mini_trt_llm/tools/convert/quantize_resnet18.py` | 视觉模型的图量化工具（路线的参考实现） |
-| `mini_trt_llm/tools/validate/` | 判据脚本与自检（口径参考） |
+| `include/mini_trt_llm/core/precision.hpp` / `src/core/precision.cpp` | 三档枚举与 dtype 映射 |
+| `src/core/builder.cpp:198-212` | flag 设置（仅 FP16）；INT8 无 flag 的依据 |
+| `src/core/builder.cpp` 的 `MakeFingerprintInputs` | 指纹字段与源文件清单 |
+| `src/core/builder.cpp:568-610` | ONNX 路径的 I/O 契约与 profile |
+| `include/mini_trt_llm/core/imodel_builder.hpp` | `BuildOptions::weight_dtype` |
+| `src/core/weight_loader.cpp` | trt 名 → source key → 取数 |
+| `src/utils/safetensors_loader.cpp` 的 `GetConvertedData` / `IsDirectCopy` | 取数与转换；**INT8 目标被拒** |
+| `src/core/gpt2_model_builder.cpp:74-110` | 权重 → 常量层（含形状 / 数量校验） |
+| `src/core/gpt2_model_builder.cpp:208-222, 546-562, 912-925` | Linear 布局、`[1,in,out]` 声明、wte / lm_head 绑定 |
+| `src/core/llm_runner.cpp:96-140` | 边界精度查询与拒绝启动 |
+| `src/core/llm_runner.cpp:165-180` | cache 的两个 bool 与 `max_batch` |
+| `include/mini_trt_llm/kv_cache/paged_kv_cache.hpp:30-45` | cache 精度的表示 |
+| `src/kv_cache/paged_kv_cache_kernels.cu:170-210` | 源 / 目标四种组合 |
+| `tests/test_resnet18_int8.cpp:166-200` | 逐层精度自证的现成实现 |
+| `tools/convert/quantize_resnet18.py:297-343` | 视觉侧预量化 + 只留 DQ 的先例 |
+| `tools/convert/hf_to_mini_trt_llm.py` | GPT-2 权重与 config 产物（无重排、无量化） |
 
 ## Existing Limitation
 
-1. **语言模型没有量化节点**：`Precision::INT8` 目前是"能枚举、不能用"。
-2. **ONNX 路径不是一等公民**：只有整段前向、无 K/V 输入、input_ids 类型与原生路径不同、
-   缺 position_ids 输入 → 它现在**接不进运行时**（这正是 `docs/future_iterations.md` §10.1 的触发条件）。
-3. **注意力插件不接受低精度 cache**：元素类型白名单是 FP32 / FP16，且插件的 workspace 与
-   归约按这两种类型实例化。
-4. **cache 元素宽度不可配**：缓存侧只有"半精度与否"一个布尔，无法表达第三种宽度。
-5. **运行时精度校验写死两档**：cache 输入精度只认 FP32 / FP16，扩展时要同步改。
-6. **量化工具链只覆盖视觉模型**：语言模型的权重命名 / 结构（多层、QKV 合并、词表嵌入）
-   都与视觉模型不同，工具不能直接套用。
+1. 语言模型没有量化节点；`Precision::INT8` 无法建图。
+2. **INT8 权重没有来源**：取数路径拒绝非 FP32 / FP16 目标，连"文件即 INT8、目标也 INT8"的
+   零拷贝都没开。
+3. ONNX 路径不是一等公民：没有 decode 图与 K/V 输入，接不进运行时。
+4. 注意力插件与 cache 只表达"2 字节 / 4 字节"，无法表达第三种宽度。
+5. 运行时精度契约是 bool（`is_half`），报错文案也只区分两档。
+6. 量化工具链只覆盖视觉模型的 ONNX 图；GPT-2 的命名（多层、`[in,out]` Conv1D、wte / lm_head
+   绑定）与它不同，不能直接套。
+7. 引擎指纹只看文件身份：**新增的量化产物若不在 `source_files` 里，改了它不会触发重建**。
+8. 当前环境（本机沙箱）无编译器 / 无 GPU；`models/gpt2/` 目前没有权重文件。
 
 ## Extension Point
 
-- **原生建图路径**：在"权重 → 常量层"这一步之后插入反量化节点，是改动面最小、且**不依赖
-  任何其他 feature** 的入口（TensorRT 提供显式的量化 / 反量化层 API，且支持指定输出类型）。
-- **ONNX 路径**：已有解析与插件注册表，但要有 decode 图与 K/V 输入才谈得上端到端
-  → 依赖 `REQ-019-onnx-subgraph`。
-- **注意力插件**：元素类型白名单 + 模板实例化 + workspace 计算，是 cache 量化的改动面。
-- **分页 K/V 缓存**：把"半精度与否"扩成元素类型，是 cache 量化的前置。
-- **引擎检查器**：逐层精度已可读，可直接用作"真的在跑 INT8"的护栏。
+- **权重取数**：`GetConvertedData` / `IsDirectCopy` 是"能不能拿到 INT8 权重"的唯一闸门。
+- **量化产物**：`tools/convert/` 与 `models/gpt2/` 是 Python 侧产物的落点；`config.json` 的
+  `source` 段已有"把布局约定写进产物"的先例可循。
+- **建图**：`AddWeightConstant` 与 `AddLinear` 之间是插入量化 / 反量化语义的位置；
+  `AddFloatConstant` 已有"先建 FP32 常量再显式 Cast"的处理范式可参照。
+- **精度自证**：`detailed_profiling` + `IEngineInspector` 是现成护栏。
+- **引擎身份**：`MakeFingerprintInputs` 的 `source_files` 与 `graph_version` 是"新增产物
+  必须被看见"的两处。
+- **运行时**：`is_half` 与 `source_is_half` 是 cache 宽度扩展的入口（属另一里程碑）。
 
-## 文档与现状的矛盾（须当场修，`AGENTS.md` §5 第 4 条）
+## Terminology
 
-`docs/future_iterations.md` §1.2 写"**sm_75 有 INT8 Tensor Core**，LLM INT8 可显著提升吞吐"，
-而 `AGENTS.md`、`docs/PROGRESS.md`、`docs/interview_summary.md` 一致写本机是
-**GTX 1660 Ti（TU116）无 Tensor Core**。TU116 确实没有张量核心单元，`sm_75` 的指令集支持
-INT8 张量指令但该芯片不具备对应硬件。
+| 模糊名词（出自 requirement.md） | 本项目的可验证定义 | 怎样算没做到 |
+|---|---|---|
+| INT8 权重（weight-only） | 权重以 int8 常量进入网络，激活与边界张量仍是 FP32 / FP16 | 权重仍是 FP32 / FP16 常量；或激活也被量化 |
+| 自证低精度 | 从引擎（`detailed_profiling`）读出的层信息里，量化层带 `Format/Datatype: Int8`，且层数与清单一致 | 只凭"传了 INT8 配置"或构建成功就宣称在跑 INT8 |
+| 逐层精度可读 | 引擎 ONELINE 层信息里能定位到量化层及其 dtype 文本 | 引擎是 `kLAYER_NAMES_ONLY`，读不出 dtype |
+| 量化对象与 scale 同源 | 算 scale 的张量与写进图的 int8 张量是同一份（同 key、同布局、可逐字节核对） | 用另一份（例如没做同一变换的）张量算 scale |
+| per-tensor | 每张权重一个标量 scale | scale 数 ≠ 1 |
+| per-channel | 每张权重沿指定轴一组 scale，且轴与建图声明的形状对应 | 轴与 `[1, in, out]` 声明不一致，或 scale 数 ≠ 该轴长度 |
+| 逐 token 一致率 | 同 prompt、同采样策略下逐位置 token id 相等的比例，且必须同时报样本量 | 只报"生成结果看起来对" |
+| logits 相对偏差 | 同输入下 INT8 与 FP32 logits 的相对差；须同一处给出比较对象的形状 / 布局与绝对差 | 只给相对差，或只给单一极大值 |
+| 数值判据有出处 | 阈值旁写明它来自哪次实测 / 哪个分位 / 哪份文档 | 复用视觉模型阈值，或"看着定" |
+| K/V 缓存元素宽度 | cache 单个元素的字节数（当前 2 或 4） | 用"精度档位"代替元素宽度描述 cache |
 
-**影响**：这是本 feature 立项理由的一句话依据，写错会让"为什么 INT8 有收益"的论证立不住。
-**处置（已完成，2026-10-01）**：作者确认后，`docs/future_iterations.md` §1.2 已改为
-"收益来自**显存带宽**（decode 访存受限），不是张量核心吞吐"；`docs/dev/REQ-007-resnet18/phase4_development_plan.md`
-的 D2 与依据表同源那句已按冻结文档的"冲突修正"口径加日期批注（保留原文 + 删除线）。
-**决策未变**：INT8 仍走显式 Q/DQ——理由是隐式量化在 TRT 10.15 已废弃，与 Tensor Core 无关。
+## 文档与现状的矛盾（AGENTS.md §5 第 4 条要求的反向查）
+
+本轮重做分析时逐条核对旧 `analysis.md`，结果与处置：
+
+| 原表述 | 与源码 / 现状的冲突 | 处置 |
+|---|---|---|
+| "权重加载支持……包括 INT8 的映射已经存在" | 只有枚举映射；取数路径对非 FP32 / FP16 目标直接失败 | 改写为"没有 INT8 权重的来源"，列入 Existing Limitation 第 2 条 |
+| 缺 `## Terminology` 一节 | P1 要求该节，且规定未定义的模糊名词不得进入 design | 本轮补上（见上表） |
+| 运行时"精度契约写死为 FP32 / FP16" | 结论成立，但落点已随 REQ-016 变动（bool + 两处 `ElementSize` + 四组合内核分发） | 按现状改写为 Current Architecture §6 |
+| 只提"两张图（prefill / decode）" | REQ-016 之后同一入口另有 padded / packed mixed 两套 prefill 图与活跃批行号契约 | 补进 Current Architecture §6 的末条 |
+
+（旧 `design.md` 缺 `## Requirement Coverage` 一节的处置记在 `design.md` 的修正记录里。）

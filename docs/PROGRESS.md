@@ -1647,6 +1647,24 @@ Phase 2 的 5 个真缺陷（粘性 CUDA 错误 / KV 写入路径 / 多层共用
 （`phases/p4_baseline.md` 的 Dependency Missing 点名，`STATE.md` 的 Next Action 第 5 条已锚定义务）。
 过程与本次更正见 `docs/TROUBLESHOOTING.md` 与 `STATE.md` 的 Current Blockers（P4 / P7 搁置那条）。
 
+### 5.17 [DEC-REQ017-PERF-UNVERIFIED] REQ-017 的 INT8 收益未验证（Dependency Missing，2026-10-05）
+
+**问题**：REQ-017（语言模型权重量化，weight-only INT8，路线 C）的性能收益**没有任何实测**——
+P4 基线记 `N/A`，P7 随之不可执行（`Gate-B: N/A（缺依赖）`，既不算通过也不算失败）。
+
+**影响**：① AC4（资源下降）与"decode 是访存受限、权重读取量降到约 1/4"的量级论证都只是**推导**
+（固定项 ≈2.75 ms、约 179 GB/s），**不得当成结论引用**；② **D7 未验证**——int8 常量 + DQ 是否被
+TRT 吸收尚无实测，若 DQ 被构建期常量折叠成 FP32 常量，则引擎体积不降、带宽不降、收益归零
+**且不会报错**；③ 若"只有 FP16 激活才融合"，会依赖 `REQ-018`（GPT-2 的 FP16 端到端 NaN，
+仍是开放中的 bugfix）。
+
+**Workaround / 恢复后必须做**：见 `docs/dev/REQ-017-llm-int8-quant/benchmark_before.md` 的
+`## Result` 与"三处留痕"表 —— 恢复后要补**五项**，其中 **D7 的最小图实验（引擎体积判据）必须最先
+做**，它决定这条路线的收益是否成立；其余为 FP32 基线四项、INT8 引擎同四项、P7 的同 session A/B、
+AC3 的数值对照。`summary.md` 的 Performance 行在 **P8** 清（`phases/p4_baseline.md` 的
+Dependency Missing 点名，`STATE.md` 的 Next Action 第 5 条已锚定义务）。过程与本次处置见
+`docs/dev/REQ-017-llm-int8-quant/STATE.md` 的 `## 判据对照`。
+
 ## 6. [DEC-NEXT-STEPS] 下一步计划
 
 **没有"自动往下走"的阶段。** Phase 0 / 1 / 1.5 / 2 / 3 / 4 全部完成；
