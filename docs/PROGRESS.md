@@ -14,6 +14,8 @@
   **待复跑**：2026-10-05 起新增 3 条用例（`docs_index_check` ×1 + REQ-018 的图 A / 图 C ×2，见
   `mini_trt_llm/tests/CMakeLists.txt` 与 `test_gpt2_generate.cpp`）→ 按 `gtest_discover_tests`
   "一条 case = 一条 ctest 条目"的口径，沙箱**应为 271**；在复跑确认前，268 仍是唯一的**实测**值。
+  **再加 1 条（2026-10-06）**：`onnx_topology_selftest`（REQ-019 的 S1 反例自检，只依赖 `onnx` 包）→
+  沙箱**应为 272**；同理，未复跑前不写成实测值。
   唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`（GPT-2 FP16 NaN，**按设计**，见 §5.11）；真机必须带 `MINI_TRT_REQUIRE_GPU=1`（否则 GPU 用例静默跳过 = 白跑），证据 = `build/Testing/Temporary/LastTest.log`。
 - **精度口径**：GPT-2 用 **FP32**；ResNet18 的 FP32 / FP16 都健康；INT8 走 **Q/DQ 显式量化**，判据 = "FP32 余量子集一致率"（实测 12/12），权重默认 per_tensor。见 §5.11 / §2.15 / §3.0j。
 - **环境**：TensorRT 10.15.1 ｜ CUDA 12.6.85 ｜ C++17 ｜ sm_75（无 Tensor Core）→ §7。
@@ -319,6 +321,7 @@ RMSNorm / RoPE / PagedAttention 三个 IPluginV3 插件 + 采样器（greedy / t
 **S3 待定**：作者 2026-10-06 接受"S3 长期标待定（PF-7 待真机）"；PF-7 口径见 §6.6 与 `future_iterations_development_plan.md` §11.9。**PF-7 需要一段新代码**——`OnnxVsNative.PerfPerBuildMedian` 在代码里不存在，现有测量是 5 次取平均、不出极差（测试计划里"无新代码"的表述已于 2026-10-06 更正）；该薄用例尚未获授权。
 **P3 复评结论（2026-10-06）= BLOCK**：`review.md` 逐条回答四份 checklists 的 35 条 P0 + 17 条 P1，问题集中在 S2——① `createParser` 带 `IPluginRegistry` 的重载**未核实**（本机无 TRT 头）；② 四个 creator 的 `getPluginNamespace()` 返回**空串**，而 ONNX 自定义域必须非空（已核实的代码事实，修法有连带重建的影响面待裁决）。**S0 / S1 的设计不需返工**，只欠两处落码前置探针（真实图的形态）。
 **同日作者裁决**：① **暂时不真机** → ① 那条保持未闭环（`review.md` 的 P0-1），S2 不落码；② **接受**把 creator namespace 设为 `mini_trt_llm` 及可能的既有引擎连带重建（P0-2 闭合）；③ S0 的识别基线归属取 **B**（`--check` 只对源图生效）。当前唯一放行障碍 = P0-1。
+**同日落码（第二批放行后）**：**S1 已完成并在沙箱跑绿**——`inspect_onnx.py --check-topology`（T1 块边界不共享 / T2 块内 Q-K-V 同源 / T3 输出经投影回主线 / T4 位置编码为学习式查表）+ 夹具 `make_topology_fixture.py`（`good` / `swap-softmax-inputs` / `share-score`，三者**算子计数逐个相等**）+ ctest 条目 `onnx_topology_selftest`（**沙箱条目数 +1**）。**PF-7 用例 `OnnxVsNative.PerfPerBuildMedian` 已落码、未编译**（每边 3 次独立构建 × 20 次推理，纯打印）。S1 唯一没闭的是**真实图的串联形态**（需 652MB 资产，T7）。
 
 ## 5. 已知问题与坑
 
@@ -453,7 +456,7 @@ dynamic shape 的 optimization profile 已打通（Phase 2 的双引擎直接依
 | **SP-1** | `SentencePieceTokenizer` 无用例、无资产、无调用方：正确性从未被任何参考裁决过 | `future_iterations.md` §0.1 / §11 |
 | **P4-INT8-b** | INT8 的绝对数值界未定（当前只用"FP32 余量子集一致率"判，阈值 ≥90%，实测 12/12；验收集无真值标签） | `future_iterations.md` §1.6 |
 | **P4-FP16-a** | FP16 路径仍用已废弃的 `BuilderFlag::kFP16`（TRT 10.12 起指向 strong typing）；实测可用 | `future_iterations.md` §11 |
-| **G5** | ONNX 子图识别只做计数（未做拓扑级）——只有真做子图替换时才需要 | `future_iterations.md` §11 |
+| **G5** | ONNX 子图识别只做计数（未做拓扑级）——**已由 REQ-019 的 S1 立项并放行**（2026-10-06），不再挂"真做子图替换"这个条件 | `future_iterations.md` §11 |
 | **PF-7** | ONNX vs 原生 prefill 的跨构建对照未跑（两次测量方向相反）→ 它只决定 REQ-019 的 **S3（子图替换）**走向，不再决定整条（2026-10-06 乙框架） | `future_iterations.md` §10.2 |
 | **G2-3 / G2-4** | `LLMRunner` 曾有意只支持 `batch = 1`（batch 已由 REQ-016 扩）／EOS 无法循环内早停（§5.0） | `future_iterations.md` §11 |
 | **P1.5-b ~ P1.5-d** | E2 完整链路留后；E3 未验多 profile 切换；采样器分布数据未固化 | `future_iterations.md` §11 |
