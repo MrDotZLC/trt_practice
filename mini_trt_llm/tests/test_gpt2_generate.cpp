@@ -14,8 +14,11 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <iostream>
 #include <string>
@@ -44,6 +47,7 @@ constexpr int32_t kRealVocab = 50257;
 constexpr int32_t kRealBlockSize = 16;
 constexpr int32_t kRealPositions = 1024;
 constexpr int32_t kRealEos = 50256;
+constexpr int32_t kRealHidden = 768;  // n_embd；探针定量要用（此前是散落在用例里的字面量 768）
 
 // 已核对过的外部基线（§0.3）：HF 与"全序列重算"两条路径给出同一串 token。
 // kPromptText 与 kExpectedPrompt 必须成对看：前者是文本，后者是它的分词结果
@@ -458,6 +462,10 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
     // 这是**唯一**该打开诊断输出的用例：它逐输出读回中途张量，正是靠这些输出才不用猜
     // 哪个算子产生 NaN。默认关闭是刻意的——诊断输出会改 I/O 契约（见 TROUBLESHOOTING + TS-019）。
     builder_config.export_diagnostics = true;
+    // 逐层信息里的**计算精度与 TacticName** 只在 DETAILED 下写进引擎（`src/core/builder.cpp:254`），
+    // 而这两样正是设计 v2 里 H1（"那 3 个 Normalization 层是否真是 FP32"）与
+    // H2（"图一变、tactic 变没有"）的判别量；不开它，落盘的 ONELINE 读出来没有精度字段。
+    builder_config.detailed_profiling = true;
     builder_config.min_prefill_batch = 1;
     builder_config.opt_prefill_batch = 1;
     builder_config.max_prefill_batch = 1;
@@ -493,26 +501,36 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
         const nvinfer1::DataType dtype = cuda->getTensorDataType(name.c_str());
         const bool is_half = dtype == nvinfer1::DataType::kHALF;
         const bool is_index = dtype == nvinfer1::DataType::kINT32;
-        // 按名字推断规模（避免猜维数）：
-        //   索引输入        → [1, seq]
-        //   logits 输出     → [1, seq, vocab]
-        //   K/V 输出        → [1, heads, seq, head_size]
-        //   残差类诊断输出  → [1, seq, hidden]
+        // 规模**逐个点名**，且**未识别的名字直接失败**。为什么不再留兜底：兜底会让探针扩容时
+        // 安静地分配过小 → 越界写 → 读回垃圾（看起来像 NaN）——那正是 TS-018 的形态，
+        // 也正是本用例此前没有自证的一处（FP16 下凑巧没炸，FP32 对照臂会真炸）。
+        // 输入按**声明 dtype** 分类，不按名字猜。
         // **logits 也必须绑定**：漏绑会在 enqueue 时报
         // "Neither address or allocator is set for output tensor logits"。
         size_t count = 0;
-        if (is_index) {
-            count = static_cast<size_t>(seq);
+        if (is_input) {
+            if (is_index) {
+                count = static_cast<size_t>(seq);  // input_ids / position_ids：[1, seq]
+            } else {
+                // prefill 图目前只有一个 FP32 输入：padding_bias [B,1,1,S]。
+                // 出现第二个就必须在这里显式定量，而不是按名字瞎猜。
+                ASSERT_EQ(name, "padding_bias")
+                    << "未识别的 FP32 输入：" << name << "（新增输入必须在此显式定量）";
+                count = static_cast<size_t>(seq);  // [1, 1, 1, S]
+            }
         } else if (name == "logits") {
-            count = static_cast<size_t>(seq) * kRealVocab;
-        } else if (name.find("k_layer") != std::string::npos ||
-                   name.find("v_layer") != std::string::npos) {
-            count = static_cast<size_t>(kRealHeads) * seq * kRealHeadSize;
-        } else if (name.find("mlp_fc") != std::string::npos ||
-                   name.find("mlp_gelu") != std::string::npos) {
-            count = static_cast<size_t>(seq) * 4 * 768;  // c_fc 把 hidden 放大 4 倍
+            count = static_cast<size_t>(seq) * kRealVocab;  // [1, seq, vocab]
+        } else if (name.rfind("k_layer", 0) == 0 || name.rfind("v_layer", 0) == 0) {
+            count = static_cast<size_t>(kRealHeads) * seq * kRealHeadSize;  // [1, NH, S, D]
+        } else if (name.rfind("mlp_fc_", 0) == 0 || name.rfind("mlp_gelu_", 0) == 0) {
+            count = static_cast<size_t>(seq) * 4 * kRealHidden;  // c_fc 把 hidden 放大 4 倍
+        } else if (name == "block_in_0" || name.rfind("attn_ctx_", 0) == 0 ||
+                   name.rfind("attn_out_", 0) == 0 || name.rfind("attn_res_", 0) == 0 ||
+                   name.rfind("ln2_out_", 0) == 0 || name.rfind("mlp_res_", 0) == 0) {
+            count = static_cast<size_t>(seq) * kRealHidden;  // 残差流 / 归一化 / MLP 残差
         } else {
-            count = static_cast<size_t>(seq) * 768;  // hidden = n_embd
+            FAIL() << "未识别的引擎 I/O 张量名：" << name
+                   << "（新增探针必须在此显式定量——落兜底会分配过小 → 越界写 → 假 NaN）";
         }
         Binding binding;
         binding.name = name;
@@ -520,20 +538,33 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
         binding.is_half = is_half;
         binding.count = count;
         binding.buffer = std::make_unique<DeviceBuffer>();
-        if (!binding.buffer->Allocate(count * (is_half ? 2u : 4u))) {
-            break;
-        }
+        // 分配失败必须响亮失败：此前是 `break`，会让后面的张量不被绑定，
+        // 于是归因被带到"漏绑"上去，而真正的原因是分配失败。
+        ASSERT_TRUE(binding.buffer->Allocate(count * (is_half ? 2u : 4u)))
+            << "缓冲分配失败：" << name;
         if (is_input) {
-            std::vector<int32_t> data(static_cast<size_t>(seq));
-            for (int32_t j = 0; j < seq; ++j) {
-                data[static_cast<size_t>(j)] = j;  // 供 position_ids 用；input_ids 下面覆盖
+            if (is_index) {
+                std::vector<int32_t> data(static_cast<size_t>(seq));
+                for (int32_t j = 0; j < seq; ++j) {
+                    data[static_cast<size_t>(j)] = j;  // 供 position_ids 用；input_ids 下面覆盖
+                }
+                if (name == "input_ids") {
+                    data.assign(tokens.begin(), tokens.end());
+                }
+                CUDA_CHECK(cudaMemcpy(binding.buffer->data(), data.data(),
+                                      data.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
+                ASSERT_TRUE(engine.SetInputShape(name, nvinfer1::Dims{2, {1, seq}}));
+            } else {
+                // padding_bias：**全 0**，形状按声明维度给 [B,1,1,S]。
+                // 此前这里把 position id 的整数位型当 float 写进去（FP16 下那些次正规数恰好下溢成
+                // 0，才一直没暴露）；FP32 对照臂会真的把这些值加进注意力分数。
+                // S 必须与 input_ids 的 S 一致：TRT 不会自动绑定两个输入的动态维
+                // （见 `src/core/llm_runner.cpp:461-493` 的同款口径）。
+                std::vector<float> zeros(static_cast<size_t>(seq), 0.0f);
+                CUDA_CHECK(cudaMemcpy(binding.buffer->data(), zeros.data(),
+                                      zeros.size() * sizeof(float), cudaMemcpyHostToDevice));
+                ASSERT_TRUE(engine.SetInputShape(name, nvinfer1::Dims4{1, 1, 1, seq}));
             }
-            if (name == "input_ids") {
-                data.assign(tokens.begin(), tokens.end());
-            }
-            CUDA_CHECK(cudaMemcpy(binding.buffer->data(), data.data(),
-                                  data.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
-            ASSERT_TRUE(engine.SetInputShape(name, nvinfer1::Dims{2, {1, seq}}));
         }
         ASSERT_TRUE(engine.SetTensorAddress(name, binding.buffer->data()));
         bindings.push_back(std::move(binding));
@@ -542,7 +573,10 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
     ASSERT_TRUE(engine.Enqueue(nullptr));
     engine.Synchronize(nullptr);
 
-    std::cout << "[诊断] FP16 prefill 各输出（max|v| / 是否 NaN）\n";
+    // 读数三项：幅值（max|v|）、RMS、以及**首个非有限元素的下标**。
+    // 只看"有没有 NaN"分不清"整行坏"还是"某个位置坏"，只看 max 又分不清"突变"与"逐步膨胀"；
+    // 而 H1（行内归约溢出/塌陷）的判别量正是 **LN 输入的 RMS**（阈值推导见 analysis.md 的 D1）。
+    std::cout << "[诊断] FP16 prefill 各输出（max|v| / rms / 是否非有限 / 首个非有限下标）\n";
     for (const Binding& binding : bindings) {
         if (binding.is_input) {
             continue;
@@ -551,19 +585,60 @@ TEST(Gpt2GenerateTest, Fp16PrefillOutputsDiagnostic) {
         CUDA_CHECK(cudaMemcpy(raw.data(), binding.buffer->data(), raw.size(),
                               cudaMemcpyDeviceToHost));
         float max_abs = 0.0f;
-        bool has_nan = false;
+        double sum_sq = 0.0;  // 统计本身用 double：与引擎精度无关，只为不让"测量"先失真
+        int64_t first_non_finite = -1;
         for (size_t k = 0; k < binding.count; ++k) {
             const float v = binding.is_half
                                 ? __half2float(reinterpret_cast<const __half*>(raw.data())[k])
                                 : reinterpret_cast<const float*>(raw.data())[k];
-            if (std::isnan(v) || std::isinf(v)) {
-                has_nan = true;
-                break;
+            if ((std::isnan(v) || std::isinf(v)) && first_non_finite < 0) {
+                first_non_finite = static_cast<int64_t>(k);  // 不 break：幅值也要读完
             }
             max_abs = std::max(max_abs, std::fabs(v));
+            sum_sq += static_cast<double>(v) * static_cast<double>(v);
         }
+        const double rms = binding.count == 0
+                               ? 0.0
+                               : std::sqrt(sum_sq / static_cast<double>(binding.count));
         std::cout << "        " << binding.name << "  " << (binding.is_half ? "FP16" : "FP32")
-                  << "  max|v|=" << max_abs << "  NaN=" << (has_nan ? "是" : "否") << "\n";
+                  << "  max|v|=" << max_abs << "  rms=" << rms << "  非有限="
+                  << (first_non_finite >= 0 ? "是" : "否")
+                  << "  首个非有限下标=" << first_non_finite << "\n";
+    }
+
+    // 逐层信息落盘（层类型 / 计算精度 / TacticName）+ 逐层 K/V 声明精度。
+    //
+    // 落盘是设计 v2 里 H1 / H2 的判别量来源：H1 要确认那 3 个 Normalization 层是否**真是** FP32
+    // （"位置不变"不能当否证，见 TROUBLESHOOTING 18.2 的教训 2）；H2 要比较"图/构建变了 tactic 变没有"。
+    // 逐层打印 K/V 精度是 `analysis.md` 的 D1a 留下的窄假设：runner 的 dtype 只查了第 0 层，
+    // 其余层**假定相同**——这里把 12 层全打出来，全层一致才算这条假设被排除。
+    {
+        const std::string layer_dump_path = "/tmp/mini_trt_llm_gpt2_fp16_diag_layers.tsv";
+        std::unique_ptr<nvinfer1::IEngineInspector> inspector(cuda->createEngineInspector());
+        std::ofstream dump(layer_dump_path);
+        for (int32_t i = 0; i < cuda->getNbLayers(); ++i) {
+            const char* line =
+                inspector == nullptr
+                    ? nullptr
+                    : inspector->getLayerInformation(i, nvinfer1::LayerInformationFormat::kONELINE);
+            if (line != nullptr && dump) {
+                dump << i << "\t" << line << "\n";
+            }
+        }
+        std::cout << "[诊断] 逐层信息（含精度 / TacticName，需 detailed_profiling）→ "
+                  << layer_dump_path << "，共 " << cuda->getNbLayers() << " 层\n";
+        std::cout << "[诊断] 逐层 K/V 声明精度（必须全层一致；runner 只查了第 0 层）\n";
+        const auto dtype_name = [](nvinfer1::DataType t) {
+            return t == nvinfer1::DataType::kHALF ? "FP16" : "FP32";
+        };
+        for (int32_t layer = 0; layer < kRealLayers; ++layer) {
+            const std::string k_name = "k_layer" + std::to_string(layer);
+            const std::string v_name = "v_layer" + std::to_string(layer);
+            std::cout << "        " << k_name << "="
+                      << dtype_name(cuda->getTensorDataType(k_name.c_str())) << "  "
+                      << v_name << "="
+                      << dtype_name(cuda->getTensorDataType(v_name.c_str())) << "\n";
+        }
     }
 }
 

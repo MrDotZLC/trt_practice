@@ -699,6 +699,32 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
         return false;
     }
 
+    // ---- 数值定位探针（仅显式打开 export_diagnostics 时挂；会改 I/O 契约 → TS-019）----
+    //
+    // 为什么是"一次挂全"而不是"逐轮加切点"：前 5 轮真机定位（TS-018.1）每一轮都在改图，
+    // 而"多挂输出会改变 TRT 的融合与 tactic 选择"这件事本仓库**实测过**
+    // （tests/test_resnet18_int8_probe.cpp 第 300 行附近：探针图让 i8i8 tactic 计数归零）。
+    // 在"tactic 本身是嫌疑之一"的前提下，逐轮加探针等于逐轮换仪器 → 读数之间不可比。
+    // 代价是诊断引擎更大，但它用完即弃、不进产品路径。
+    //
+    // 命名 = `<切点>_<层号>`；第 0 层的四个旧名（attn_res_0 / mlp_res_0 / mlp_fc_0 /
+    // mlp_gelu_0）保持不变，历史引用（TROUBLESHOOTING 18.x / PROGRESS §5.11）继续可读。
+    //
+    // 只对 prefill 生效：decode 是单 token，挂 7×n_layer 个探针只会让引擎更笨重而拿不到新信息。
+    const bool export_probes = export_diagnostics && !is_decode;
+    const auto add_probe = [&](nvinfer1::ITensor* tensor, const char* point,
+                               int32_t at_layer) {
+        if (!export_probes || tensor == nullptr) {
+            return;
+        }
+        const std::string name = std::string(point) + "_" + std::to_string(at_layer);
+        tensor->setName(name.c_str());
+        network->markOutput(*tensor);
+    };
+    // block 0 的输入（= embedding 求和）。第 L≥1 层的 block 输入与上一层的 mlp_res 是**同一个
+    // 张量**，而一个张量只能有一个名字 / 一次输出 —— 所以这个点只能挂第 0 层一次。
+    add_probe(hidden_state, "block_in", 0);
+
     // ---- Transformer block × n_layer ----
     for (int32_t layer = 0; layer < cfg.n_layer; ++layer) {
         const std::string prefix = "h." + std::to_string(layer) + ".";
@@ -969,44 +995,38 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
             LayerName(scope + "context_heads"));
         nvinfer1::ITensor* context_flat = AddReshape(
             network, context, Dims3(0, 0, hidden), LayerName(scope + "context_flat"));
+        add_probe(context_flat, "attn_ctx", layer);
         nvinfer1::ITensor* attn_out =
             AddLinear(network, context_flat, c_proj_w, c_proj_b,
                       LayerName(scope + "attn_c_proj"));
         if (attn_out == nullptr) {
             return false;
         }
+        add_probe(attn_out, "attn_out", layer);
         nvinfer1::ITensor* after_attn = AddElementWise(
             network, hidden_state, attn_out, nvinfer1::ElementWiseOperation::kSUM,
             LayerName(scope + "attn_residual"));
+        add_probe(after_attn, "attn_res", layer);
 
         // ---- MLP ----
         nvinfer1::ITensor* norm2 =
             AddLayerNorm(network, after_attn, ln2_w, ln2_b, cfg.layer_norm_epsilon,
                          LayerName(scope + "ln_2"));
+        add_probe(norm2, "ln2_out", layer);
         nvinfer1::ITensor* mlp =
             AddLinear(network, norm2, c_fc_w, c_fc_b, LayerName(scope + "c_fc"));
         if (mlp == nullptr) {
             return false;
         }
+        add_probe(mlp, "mlp_fc", layer);
         nvinfer1::IActivationLayer* gelu =
             network->addActivation(*mlp, nvinfer1::ActivationType::kGELU_TANH);
-        // 数值定位：第 0 层 MLP 的两个切点（gelu 前 / gelu 后）。
-        // "NaN 是 c_fc 造出来的、还是 gelu 造出来的"是这次排查的关键分界，
-        // 在图上留两个输出比逐次猜算子便宜（见 TROUBLESHOOTING + TS-018）。
-        // 仅在显式打开 export_diagnostics 时挂：它们会改 I/O 契约（TS-019）。
-        if (export_diagnostics && layer == 0) {
-            mlp->setName("mlp_fc_0");
-            network->markOutput(*mlp);
-        }
         if (gelu == nullptr) {
             return false;
         }
         // gelu_new 就是 tanh 近似，与 kGELU_TANH 是同一个公式。
         gelu->setName(LayerName(scope + "gelu_new").c_str());
-        if (export_diagnostics && layer == 0) {
-            gelu->getOutput(0)->setName("mlp_gelu_0");
-            network->markOutput(*gelu->getOutput(0));
-        }
+        add_probe(gelu->getOutput(0), "mlp_gelu", layer);
         nvinfer1::ITensor* mlp_out =
             AddLinear(network, gelu->getOutput(0), c_mlp_w, c_mlp_b,
                       LayerName(scope + "mlp_c_proj"));
@@ -1019,17 +1039,7 @@ bool GPT2ModelBuilder::Build(nvinfer1::INetworkDefinition* network,
         if (hidden_state == nullptr) {
             return false;
         }
-
-        // 数值定位用的中途输出（仅第 0 层，且仅在显式打开 export_diagnostics 时）：
-        // "某层的 K/V 出现 NaN 时，NaN 是来自本层的注意力还是 MLP" 是排查中反复要回答的问题，
-        // 而在图上留两个输出就能直接读出来（成本：每层两份 [B,S,H]，第 0 层可忽略）。
-        // 见 docs/TROUBLESHOOTING.md + TS-018 的定位过程。
-        if (export_diagnostics && layer == 0) {
-            after_attn->setName("attn_res_0");
-            hidden_state->setName("mlp_res_0");
-            network->markOutput(*after_attn);
-            network->markOutput(*hidden_state);
-        }
+        add_probe(hidden_state, "mlp_res", layer);
 
         // 把每层的 K/V 暴露成网络输出：
         //   prefill → 写进分页 cache；

@@ -174,13 +174,16 @@ prefill 前向（同一份权重、同一个 prompt）
          → ⑥ 仪器自证：C 必须全有限，否则仪器本身有 bug
 ```
 
-7 切点 = block 输入 / attn 输出 / attn 残差 / `ln2` 输出 / `c_fc` / GELU / mlp 残差。
+7 切点（逐层）= `attn_ctx_{L}`（注意力输出，c_proj 前）/ `attn_out_{L}`（c_proj 后）/
+`attn_res_{L}`（注意力残差后）/ `ln2_out_{L}` / `mlp_fc_{L}` / `mlp_gelu_{L}` / `mlp_res_{L}`。
+另加**只有一份**的 `block_in_0`：第 L≥1 层的 block 输入与上一层的 `mlp_res_{L-1}` 是**同一个张量**，
+而一个张量只能有一个名字 / 一次输出——所以逐层探针是 12 × 7 = 84 个，加 `block_in_0` 共 **85 个**。
 
 ### Module Design
 
 | Module | Responsibility | Dependency |
 |---|---|---|
-| 诊断导出点（构建器 `gpt2_model_builder.cpp`） | `export_diagnostics=true` 时按层挂 7 个切点（现为"仅第 0 层 4 个"） | 现有开关机制；**会改 I/O 契约 → 必须 bump 图版本**（见 Resource Lifecycle） |
+| 诊断导出点（构建器 `gpt2_model_builder.cpp`） | `export_diagnostics=true` 时按层挂 7 个切点（现为"仅第 0 层 4 个"），再加 `block_in_0` | 现有开关机制；**会改 I/O 契约 → 探针集变化必须失效旧引擎**（见 Resource Lifecycle） |
 | 逐层读数（诊断用例） | 绑定尺寸从引擎读、输入按声明形状填、打印 max\|v\| / RMS / 首个非有限下标 | 引擎 I/O 查询（`getTensorShape`） |
 | tactic / 精度读数 | `IEngineInspector` 逐层 ONELINE 落盘，提取 `TacticName` | `detailed_profiling=true`（`src/core/builder.cpp:254`）；读法复用 `test_resnet18_int8_probe.cpp` 的 `InspectTactics` |
 | 修复面 | 对钉死的算子族显式指定计算精度，或修绑定 | 归一化处已有先例（`gpt2_model_builder.cpp:256`） |
@@ -203,12 +206,14 @@ LayerProbe {                  // 每条 = 一次诊断读数
 1. **必须同时记"是否非有限"与幅值**——只看前者分不清"突变"与"逐步膨胀"。
 2. 新增**首个非有限下标**与 **RMS**：只记 max 看不出"整行坏"还是"个别位置坏"，
    而 H1（行内归约）的判别量正是 **LN 输入的 RMS**。
-3. **绑定尺寸与形状从引擎读**，不再按名字猜（今天测试里有 `seq * 768` 的兜底：任何新探针名没被
-   命中就会分配过小 → 越界写 → 假 NaN）。`padding_bias` 按声明形状（`[B,1,1,S]`）**全写 0**，
-   且它的 S 维必须与 `input_ids` 的 S 一致——`llm_runner.cpp:461-493` 已记着
-   "两个输入的动态维不会自动绑定"这条坑。今天诊断用例在这一路上**没有自证**（给 rank-2 形状、
-   写进 position id 的位型）：FP16 下那些次正规数恰好下溢成 0，**图 C 是 FP32，会真的加进
-   注意力分数**——所以跑图 C 之前必须先修这条。
+3. **输入按声明 dtype 填、输出遇未识别名字即失败**（落码期口径，2026-10-06 定）：
+   今天测试的 `seq * 768` 兜底会让新探针名安静地分配过小 → 越界写 → 假 NaN，所以先把兜底换成硬闸；
+   完整版"尺寸与形状全部从引擎读"依赖 `getTensorShape` 对**动态维**的语义，而本机无 TRT 头文件、
+   无法建引擎证实 → 记为**待真机项**，不猜语义。
+   `padding_bias` 按声明形状 `[B,1,1,S]` **全写 0**，且 S 维必须与 `input_ids` 的 S 一致——
+   `llm_runner.cpp:461-493` 已记着"两个输入的动态维不会自动绑定"这条坑。
+   今天诊断用例在这一路上**没有自证**（给 rank-2 形状、写进 position id 的位型）：
+   FP16 下那些次正规数恰好下溢成 0，**图 C 是 FP32，会真的加进注意力分数**——所以跑图 C 前必须先修。
 
 ### Runtime Flow
 
@@ -256,7 +261,7 @@ LayerProbe {                  // 每条 = 一次诊断读数
   且不能声称"没有代价"；对照必须用**同一次构建的引擎**（`PROGRESS.md` §6.4：重建 ≠ 逐字节相同）。
 - 本机无 Tensor Core：即使修好 FP16，收益也主要是"显存减半 / 带宽减半"，
   性能对照要按带宽口径讲，不要按算力口径讲。
-- 图 B 的 84 个输出（12 层 × 7 切点）只存在于**诊断引擎**，不进产品路径；
+- 图 B 的 85 个探针输出（12 层 × 7 切点 + `block_in_0`）只存在于**诊断引擎**，不进产品路径；
   引擎体积与构建时间是这次刻意付出的代价（换"读数可比"）。
 
 ### Trade-off
@@ -268,7 +273,37 @@ LayerProbe {                  // 每条 = 一次诊断读数
 | H1 | 行内归约在 FP16 下溢出 / 塌陷（LN 的均值方差、Softmax 分母） | 首个 NaN 层 **LN 输入的 RMS** | 768 维平方和溢出点 = `sqrt(65504 / 768) ≈ 9.3`；一次和溢出点 = `65504 / 768 ≈ 85.3`（推导：FP16 上限 65504 ÷ hidden 768）。实测出现过 95.4 的 max\|v\| → **已在射程内**，不是"差几个数量级" | **部分已否证但证据不牢**：`setComputePrecision(kFLOAT)` 已在 `gpt2_model_builder.cpp:256`；但"位置不变 ⇒ 排除"被评审判为不牢（no-op 也是位置不变）。判别动作 = 读 ② / ④ 确认那 3 个 Normalization 层是否真是 FP32 |
 | H2 | tactic 相关（弱类型 FP16 下选到有数值缺陷的 kernel） | `L_A` vs `L_B` + ② / ④ 的 tactic 名单 | 同图同 tactic 仍复现 ⇒ 排除；图一变、层就变 ⇒ 成立 | 待真机 |
 | H3 | 层内局部极值从没被量过 | ⑤ 每层 LN 输入的幅值剖面 | 纯测量，给 H1 供输入；顺带验"幅值全在几十以内"对**层内**张量是否也成立 | 待真机 |
-| H4 | 非数值路径：FP16 引擎 I/O 的声明精度与 runner 分配不一致 | 声明精度表 ↔ 分配表逐行对账；logits / K-V 首 16 个元素原文 | 零真机成本可先做；NaN 落在正常区域且 FP32 同路径干净 ⇒ 排除 | **可先做（沙箱）** |
+| H4 | 非数值路径：FP16 引擎 I/O 的声明精度与 runner 分配不一致 | 声明精度表 ↔ 分配表逐行对账；logits / K-V 首 16 个元素原文 | 零真机成本可先做；NaN 落在正常区域且 FP32 同路径干净 ⇒ 排除 | **已做静态半边（2026-10-06）：主路径排除**，只留一条更窄的待真机项 → **D1a** |
+
+#### D1a H4 对账结果（2026-10-06，静态半边，零真机成本）
+
+对账对象：构建器声明的 I/O ↔ `LLMRunner` 的缓冲分配（逐项，来源 = 代码行）。
+
+| 张量 | 构建器侧声明 | runner 侧分配 | 一致 |
+|---|---|---|---|
+| `input_ids` / `position_ids` | `kINT32`（`gpt2_model_builder.cpp:548-553`） | `batch * seq * sizeof(int32_t)`（`llm_runner.cpp:339-340`） | ✅ |
+| `padding_bias` | `kFLOAT` `[B,1,1,S]`（`:572`） | `batch * seq * sizeof(float)`（`:341`），填 0 / `-1e4`（`:469-480`） | ✅ |
+| `logits` | markOutput 后**由 TRT 决定**（`:1109-1110`） | 查询声明精度后按 `elem` 分配（`:294`、`:342-344`） | ✅ |
+| `k_layer{i}` / `v_layer{i}` | 同上（`:1058-1059`） | 查询**第 0 层**后按 `prefill_kv_elem` 分配（`:292`、`:318`） | ⚠️ 见下 |
+| decode `key_cache_0` | 由引擎决定 | 与 `Config::is_half` **不等即拒绝启动**（`:115-121`） | ✅ |
+| PagedKVCache | — | `is_half = config_.is_half`；`source_is_half = prefill_kv_half_`（查询值），由写入内核做源→目标转换（`:173-174`） | ✅ |
+
+**结论 1（排除）**：主路径**没有**按 `Config::is_half` 硬编码宽度的地方——凡是"TRT 决定"的张量，
+runner 都先查询再分配，且 decode cache 与 prefill/decode K/V 的不一致都做了拒绝启动。
+所以"FP16 引擎的 I/O 声明精度与 runner 分配不一致"这一条**在产物路径上不成立**
+（`TROUBLESHOOTING.md` TS-018 前半段那类越界写今天不会再复现）。H4 从"嫌疑"降为"仅剩一条窄假设"。
+
+**结论 2（留下的待真机项，一行断言的成本）**：`dtype_of` 只查了 `k_layer0`，其余 11 层的 K/V
+声明精度**假定与之相同**（`:129-132`）；decode 侧同理只查 `key_cache_0`。若某一层与第 0 层不同，
+那一层的缓冲就会按错误宽度读写——正是 #18 的形态且**不报错**。
+判据：真机逐层打印 `getTensorDataType("k_layer{i}")`（prefill 与 decode 各 12 层）+
+`key_cache{i}`，要求**全层一致**；不一致即本假设成立、按出口 B 处置。
+
+**结论 3（仪器侧，非产品）**：唯一确实写错的是**诊断用例**——`padding_bias` 被写进 position id 的
+位型、形状按 rank-2 设、张量体积按名字猜（`tests/test_gpt2_generate.cpp` 的
+`Gpt2GenerateTest.Fp16PrefillOutputsDiagnostic`，绑定循环从该文件第 470 行附近的输入分支开始）。
+FP16 下那些次正规数恰好下溢成 0，所以它掩盖至今；**FP32 对照臂（图 C）会被它污染**。
+这条已写进 `### Data Structure` 第 3 条，是 B1' 必须先修的仪器项。
 
 #### D2 修复出口
 

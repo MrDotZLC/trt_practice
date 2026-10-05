@@ -42,6 +42,14 @@ namespace {
 // 图与 3 逐位相同，但指纹看不见"建图代码里的分支"，所以仍然 +1——否则旧引擎会被复用，
 // 而它烘的是 FP32 常量。
 constexpr int32_t kEngineGraphVersion = 4;
+
+// 诊断探针集合的代次（2026-10-06，REQ-018 B1'）。
+//
+// 为什么需要它：探针是"按 `export_diagnostics` 这一个布尔开关**整组**挂上/摘掉"的，
+// 所以改探针的**点位或层数**时开关值不变、指纹也不变——诊断用例会安静复用上一次仪器建的引擎，
+// 读回来的还是旧读数的形状，而症状是"数字看起来不对"（`docs/TROUBLESHOOTING.md` TS-040 同类）。
+// 只在开诊断时并入指纹（见 MakeFingerprintInputs），因此产品路径与其它 feature 的引擎指纹不变。
+constexpr int32_t kDiagnosticProbeVersion = 1;
 // **4: S4 的 packed 混合批 prefill 图**（一个 packed 张量装两相、attention 按段分派）。
 // 它与 version 3 的 padding prefill 图**并存**（由 `Config::packed_mixed_prefill` 选），
 // 两套图的 I/O 契约不同（多 6 个输入、K/V 输出换成 token-major 的 [T,NH,D]、去掉 padding_bias），
@@ -354,6 +362,12 @@ EngineFingerprintInputs EngineBuilder::MakeFingerprintInputs(const std::string& 
         {"export_diagnostics", config_.export_diagnostics},
         {"detailed_profiling", config_.detailed_profiling},
     };
+    // 诊断探针的代次只在**开诊断时**参与：探针点位/层数变化时开关值不变，
+    // 不带这一项就会复用旧探针引擎（见 kDiagnosticProbeVersion 的说明）。
+    if (config_.export_diagnostics) {
+        inputs.numeric_params.emplace_back("diagnostic.probe_version",
+                                           kDiagnosticProbeVersion);
+    }
     return inputs;
 }
 
