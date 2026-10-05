@@ -89,6 +89,16 @@ if(Python3_Interpreter_FOUND)
                 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_skips.py --self-test)
 endif()
 
+# docs/dev 的一致性校验（INDEX §1 的 phase/status 必须等于各条目 STATE.md 里的真值）——同样
+# **必须放在 find_package 之后**（原因见上面那条）。它不碰 GPU / 资产 / 构建，所以沙箱里就该
+# 跑得动：漂移在这里变红，比在下一个会话里被当成现状便宜得多（2026-10-05 起）。
+if(Python3_Interpreter_FOUND)
+    add_test(NAME docs_index_check
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_docs_index.py
+                --root ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+endif()
+
 if(Python3_Interpreter_FOUND)
     add_test(NAME onnx_graph_probe
         COMMAND ${Python3_EXECUTABLE}

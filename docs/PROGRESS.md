@@ -11,6 +11,8 @@
 - **项目一句话**：面向 Turing / `sm_75` 的极简多模态 TensorRT 推理框架，用 `mini_trt_llm` 统一承载 CV（ResNet18）与 LLM（GPT-2），替换两个历史 ONNX 示例工程。
 - **现在在哪**：Phase 0 / 1 / 1.5 / 2 / 3 / 4 / 5 全部交付；**活着的条目 4 条** → §4。
 - **当前基线（唯一现状口径，2026-09-28）**：沙箱 **268 条 / 0 失败**；真机整轮 **267 条 / 1 红 / 0 跳过 / 301.72 s**。
+  **待复跑**：2026-10-05 新注册 1 条 host 自检 `docs_index_check`（见 `mini_trt_llm/tests/CMakeLists.txt`）→
+  沙箱**应为 269**；在复跑确认前，268 仍是唯一的**实测**值。
   唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`（GPT-2 FP16 NaN，**按设计**，见 §5.11）。
   真机必须带 `MINI_TRT_REQUIRE_GPU=1`（否则 GPU 用例静默跳过 = 白跑）；证据 = `build/Testing/Temporary/LastTest.log`。
 - **精度口径**：GPT-2 用 **FP32**；ResNet18 的 FP32 / FP16 都健康；INT8 走 **Q/DQ 显式量化**，判据 = "FP32 余量子集一致率"（实测 12/12），权重默认 per_tensor。见 §5.11 / §2.15 / §3.0j。
