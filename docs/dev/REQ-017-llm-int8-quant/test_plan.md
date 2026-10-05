@@ -97,3 +97,78 @@ Integration 与需要 GPU 的项**只能真机跑**；结果一律先记"未验�
 **P6 的 Exit Gate 尚未满足**：四类用例都要求**实际通过**，而本环境连编译都不具备（与 `REQ-016` 同源）。
 因此本文件先落"用例 + 判据 + 口径"，**不写通过**；真机窗口按清单逐条打勾后再回填 `## Actual Result`
 与本节状态。
+
+## 真机窗口执行清单（开箱即用）
+
+> **前提**：当前设备是目标真机（`AGENTS.md` §1：WSL2 + GTX 1660 Ti / sm_75 + CUDA 12.6.85 +
+> TensorRT 10.15.1）。**换了设备就按设备纪律先确认能力并把结论写进 `STATE.md`**
+> （见 `requirement.md` 的 `## Constraints`）——本清单假设"能编译 + 能跑 GPU 用例"。
+>
+> 为什么把它写成一节：本 feature 现在**全部剩余项都卡在同一个窗口**，把命令与覆盖关系钉在一处，
+> 才能把往返次数压到最少（每次往返的代价见 `docs/PROGRESS.md` §5.13b 的判别下限说明）。
+
+### 0. 资产准备（缺一项就会跳过一批用例；`MINI_TRT_REQUIRE_ASSETS=1` 时判失败）
+
+| 资产 | 生成命令 | 谁需要 |
+|---|---|---|
+| `models/gpt2/{config.json, model.safetensors}` | `python3 mini_trt_llm/tools/convert/hf_to_mini_trt_llm.py --model_name_or_path <HF gpt2 目录> --output_dir models/gpt2` | 全部真 GPT-2 用例（含 R1） |
+| `models/gpt2/{model_int8.safetensors, quant_int8.json}` | `python3 mini_trt_llm/tools/convert/quantize_gpt2.py --model-dir models/gpt2` | I3（D7 的体积判据） |
+
+产物出来后可先用脚本自带的复核：`quantize_gpt2.py --model-dir models/gpt2 --verify`
+（它会重算 int8 码并核对清单里记的两份 sha256）。
+
+### 1. 配置与编译（P5 Exit Gate 的"编译项"）
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=75
+cmake --build build -j$(nproc)
+```
+
+判据：**编译通过、无新增 warning**。若有 warning，**只报不改**——不要在同一个窗口里顺手改别的。
+
+### 2. 不依赖 GPU 的那一批（先跑，快）
+
+```bash
+ctest --test-dir build -R 'quantize_gpt2_selftest|QuantSpecTest' --output-on-failure
+```
+
+对应 U1 / U2 / F1–F9。它们在沙箱里没跑过的唯一原因是**这里没有编译器**，不是缺 GPU。
+
+### 3. 需要 GPU 的那一批（含 D7）
+
+```bash
+# 目标用例：Integration I1–I3 + 失败面 F10 / F11
+MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
+    --gtest_filter='Gpt2Int8WeightsTest.*'
+
+# 回归：既有 GPT-2 用例不得出现新红（按设计红的那条 FP16 用例除外，见下）
+MINI_TRT_REQUIRE_GPU=1 ./build/mini_trt_llm/tests/mini_trt_llm_tests \
+    --gtest_filter='Gpt2*:RealGpt2*'
+```
+
+两点预期（**不是故障**）：
+
+- `FullGpt2Int8EngineIsSmallerThanFp32` 首次运行会**构建两个真实引擎**（分钟级）；之后命中引擎缓存
+  （路径固定在 `/tmp/mini_trt_llm_gpt2_d7_{fp32,int8}.engine`）。
+- 回归集合里 `RealGpt2Fp16GreedyMatchesReferenceTokens` 是**按设计红**（`REQ-018` 的 FP16 NaN），
+  它红不算新红；但**除了它之外**出现任何红都要停下查。
+
+### 4. 回填与登记
+
+1. 每条用例的结果写进本文件的 `## Actual Result` 与 `## Status`（逐条打勾，不写"看起来对"）。
+2. **D7 的结论**（体积降了多少 / 没降）同时写进 `benchmark_before.md` 的"恢复后必补五项"第 1 项
+   与 `docs/PROGRESS.md` §4.7；若体积**没降**，按 `design.md` 的 D7 回 Gate-A，**不得**改判据。
+3. 若走到"只有 FP16 激活才融合"那一支，按 `STATE.md` 的 `## Next Action` 第 6 条处理
+   （在 `REQ-018` 的 requirement 里加联合验收，届时再点名）。
+
+### 5. 覆盖对照：本清单 ↔ `PROGRESS` §4.7 的未完成表
+
+行数 = 该表的 5 项（**唯一来源**是 `docs/PROGRESS.md` §4.7，这里只做"由哪一步覆盖"的映射）。
+
+| §4.7 的项 | 由本清单哪一步覆盖 | 备注 |
+|---|---|---|
+| 1 编译通过 / 无新增 warning | 第 1 步 | P5 Exit Gate |
+| 2 `addDequantize` 的签名与广播约束 | 第 1 步 + 第 3 步 | 编译过 + 能建出图即说明约束成立；建不出来就是 D7 的一条负结果 |
+| 3 D7：DQ 是否被吸收（**引擎体积必须下降**） | 第 3 步的 `FullGpt2Int8EngineIsSmallerThanFp32` | 本轮**没有**独立的最小图实验——小模型的体积差会被元数据淹没，所以判据放在真实模型上 |
+| 4 `wte` 新路径在 FP32 / FP16 下的确认 | 第 3 步覆盖 **FP32**；**FP16 臂本轮没有用例** | FP16 端到端已知 NaN（`REQ-018` 未解），此时加 FP16 臂给不出可判结论 —— 与 P1-2 的"不合并"裁决一致：等 `REQ-018` 解套或 D7 显示必须走 FP16 时再补 |
+| 5 P6 的用例与 `test_plan.md` | 第 2、3 步 + 本文件 | —— |
