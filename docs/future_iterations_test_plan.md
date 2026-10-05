@@ -677,7 +677,7 @@ MINI_TRT_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure
 | **PP-1 ↔ PP-2 互校** | ✅ 一致（差约 5%） | PP-1 单趟 ctx=1024 = 0.918948 ms/层 ×12 层 = **11.03 ms/步**；PP-2 单趟斜率 10.8048 ms/1000 × 0.976 = **10.5 ms/步** → 两把独立尺子一致（`PROGRESS.md` §2.13 的"参考要互校"） |
 | 引擎缓存行为 | ✅ **真机已验证**（2026-09-27） | 图版本 bump 后**首次** `Engine cache stale → 重建`：prefill **627 MB** + decode **475 MB**（分钟级，属预期）；**第二次起 `Engine cache hit`** 且不再重建 → 指纹机制按设计生效（出处：`PROGRESS.md` §3.0i） |
 | 端到端语义（复用用例） | ✅ **真机通过**（2026-09-27） | `Gpt2DecodeConsistency.*` 与 FP32 8-token 冻结基线**逐 token 一致**；PP-2 打印"三档 prompt 的生成 token 与单趟完全一致"（出处：`PROGRESS.md` §3.0i、开发计划 §12.4） |
-| 沙箱全量（**当时**） | ✅ **257 条 / 0 失败**（2026-09-27） | `ctest --test-dir build`；原 242 + 本轮 15（H 8 实跑 + GPU 7 跳过）。**现状见 §1 的"当前基线"（264 / 0）** |
+| 沙箱全量（**当时**） | ✅ **257 条 / 0 失败**（2026-09-27） | `ctest --test-dir build`；原 242 + 本轮 15（H 8 实跑 + GPU 7 跳过）。**现状见 §1 的"当前基线"（268 / 0）** |
 
 ---
 

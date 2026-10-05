@@ -33,7 +33,7 @@ P95:
 N/A: 当前不在 GTX 1660 Ti 环境（沙箱无 GPU、无 nvcc / cmake / 编译器，也无 TensorRT），
 P4 baseline 自 2026-10-03 起**搁置**。
 
-这是**延后不是放弃**：环境恢复后必须补齐下面四项，缺一项则"批上限"与 §Performance Consideration
+这是**延后不是放弃**：环境恢复后必须补齐下面五项（2026-10-05 增列第 5 项），缺一项则"批上限"与 §Performance Consideration
 的显存结论都没有依据（`AGENTS.md` §7：阈值与上限不许来路不明）。
 
 环境恢复后必须量（口径：**关闭常驻诊断**，D7）：

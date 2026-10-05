@@ -46,7 +46,7 @@
 | 5 | split-K：斜率降 **88.85%**（kernel）/ **88.20%**（端到端）；`max_rel 1.5e-06` | 同上、`REQ-014` |
 | 6 | ctx = 1024：每层每步 **0.919 → 0.126 ms** | 同上 |
 | 7 | Top-P 采样：配对净收益 **12.6 / 22.4 / 15.7 / 17.6×** | 同上、`REQ-012` |
-| 8 | 规模：`src` + `include` 约 **9.9k 行**、**265** 条注册用例、**50** 条排查记录 | `PROGRESS.md` §3、`TROUBLESHOOTING.md` 条目数 |
+| 8 | 规模：`src` + `include` 约 **13.8k 行**、**268** 条 ctest 条目、**56** 条排查记录 | `PROGRESS.md` 当前基线、`TROUBLESHOOTING.md` 条目数；代码行数为 2026-10-05 实测（`mini_trt_llm/{src,include}` 的 `.cpp/.cu/.hpp/.cuh`，不含测试与第三方） |
 
 环境固定项：TensorRT 10.15.1、CUDA 12.6.85、`sm_75`、C++17。
 
@@ -132,13 +132,13 @@ prefill/decode 双引擎）从零实现了一遍，并用一套带出处的数�
 - **CV 侧**从 FP32 到 INT8 是通的：ResNet18 三种精度都验过。
 - **判据带出处**：每条阈值旁边写清是哪次实测 / 哪个标准 / 哪份文档。
 - **长上下文性能**：每步 decode 延迟增长斜率降 88%（kernel 级两套量法互相印证）。
-- **工程基建**比功能面更突出：265 条注册用例、资产闸门、50 条排查记录、三层文档体系。
+- **工程基建**比功能面更突出：268 条 ctest 条目、资产闸门、56 条排查记录、三层文档体系。
 
 ### 1.6 规模与技术栈
 
 - C++17 / CUDA 12.6（`CUDART_VERSION 12060`）/ TensorRT 10.15.1（`IPluginV3`）/ CUB /
   SentencePiece / GoogleTest；Python 侧 torch + onnx + transformers 做参考实现与产图。
-- `src` + `include` 约 **9.9k 行**（不含测试与第三方）；**265** 条注册用例；**50** 条排查记录。
+- `src` + `include` 约 **13.8k 行**（2026-10-05 实测，不含测试与第三方）；**268** 条 ctest 条目；**56** 条排查记录。
 - `include/` 39 个头文件、`src/` 27 个实现文件、`tests/` 56 个文件（含 42 个 `test_*.cpp`）。
 - 开发过程按 `docs/dev/REQ-NNN-*` 分 19 个条目推进，每个条目一套 artifact（见 Part 5）。
 
@@ -540,7 +540,7 @@ KV cache 的追加接口已按"每层一次、只推进一次长度"设计，扩
 
 > 这条线在项目里有一手材料：根目录 `AGENTS.md`（硬约束）、
 > `.agents/skills/trt-inference-engineering/`（阶段链与模板）、`docs/dev/REQ-*/`（19 个条目的 artifact）、
-> `docs/TROUBLESHOOTING.md`（50 条排查记录）。
+> `docs/TROUBLESHOOTING.md`（56 条排查记录）。
 
 ### 5.1 怎么用 Codex 开发
 
@@ -571,7 +571,7 @@ KV cache 的追加接口已按"每层一次、只推进一次长度"设计，扩
 
 ### 5.3 怎么保证正确性与可靠性
 
-- **测试分层与门控**：265 条注册用例按 host / GPU / 性能分层；host 用例缺资产返回 77 → Skipped。
+- **测试分层与门控**：268 条 ctest 条目按 host / GPU / 性能分层（含 Python 自检项）；host 用例缺资产返回 77 → Skipped。
   GPU 用例统一走 `MINI_TRT_SKIP_IF_NO_CUDA`；真机带 `MINI_TRT_REQUIRE_GPU=1` 时**跳过即失败**。
   刻意不把"无 GPU 跳过"整体改成失败，否则 CI 永远不绿。
 - **资产闸门**：`tools/check_skips.py` + `tests/data/expected_skips.txt`（基线为空），
@@ -680,7 +680,7 @@ KV cache 的追加接口已按"每层一次、只推进一次长度"设计，扩
 - 校验：`tools/validate/`（验收集规格、分层统计、ONNX 官方参考实现、两侧报告交叉比对）。
 - 性能：四个 `profile_*` target + `run_profile.sh`（一键 nsys / ncu、记录温度与时钟）+
   `summarize_nsys.py`（三层分桶、`--api` 分配统计），都带 `--self-test`。
-- 265 条注册用例（GoogleTest 源码嵌入），按 host / GPU / 性能分层；host 用例缺资产返回 77 → Skipped。
+- 268 条 ctest 条目（GoogleTest 源码嵌入 + Python 自检项），按 host / GPU / 性能分层；host 用例缺资产返回 77 → Skipped。
 - 沙箱 268 条 / 0 失败；真机整轮 267 条 / 1 红 / 0 跳过 / 301.72 s（唯一红 = 按设计的 FP16 复现器）。
 
 ## 附录 B｜全量数字表
@@ -697,7 +697,7 @@ KV cache 的追加接口已按"每层一次、只推进一次长度"设计，扩
 | Top-P sampler | 配对净收益 12.6 / 22.4 / 15.7 / 17.6× |
 | sampler 占比（短上下文） | greedy 1.25% / top-k 17.7% / top-p 20.1% |
 | 测试 | 沙箱 268 条 / 0 失败；真机整轮 267 条 / 1 红 / 0 跳过 / 301.72 s |
-| 规模 | `src` + `include` 约 9.9k 行；265 条用例；50 条排查记录 |
+| 规模 | `src` + `include` 约 13.8k 行（2026-10-05 实测）；268 条 ctest 条目；56 条排查记录 |
 | 环境 | TRT 10.15.1、CUDA 12.6.85、sm_75、C++17 |
 
 ## 附录 C｜剩余问答（未进主线的条目）

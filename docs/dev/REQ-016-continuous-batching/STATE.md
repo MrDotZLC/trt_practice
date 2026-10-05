@@ -423,7 +423,9 @@ prompt K/V（静默算错）。依据见 `p5_s3_interface_spec.md` §3。`Append
 | `tests/test_llm_runner_chunked.cpp` | 夹具带 `max_positions`；`ChunkLimitRejectedConfigs` 扩成四组（含"未声明 / 越界"与入口拒绝的正反对照）；`ChunkedEqualsWholePrompt`、`ChunkedShortPromptsUnchanged` 补 `generation_rows` 断言（`TS-051` 第 2 条的回归守卫） |
 
 **测试方式**：同 S5-3 —— 本环境只做静态自检（括号逐行深度、符号成对、最长行、CRLF 无 BOM）；
-真机窗口 `cmake --build` + 跑 S4/S5 用例。**新增真机前提**：packed 引擎按 `graph_version = 6` 重建。
+真机窗口 `cmake --build` + 跑 S4/S5 用例。**新增真机前提**：packed 引擎按 `graph_version` **重建一次**——
+本节写此条时该值是 6，**2026-10-05 已被 REQ-017 推到 7**（`builder.cpp` 顶部注释的 `6 → 7`，属预期），
+真机按**当前值 7** 预期即可（重建仍只发生一次）。
 
 ### P5-S5 修订一：`max_prefill_seq_len` 显式配置（**文档与代码均已落**，2026-10-05）
 

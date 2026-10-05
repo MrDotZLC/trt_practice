@@ -7,7 +7,7 @@
 | phase | B2-MinimalFix |
 | phase_index | 2 |
 | status | waiting-human-gate |
-| updated | 2026-10-01 |
+| updated | 2026-10-05 |
 | owner | Codex |
 
 ---
@@ -15,8 +15,10 @@
 ## Completed Artifacts
 
 - `requirement.md`（B0-Reproduce：问题、复现资产、验收判据，2026-10-01）
-- `analysis.md`（B1-Diagnose：现有证据链、已否证方向、待查方向，2026-10-01）
-- `design.md`（B2 候选修复方案与改动面 / 预算判定，2026-10-01）
+- `analysis.md`（B1-Diagnose：现有证据链、已否证方向、待查方向，2026-10-01；
+  **2026-10-05 起同时承载 B2 的候选修复方案与预算判定**——原独立 `design.md` 按作者指令
+  并入该文件的 `## Candidate Fixes（B2）` 一节后删除；这是 Bugfix 规则的产物口径：
+  `requirement.md` + `analysis.md` + `summary.md`（B4），候选方案不单独建文件）
 
 ---
 

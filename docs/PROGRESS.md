@@ -1301,8 +1301,14 @@ Phase 5 也已完成（阶段 0~4，见 §4.6）。**Phase 之后的四条工作
 | **§2.2 长上下文 attention（split-K）** | **已交付并真机验证**（斜率降幅 88.85% / 88.20%） | **§3.0i**（关键设计 §2.17） |
 | **`future_iterations.md` §1.5 / P4-INT8-a per-channel 整网退化根因** | **已结案**（根因在**产图脚本**、不在 TRT；离线反证 + 文件级证据 + 真机 B1 四条全绿） | **§3.0j**（证据链 `docs/TROUBLESHOOTING.md` #46 / #47；两件"暂不做"见开发计划 §13.11） |
 
+> **本节的口径（2026-10-05 定）**：这里只写**人话 + 链接**——
+> **阶段值（`phase` / `status`）的唯一真值在 `docs/dev/<REQ>/STATE.md`，唯一快照副本在
+> `docs/dev/INDEX.md` §1**（改 STATE 时同步 INDEX，不一致以 STATE 为准）。本节**不再复制 phase 字符串**
+> （理由见 `docs/README.md` §4.4：`P0-Requirement` ~ `P9-Interview` 一类阶段号只允许出现在
+> `docs/dev/<feature>/` 内）。校验脚本：`mini_trt_llm/tools/check_docs_index.py`。
+
 下面各节保留的是**各阶段当时的交付与残余缺口快照**；仍然活着的开放项一律看 §6.6 的索引
-（唯一事实来源 = `future_iterations.md` §11）。
+（事实与触发条件见 `future_iterations.md`）。
 
 ### 4.1 Phase 1：Plugin 基础（已完成）
 
@@ -1436,10 +1442,12 @@ Phase 1 明确不在本次范围内、留待后续的项：
 
 </details>
 
-### 4.7 [DEC-REQ017-P5-STATUS] REQ-017（LLM weight-only INT8）的 P5 状态与未完成项（2026-10-05）
+### 4.7 [DEC-REQ017-P5-STATUS] REQ-017（LLM weight-only INT8）的当前状态与未完成项（2026-10-05 更新）
 
-**当前阶段**：`REQ-017-llm-int8-quant` 停在 `P5-Implementation / in-progress`（设计见
-`docs/dev/REQ-017-llm-int8-quant/`；P5 的设计符合性对账在它的 `STATE.md`）。
+**现在在哪**：`REQ-017-llm-int8-quant` **已经进到"测试"这一步**——作者已点名测试阶段，用例与判据
+已落（四类 17 条 + 追溯 9 行），**结果一律记"未验证"**（本机没有编译器 / GPU，不写通过）。
+**"实现"这一步的出口还没收**：只剩"编译通过 / 无新增 warning"与真机四项（即下表 1–4 项）。
+阶段值与逐条状态见 `docs/dev/REQ-017-llm-int8-quant/STATE.md`（快照见 `docs/dev/INDEX.md` §1）。
 
 **已落地（路线 C 的端到端实现）**：`tools/convert/quantize_gpt2.py`（离线算 scale → int8 权重 +
 `quant_int8.json`；含来源自证 / 饱和比例 / 产物身份）；`core/quant_spec.{hpp,cpp}`（清单解析与
@@ -1456,7 +1464,7 @@ Phase 1 明确不在本次范围内、留待后续的项：
 | 2 | `addDequantize` 的签名与 scale / zeroPoint 广播约束核对 | 沙箱无 `NvInfer.h`；按作者"假设有头文件"的指令写 | 真机（读头文件 + 建最小图） |
 | 3 | **D7 判据**：DQ 是否被吸收（**引擎体积必须下降**） | 需要真机建引擎 | 真机最小图实验 |
 | 4 | `wte` 新路径在 FP32 / FP16 下的确认 | 同上 | 真机 |
-| 5 | P6 的用例与 `test_plan.md` | 属 P6，作者尚未点名 | 点名后开工 |
+| 5 | ~~P6 的用例与 `test_plan.md`~~ | **已落档**：作者 2026-10-05 点名 P6；四类 17 条 + 追溯 9 行已进 `test_plan.md`（`benchmark.md` / `summary.md` / `interview_notes.md` 仍属 P7 / P8 / P9） | 真机窗口按清单逐条打勾后回填 |
 
 **能在这里做完的都已做完**：Python 侧自检（6 道护栏 + `--only` 正向断言）与三项机械核对（清单
 schema ↔ C++ 解析器、`wte` 的 gather 单点、无调试遗留）全部跑过；其余一律记"**未验证**"，
@@ -1464,7 +1472,25 @@ schema ↔ C++ 解析器、`wte` 的 gather 单点、无调试遗留）全部跑
 
 **2026-10-05 作者裁决**：D6（清单内容）与 D7（激活精度 / DQ 融合）**纳入开发计划**，顺序为
 **D7 → D6**；上表第 1–4 项**维持绑 P5 Exit Gate / P7**，**真机测试后把结果更新回 P3**；第 5 项
-（P6 用例与 `test_plan.md`）待作者点名。逐条裁决见该 feature 的 `STATE.md` 的 `## 判据对照`。
+（P6 用例与 `test_plan.md`）**作者已点名并已落档**，P6 的 Exit Gate 仍在等真机。逐条裁决见该 feature
+的 `STATE.md` 的 `## 判据对照`。
+
+### 4.8 [DEC-REQ018-STATUS] REQ-018（GPT-2 FP16 端到端 NaN，bugfix）
+
+**现状**：停在**"动手修之前"的那道人工关口上**（`docs/dev/REQ-018-gpt2-fp16-nan/`，**以它的
+`STATE.md` 为准**）。**在等作者裁决三件事**：① 是否撤销"按政策不修"；② 是否批准下一轮真机诊断
+（探针扩到全部层）；③ B2 若超预算，是立为 Feature 还是停在诊断结论。
+
+**为什么它值得在这里露面**：它是真机上**唯一按设计的红**——`RealGpt2Fp16GreedyMatchesReferenceTokens`；
+"它红不算新红"的口径见 §5.11，别把它当成新回归。
+
+### 4.9 [DEC-REQ019-STATUS] REQ-019（外部图子图替换）
+
+**现状**：停在**"设计评审之后的那道人工关口"上**（`docs/dev/REQ-019-onnx-subgraph/`，**以它的
+`STATE.md` 为准**）。**这道关还没过**：路线（Python 侧重写 vs C++ 侧图变换）与"是否真的做替换"
+需要拍板。**前置 PF-7 未跑**：ONNX vs 原生 prefill 的跨构建对照两次测量方向相反（一次慢 22%、
+一次快 24%）→ 替换的收益**目前无法论证**；确认后第一步不是写代码，而是跑 PF-7（口径见 §6.6 与
+`future_iterations_development_plan.md` §11.9 / `future_iterations_test_plan.md` §10.2）。
 
 ---
 
@@ -1905,6 +1931,13 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 > `hyper_params` 里没有 `n_positions` → ResNet 的引擎**不受影响**（指纹不变）。它**不是**
 > `graph_version` bump：图与 profile 区间一个字没动，变的只是缓存键的内容。
 >
+> **第四次一次性失效预告（2026-10-05，REQ-017 的路线 C）**：`kEngineGraphVersion` **3 → 4**、
+> `kPackedPrefillGraphVersion` **6 → 7**（同一个 GPT-2 构建器产出两套图，各自 +1；依据见
+> `mini_trt_llm/src/core/builder.cpp` 顶部注释），且**量化清单与 int8 权重进指纹**（`source_files`）。
+> 于是建过的 GPT-2 引擎（原生 prefill / decode、packed 混合批、以及 ctxsweep 那一对）会在**下次被用到时**
+> 各重建一次（分钟级）；ResNet18 不受影响（不走量化清单，也没有 packed 图）。**同样不是异常**：
+> 图版本是手工代次，指纹看不见"建图代码里的分支"，所以要人工 +1。
+>
 > **重建 ≠ 逐字节相同**：`builder.cpp` 未设 `kDETERMINISTIC`、无 timing cache → TRT 的 tactic 选择是
 > timing-based。本次实测同网络重建后 `resnet18_onnx_fp32.engine` 由 **54,196,084 → 52,357,812 字节（−3.4%）**。
 > **做性能对照必须用同一次构建的引擎**（与 `docs/dev/REQ-006-gpt2-onnx/phase3_test_plan.md` §3.1 的"构建间噪声"同源）。
@@ -1949,10 +1982,12 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 </details>
 
-## 6.6 [DEC-OPEN-ITEMS-INDEX] 当前未解决项（开放项索引，2026-09-27）
+## 6.6 [DEC-OPEN-ITEMS-INDEX] 当前未解决项（开放项索引，2026-10-05 刷新）
 
-> **事实与触发条件的唯一来源是 `docs/future_iterations.md` §11**；已**立项**的条目
-> （目标 / 做法 / 验收判据 / 前置依赖）在同文件 `future_iterations.md` §1.5（P4-INT8-a）与 `future_iterations.md` §1.6（P4-INT8-b）。
+> **事实与触发条件的唯一来源是 `docs/future_iterations.md`**——覆盖缺口索引在它的 §11，
+> 已立项条目的目标 / 做法 / 验收判据 / 前置依赖在它的 §1.5 / §1.6 / §10.2 等节。
+> **2026-10-01 起，已立项的条目改为落在 `docs/dev/REQ-NNN-*/`，状态一律以各条目的 `STATE.md` 为准**；
+> 本节只做索引，不复制状态值。
 
 <details><summary>展开：6.6 [DEC-OPEN-ITEMS-INDEX] 当前未解决项（开放项索引，2026 全文</summary>
 
@@ -1963,6 +1998,11 @@ GPT-2 用的是 **LayerNorm + 学习式位置编码**，不含 RMSNorm、不含 
 
 | 开放项 | 一句话 | 详见 |
 |---|---|---|
+| **REQ-016** | 批量 > 1 / 每序列 K/V / 最小连续批 / packed 混合批 / 分块 prefill：代码已落（S1–S5）、**未编译验证**；P4 / P7 搁置 → 性能结论未验证（§5.16） | `docs/dev/REQ-016-continuous-batching/STATE.md` |
+| **REQ-017** | LLM 权重 INT8（路线 C）：P6 用例与判据已落、**未编译未运行**；D7（DQ 是否被吸收）与收益待真机（§5.17） | `docs/dev/REQ-017-llm-int8-quant/STATE.md` |
+| **REQ-018** | GPT-2 FP16 端到端 NaN（bugfix）：等作者裁决"撤销不修 / 真机诊断 / 是否转 Feature"（见 §4.8） | `docs/dev/REQ-018-gpt2-fp16-nan/STATE.md` |
+| **REQ-019** | 外部图子图替换：等 Gate-A，前置 PF-7 未跑（见 §4.9） | `docs/dev/REQ-019-onnx-subgraph/STATE.md` |
+| **SP-1** | `SentencePieceTokenizer` 是**无用例、无资产、无调用方**的未验证件：正确性从未被任何参考裁决过 | `future_iterations.md` §0.1 / §11 |
 | ~~**P4-INT8-a**~~ **已结案（2026-09-27）** | ~~权重 per-channel 量化在整网上比 per-tensor 差（余量子集 54.5% vs 100%），原因未知~~ → **根因 = 权重 scale 取自未折 BN 的权重、量化对象是已折 BN 的权重**（逐通道折叠系数 0.05~19.9）；改 `--weight-range-source onnx` 后 **54.5% → 100%**；真机 B1 四条全绿（含**引擎忠实**与**现象复现**两条硬证据）。见 **§3.0j** 与 `TROUBLESHOOTING.md` **#46 / #47**（含被推翻的旧结论两条） | `future_iterations.md` §11 |
 | **P4-INT8-b** | INT8 的**绝对数值界未定**（当前只用"FP32 余量子集一致率"判，阈值 ≥90%，实测 12/12；验收集无真值标签） | `future_iterations.md` §11 |
 | **P4-FP16-a** | **FP16 路径仍用已废弃的 `BuilderFlag::kFP16`**（TRT 10.12 起废弃、指向 strong typing）；实测可用 | `future_iterations.md` §11 |

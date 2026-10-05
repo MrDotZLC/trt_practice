@@ -145,6 +145,33 @@
 
 </details>
 
+### 0.4 [OI-ID-HOME] 存量 `OI-` 编号的落点（新增编号的唯一归属）
+
+**规则**（出处 `docs/README.md` §4.3 的存量例外）：**新增**的开放项编号只在本文件定义。
+下面 16 个是 2026-09-26~27 把"计划段 / 用例段 / 验收段 / 结果段"也各自编号留下的**存量**，
+**不改名**（§4.2 的存量豁免）；改这些标题时同步本表。
+
+| 存量 `OI-` 编号 | 定义落点 | 对应本文件的条目 |
+|---|---|---|
+| `OI-RUNBOOK` | 开发计划 §8 | §0.1 全表（真机执行基建） |
+| `OI-RUNBOOK-RESULTS` | 开发计划 §9 | 同上（执行结果回填） |
+| `OI-RED-ARGMAX-CASE` | 开发计划 §8.5 | 对应 `PROGRESS.md` §5.13 的历史红 |
+| `OI-SAMPLER-KERNEL-PLAN` | 开发计划 §10 | §9.2 [OI-SAMPLER-KERNEL] |
+| `OI-SAMPLER-KERNEL-ACCEPTANCE` | 开发计划 §10.5 | 同上 |
+| `OI-SAMPLER-TOPP-TAIL` | 开发计划 §10.12 | 同上（P9_2-5b） |
+| `OI-SAMPLER-KERNEL-TESTS` | 测试计划 §9 | 同上 |
+| `OI-PERF-PROFILE-PLAN` | 开发计划 §11 | §6.3 [OI-NSIGHT-TARGET] |
+| `OI-PERF-PROFILE-DECOMPOSITION` | 开发计划 §11.4 | 同上 |
+| `OI-PERF-PROFILE-TESTS` | 测试计划 §10 | 同上 |
+| `OI-FLASHDECODING-PLAN` | 开发计划 §12 | §2.2 [OI-FLASHDECODING] |
+| `OI-FLASHDECODING-TESTS` | 测试计划 §11 | 同上 |
+| `OI-INT8-PERCHANNEL-PLAN` | 开发计划 §13 | §1.5 [OI-INT8-PERCHANNEL] |
+| `OI-INT8-PERCHANNEL-DESIGN` | 开发计划 §13.3 | 同上 |
+| `OI-INT8-PERCHANNEL-ARTIFACTS` | 开发计划 §13.11 | 同上 |
+| `OI-BPE-TOKENIZER-TESTS` | 测试计划 §2.1 | §5.1 [OI-BPE-TOKENIZER] |
+
+---
+
 ## 1. 量化与精度优化
 
 ### 1.1 [OI-INT8-CALIB] ResNet18 INT8 校准
@@ -814,7 +841,7 @@ PF-7 是它的正例，见测试计划 §10.2）。
 | ~~P1.5-a~~ | `docs/dev/REQ-003-test-infra/phase1_5_test_plan.md` §5 | ~~Top-K / Top-P 的 FP16 分支未覆盖~~ **已关闭（2026-09-27，真机）**：Greedy 早已覆盖；Top-P = S-13（`Fp16PathTest.TopPSamplingDistributionMatchesAnalyticProbabilitiesInFp16`）、Top-K = S-12（同 suite），两条**真机均通过**。判据：k=3/6（真的发生截断）的词频各按 3σ 对解析参考，且 FP32/FP16 互相在 3√2σ 内 | —— |
 | **P1.5-b** | 同上 | E2 的**完整链路**（`RMSNorm → QKV → RoPE → PagedAttention → LM Head`）与 `ref_mini_block.py` 有意留后（P1.5-4 缩减完成） | 要往 LLaMA 风格链路继续做时（Phase 4 之后），或怀疑"多算子相邻契约"出问题时 |
 | **P1.5-c** | 同上 | E3 只验"接受/拒绝"，未验**同 engine 内多次切换 profile 后的数值一致性** | 真的依赖多 profile 混用时（当前 runner 每步只用 profile 0） |
-| **P4-INT8-a** | `docs/TROUBLESHOOTING.md` #29 / #30 | **权重 per-channel 量化在整网上比 per-tensor 差得多**（余量子集 54.5% vs 100%），而单卷积与"真实权重+残差"的最小 block 上它都**不差**（甚至更好）→ **原因仍未找到**。已排除 11 条假设（写法错 / 死通道 scale 跨度 / 模拟不忠实 / 残差融合 / `axis` 类型 / 2-D 广播 / 权重只留 DQ / 布局 / 舍入 / step 与 scale 不符 / 探针自身） | 需要更高 INT8 精度时。**已在 §1.5 立项**（目标 / 做法 / 验收判据 / 前置依赖在那里；第 1~3 步不依赖联网）。关键方法：探"**量化前**"的 float 张量，而不是量化后的——后者被 bin 边界 ±1 格噪声主导，分辨率不够（#30.5 / #30.6） |
+| ~~**P4-INT8-a**~~ **已结案（2026-09-27）** | `docs/TROUBLESHOOTING.md` #46 / #47 | ~~权重 per-channel 在整网上比 per-tensor 差得多（余量子集 54.5% vs 100%）、原因未知~~ → **根因 = 权重 scale 取自未折 BN 的权重、量化对象是已折 BN 的权重**（"尺子量 A、裁剪 B"）；改 `--weight-range-source onnx` 后 **54.5% → 100%**，真机 B1 四条全绿（含"引擎忠实"与"现象复现"两条硬证据）。完整结论见本文件 **§1.5** | —— |
 | **P4-INT8-b** | `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §4 / §5 | INT8 的**数值上界判据未定**（当前只在"有判别力子集"上用一致率判，且该子集无可核对的真值标签） | 需要给出 INT8 的绝对误差保证时。**已在 §1.6 立项**（目标 / 做法 / 验收判据在那里；**前置依赖 = 联网下载验收集，须先获批**） |
 | **P4-FP16-a** | `docs/dev/REQ-008-int8-qdq/phase4_int8_plan.md` §1.1 | **FP16 路径仍使用已废弃的 `BuilderFlag::kFP16`**（TRT 10.12 起废弃，指向 strong typing）；实测可用 | 真要迁到强类型网络时（两条 builder 的每个算子都要显式设类型，代价大） |
 | **P1.5-d** | 同上 | 采样器**分布级数据未固化**（`scripts/ref_sampler.py` 只打印，输出没落成测试数据） | 要做采样的统计正确性回归时（属增强，见本文件 §9.3） |

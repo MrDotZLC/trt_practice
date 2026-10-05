@@ -1,5 +1,9 @@
 # Phase 4 原文中的 INT8 相关条目（逐字摘出）
 
+> **STATUS: ARCHIVED｜阶段已交付（2026-09-26，Phase 4）**
+> 本文只作设计与判据出处，**不代表现状**；现状见 `PROGRESS.md`，排查见 `TROUBLESHOOTING.md`。
+> 冻结后不再更新；确需修订时另开文档，并在 `docs/README.md` §2 登记。
+
 > **性质**：2026-10-01 按"需求归属"从 Phase 4 的两份原文中**逐字摘出**（只搬行、不改字）。
 > 原位置各留一行指针；本节内容即 `REQ-008` 的**原文级证据**，与 `requirement.md` / `design.md` / `test_plan.md` 的现行陈述配套。
 

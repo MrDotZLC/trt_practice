@@ -18,7 +18,8 @@
 2. `PROGRESS.md` §6.6「当前未解决项」—— 哪些事还活着（它只是索引）。
 3. 命中某条开放项 → `future_iterations.md` 的对应条目（目标 / 触发条件 / 前置 / 验收判据）。
 4. 决定动手 → 先走 `AGENTS.md` §5「计划对账」；开发状态与设计在 `docs/dev/<feature>/`
-   （入口 `STATE.md`），用例与判据在 `future_iterations_test_plan.md`。
+   （入口 `STATE.md`），用例与判据在该条目的 `test_plan.md`（2026-10-01 之前立项的老条目
+   仍在 `future_iterations_test_plan.md`）。
 5. 遇到故障、或要查某条结论的来路 → `TROUBLESHOOTING.md` 顶部的索引表。
 6. 只要设计思路 → `mini_trt_llm_design.md`；只要某阶段的判据出处 → 对应的 `phaseN_*.md`。
 
@@ -84,7 +85,7 @@
 | 已知问题 / 坑的**结论**（问题 / 影响 / workaround） | `PROGRESS.md` §5 | 链接；**过程不写在这里** |
 | 排查过程（命令 / 日志 / 对比数据 / 被否证的假设） | `TROUBLESHOOTING.md` | 只写 `TS-xxx` |
 | 还没做什么 / 触发条件 / 优先级 | `future_iterations.md` | 只写 `OI-xxx` |
-| 某个 feature 的**开发状态**（在哪个 Phase、卡在哪、下一步） | `docs/dev/<feature>/STATE.md` | 只写"见该 STATE.md"，**不复制 phase / status 值** |
+| 某个 feature 的**开发状态**（在哪个 Phase、卡在哪、下一步） | `docs/dev/<feature>/STATE.md`（**真值**）＋ `docs/dev/INDEX.md` §1（**唯一允许的快照副本**） | `PROGRESS.md` 只写人话 + 链接，**不复制 phase / status 值**；快照与 STATE 不一致时以 STATE 为准（校验脚本 `mini_trt_llm/tools/check_docs_index.py`） |
 | 怎么做（任务分解 / 接口 / 破坏性清单） | `future_iterations_development_plan.md` | 链接 |
 | 怎么验（用例清单 / 判据 / 执行口径） | `future_iterations_test_plan.md` 或对应 `phaseN_test_plan.md` | 链接 |
 | 阈值本身 | 用例代码里阈值所在处（**原地写清出处**，AGENTS.md §7） | 只写出处链接 |
@@ -145,6 +146,11 @@
 | 冻结阶段文档锚点 | `PH<n>` | `PH4-INT8-CRITERIA`、`PH1.5-ACCEPTANCE` | `phaseN_*.md` |
 | 冻结设计文档锚点 | `DESIGN-` | `DESIGN-NATIVE-BUILD` | `mini_trt_llm_design.md` |
 | **需求编号** | `REQ-` | `REQ-017`（目录名 = `REQ-NNN-<slug>`） | `docs/dev/INDEX.md` |
+
+> **`OI-` 的存量例外（2026-10-05 补）**：**新增**的开放项编号只允许定义在 `future_iterations.md`；
+> 但 2026-09-26~27 那批把"计划段 / 用例段"也各自编了 `OI-*` 号——**共 16 个定义在
+> `future_iterations_development_plan.md` / `future_iterations_test_plan.md`**。这些存量编号
+> **不改名**（§4.2 的存量豁免），落点映射见 `future_iterations.md` §0.4。
 
 ### 4.4 保持原样的本地编号
 

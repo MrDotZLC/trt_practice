@@ -223,11 +223,11 @@ warning（本环境无编译器）+ 上面"真机必查"三条与 D7 的判据�
   自己写了"P5 七处全部落完"），这一轮却拿它继续覆盖新工作。
   **本 feature 的硬约束**：作者提问的那一轮只做读操作与回复；回答过程中新发现的缺陷**只报不做**，
   要动手必须先拿到对"文件 / 条目"的点名——**不接受"这明显是 bug"作为自行开工的理由**。
-- **本轮未经点名落下的改动：仍在工作区，未提交**，等作者逐项处置（全留 / 只回退本轮 /
-  只回退 C++ 那部分）。清单：`tools/convert/quantize_gpt2.py`（清单按 TRT 名选、`--verify` 复核
-  sha256、缺 config 拒绝生成、自检 4→6 道护栏）；`gpt2_model_builder.{hpp,cpp}`
-  （`AddQuantizedWeightSource` / `AddDequantize` 拆分、`wte` 的 DQ 排到 gather/transpose 之后）；
-  `docs/TROUBLESHOOTING.md` 的 TS-056；本文件 `## Implementation Plan` 的"真机必查"第 2 条。
+- **上一轮"未经点名落下的改动"已结清（2026-10-05 复核）**：那批清单（`tools/convert/quantize_gpt2.py`；
+  `gpt2_model_builder.{hpp,cpp}` 的 `AddQuantizedWeightSource` / `AddDequantize` 拆分与 `wte` 的
+  DQ 位置；`docs/TROUBLESHOOTING.md` 的 TS-056；本文件 `## Implementation Plan` 的"真机必查"第 2 条）
+  **已由作者提交**（`2fa02ce` / `14b5af9` 等，`git status` 干净）。上面那条"未经点名"的记录保留为
+  流程留痕；**要回退仍请另行点名**。提交事实一律以 `git log` / `git status` 为准（`docs/PROGRESS.md` §6.5）。
 
 ---
 

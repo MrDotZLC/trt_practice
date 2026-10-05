@@ -1,10 +1,11 @@
 # docs/dev 索引（统一编号）
 
 > 本目录是技能 `trt-inference-engineering` 规定的开发 artifact 落点（流程见 `AGENTS.md` §5）。
-> **每个目录的 `STATE.md` 是该条目状态的唯一落点**；本文件只做一览，**不复制状态数字**
-> （基线 / 产物尺寸的唯一出处仍是 `PROGRESS.md`）。
-> **下表的两列（phase / status）是"最近一次同步的快照"**：改某条目的 `STATE.md` 时同步本表；
-> 两者不一致时一律以 `STATE.md` 为准。（2026-10-03 补：REQ-016 曾因走过 Gate-A 进 P5 未同步而漂移。）
+> **每个目录的 `STATE.md` 是该条目状态的真值**，**下表的两列（phase / status）是唯一允许的
+> 快照副本**：改某条目的 `STATE.md` 时同步本表，两者不一致时一律以 `STATE.md` 为准。
+> `PROGRESS.md` **不再复制 phase / status 值**（只写人话 + 链接）；一致性由
+> `mini_trt_llm/tools/check_docs_index.py` 校验。基线 / 产物尺寸的唯一出处仍是 `PROGRESS.md`。
+> （2026-10-03 补：REQ-016 曾因走过 Gate-A 进 P5 未同步而漂移。）
 
 ## 0. 编号规则
 
@@ -12,6 +13,9 @@
   （状态写在 `STATE.md` 与本表）。理由：按状态分块编号会让条目一开工就得换号，而换号会打断所有引用。
 - **编号范围 = 已立项或已交付的需求**；编号一经分配不再更改，新增条目按顺序往后取号。
 - **编号不复用**：`REQ-020` 曾于 2026-10-04 分配给 `REQ-020-packed-prefill`，同日撤销——packed 路径改并入 `REQ-016` 作为 **S4 里程碑**。该号作废，不再复用（同"编号一经分配不再更改"）。
+- **已退休编号**：`REQ-000-docs-migration` 是 2026-10-01 文档迁移的**元工作**条目，同日退休（目录已撤）；
+  其结论并入 `PROGRESS.md` 的 `DEC-REQ-NUMBERING`。它**不是需求**，因此不进下面的编号总表，
+  也**不再复用该号**（同"编号一经分配不再更改"）。
 - **历史条目**（`REQ-001`~`015`）的工作早已交付，目录只归档"当时要求什么"；
   `status = completed` **不代表仍在推进**。需求要变更 → 新立条目，不改写历史 `requirement.md`。
 - **历史条目带四个产物**：`requirement.md`（要求什么）/ `design.md`（怎么设计）/
@@ -102,7 +106,8 @@
 | `REQ-010`~`015` | 同上 | 无（来源是迭代计划与迭代测试计划，二者仍是活文档） |
 | `REQ-016` | STATE / requirement / analysis / design / **review** / **benchmark_before** / **test_plan**（+ `p5_s1_interface_spec.md` ~ `p5_s5_interface_spec.md` 五份作为 P5 补充） | 无（进行中，尚无归档原文） |
 | `REQ-017` | STATE / requirement / analysis / design / **review** / **benchmark_before** / **test_plan** | 无（进行中，尚无归档原文） |
-| `REQ-018`~`019` | STATE / requirement / analysis / design | 无（进行中，尚无归档原文） |
+| `REQ-018` | STATE / requirement / analysis（**B2 候选修复方案并入 `analysis.md`**；原 `design.md` 于 2026-10-05 按作者指令删除） | 无（进行中，尚无归档原文） |
+| `REQ-019` | STATE / requirement / analysis / design | 无（进行中，尚无归档原文） |
 
 **执行回填明细、逐条判据状态、原始测量表**都在上表的"归档原文"里（不再单独上浮）；
 活文档里只在 `test_plan.md` 的 `Actual Result` 保留结论摘要。
