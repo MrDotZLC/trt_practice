@@ -75,6 +75,30 @@
 > **T10 已于 2026-10-06 解除**（作者点名同步）：`docs/future_iterations_development_plan.md` 第 1278 行
 > 的"无新代码"已更正为"P4 需补一个薄用例"。按本表口径删行；**编号不重排**，以保持既有引用稳定。
 
+## 真机窗口执行清单
+
+> 目标：**一次窗口把"不建引擎就能拿到的事实"全部取回**，需要建引擎 / 需要授权的动作留到最后一档。
+> 本清单只排**顺序、命令与回填位置**；判据细节在各自文件，不在此转述。
+
+| 次序 | 动作 | 命令 / 看什么 | 判据 | 回填到哪 |
+|---|---|---|---|---|
+| 前置 | 确认当前设备是**目标真机** | `nvidia-smi`；对照项目级硬件基线（sm_75 / GTX 1660 Ti） | 不是目标真机 → 按 `requirement.md` 的「设备纪律」当轮上报，本窗口作废 | 当轮回复 + 本文件 |
+| 1 | 读 `NvOnnxParser.h`（**T1 / P0-1**，唯一挡 Gate-A 的） | 找 `createParser` 的重载声明 | 存在带 `IPluginRegistry&` 的重载 → **抄签名原文**；不存在 → **回 P2 选路**（现场不改接口） | `s2_custom_op_interface_spec.md` §3 第 1 条；`review.md` 的 P0-1；本文件 `## 判据对照` |
+| 2 | S0 的图形态探针（**T6**） | `python mini_trt_llm/tools/inspect_onnx.py <资产图> --json` | 位置编码属 **A**（常量 initializer 驱动 `Gather`）还是 **B**（图内 `Range`）；列出 `input_ids` 的 INT64 消费点 | `s0_contract_interface_spec.md` §2 / §7 第 2、3 条 |
+| 3 | S1 的真实块边界（**T7**） | 复用上一条的输出（节点与连接） | 12 个注意力块能否按 T1–T4 切出边界；与 §1 的骨架是否一致 | `s1_topology_interface_spec.md` §1 / §7 第 2 条（形态不符时**先改 spec 再改代码**） |
+| 4 | 既有引擎反序列化探针（**T9 的前提**） | 编译并运行 `mini_trt_llm/tools/inspect_engine.cpp`，对一个既有 `.engine` | 能反序列化 → 改 namespace 的影响留到 S2 落码后再判；不能 → 读出失败原因 | `s2_custom_op_interface_spec.md` §3 第 3 条 |
+| 5 | S2 的属性 → `PluginField` 映射（**T8**） | 需要 S2 代码先落 → 本窗口只能做"读头文件记结论"那半 | 记录 `eps`(float32) / `hidden_size`(int32) 的映射规则与不符时的失败形态 | `s2_custom_op_interface_spec.md` §3 第 4 条 |
+| 6 | PF-7 的薄用例（**T4**，**需先获授权**） | 新用例（按 §10.2 口径：同 session ≥3 次构建 × ≥20 次推理） | 极差 < 中位数差 = **可判**；否则 = **未定** | `design.md` 的 Performance Consideration；P6 时进 `test_plan.md` |
+
+**顺序理由与窗口纪律**：
+
+1. 第 1 项最便宜、且是唯一挡 Gate-A 的，所以排第一；第 2/3 项只读图不建引擎；第 4/5 项需要编译或代码；
+   第 6 项需要授权——按**代价递增**排。
+2. **本窗口不重建引擎、不改图版本、不动代码**；产出的是**事实与原文**（签名、节点形态、反序列化结果），
+   不是结论。
+3. 跨 session 的数字不可比 → 第 6 项若要做，必须在**同一 session 内跑完**。
+4. 任一项的结论落地时，**同时回填它的出处文件**（上表末列），并删掉 `## 待定与待决清单` 的对应行。
+
 ## Next Action
 
 > **设计文档已备齐**：P0 `requirement` + P1 `analysis` + P2 `design` + 三份里程碑接口细化（S0 / S1 / S2）。
