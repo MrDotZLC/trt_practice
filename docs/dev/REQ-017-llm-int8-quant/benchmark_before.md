@@ -59,4 +59,4 @@ N/A: 本设备暂不支持真机测试（无 GPU、无 nvcc / cmake / TensorRT�
 | ① | 本文件的 `## Result` 记 `N/A: <原因>` | 满足 | 见上（原因含设备与作者指示） |
 | ② | `STATE.md` 的 Next Action / Current Blockers 写 `Gate-B: N/A（缺依赖：<原因>）` | 满足 | `STATE.md` 的 `## Current Blockers` 首条 |
 | ③ | `summary.md` 的 Performance 一节写 N/A + 原因 | **未满足（阻塞）** | `summary.md` 是 P8 产物，P4 时点不可能产出。按 `AGENTS.md` §5 第 5 条登记并上报，**不改写成别的产物**；义务锚定在 `STATE.md` 的 Next Action（P8 必清） |
-| ④ | `docs/PROGRESS.md` 的"已知问题与坑"留一条 | **未满足（阻塞）** | `PROGRESS.md` 属 `AGENTS.md` §0.2 的"结构类文档"→ **先确认再改**。本轮未动，等你点头后追加（这是附加留痕，不在技能点名的三处里） |
+| ④ | `docs/PROGRESS.md` 的"已知问题与坑"留一条 | 满足 | 作者 2026-10-05 放行后追加：`docs/PROGRESS.md` §5.17（附加留痕，不在技能点名的三处里） |

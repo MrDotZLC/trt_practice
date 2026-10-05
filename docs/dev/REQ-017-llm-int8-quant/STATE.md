@@ -47,9 +47,9 @@
   **REQ-016 先做**（它定义批量契约）。它交付前，本 feature 不得开代码。
 - **`Gate-B: N/A（缺依赖：本设备暂不支持真机测试，无 GPU / 无 nvcc·cmake·TensorRT；作者
   2026-10-05 指示真机测试搁置）`** —— P4 未取基线、P7 随之不可执行，既不算通过也不算失败。
-- **P4 的"三处留痕"有两处按阻塞上报**（细节与口径见 `benchmark_before.md` 的末节）：
-  ③ `summary.md` 的 Performance 一节 = P8 产物，P4 时点不可能产出；④ `docs/PROGRESS.md` 的
-  "已知问题与坑"一条属"结构类文档"（`AGENTS.md` §0.2），**先确认再改**，本轮未动。
+- **P4 的"三处留痕"还剩一处按阻塞上报**（细节与口径见 `benchmark_before.md` 的末节）：
+  ③ `summary.md` 的 Performance 一节 = P8 产物，P4 时点不可能产出；④ 的附加留痕已由作者
+  2026-10-05 放行后追加（`docs/PROGRESS.md` §5.17）。
 - **Gate-A 的 7 条 P1 仍未逐条确认**：作者 2026-10-05 的指令（"真机测试搁置、先完成开发工作"）
   被当作**放行**处理，放行范围与不适用条款见 `## 判据对照`。**D6 的量化清单**与 **D7 的激活
   精度**仍是未确认项——本轮把它们做成"清单驱动 + 可配置"，代码不替你锁定取值。
@@ -64,8 +64,8 @@
 1. **继续 P5**：按 `## Implementation Plan` 的顺序把剩下的两处落完
    （`builder.*` 的清单入口 / 指纹 / `graph_version`，`gpt2_model_builder.*` 的 int8 常量 + DQ）。
 2. **P6**：写 `test_plan.md` 与 host/GPU 用例，并把 `quantize_gpt2.py --self-test` 注册进 ctest。
-3. **待你点头的两件**：③ `summary.md` 的 Performance N/A（P8 补）与 ④ `docs/PROGRESS.md` 的
-   已知问题一条——后者属结构类文档，需你确认后我再写。
+3. **待你点头的一件**：③ `summary.md` 的 Performance N/A（P8 时补；④ 已随 `PROGRESS` §5.17
+   落地）。
 4. **真机窗口恢复后**：先做 `benchmark_before.md` 里列的 D7 最小图实验（它决定这条路线的收益
    是否成立），再按 Gate-B 的口径做 A/B。
 5. **P8 必清**：`summary.md` 的 Performance 一节写 `N/A + 原因`（P4 的留痕 ③）。
@@ -173,5 +173,5 @@
 | P4 留痕 ①：`benchmark_before.md` 记 `N/A: <原因>`（`phases/p4_baseline.md` 的 Dependency Missing） | 满足 | `benchmark_before.md` 的 `## Result` |
 | P4 留痕 ②：本文件写 `Gate-B: N/A（缺依赖：<原因>）` | 满足 | `## Current Blockers` 首条 |
 | P4 留痕 ③：`summary.md` 的 Performance 一节写 N/A + 原因 | 未满足（阻塞） | P8 产物，P4 时点不可能产出。按 `AGENTS.md` §5 第 5 条登记并上报（`benchmark_before.md` 的留痕表第 ③ 行）；义务锚定在 `## Next Action` 第 5 条，**P8 必清** |
-| P4 附加留痕：`docs/PROGRESS.md` 的"已知问题与坑"一条 | 未满足（阻塞） | 属 `AGENTS.md` §0.2 的"结构类文档"→ 先确认再改，本轮未动；等你点头后追加。**不得**因为它没写就当作 P4 已完成 |
+| P4 附加留痕：`docs/PROGRESS.md` 的"已知问题与坑"一条 | 满足 | `docs/PROGRESS.md` §5.17（作者 2026-10-05 放行后追加） |
 | P5 的 Implementation Plan 前置（`phases/p5_implementation.md` 的 Actions 1） | 满足（补记） | 本轮补进 `## Implementation Plan`；顺序偏差见 `## Recovery Notes` 的同名条目 |
