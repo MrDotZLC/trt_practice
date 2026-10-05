@@ -735,8 +735,9 @@
 - **工作内容**：warp-level Top-K 选择（无需全排序）、bitonic sort、以及与后续 continuous batching 的配合。
 - **触发时机**：Phase 2 跑通端到端吞吐后，用 `nsys` / `ncu` 定位到 sampler 占比显著时。
 - **触发条件现状（2026-09-26 核实）**：**这个 profile 至今没做过**——
-  `docs/PROGRESS.md` §3.0d 记录的性能数字只有 `CVRunner` 的 benchmark（`mean≈8.4 ms`），
-  没有任何 decode 阶段的 sampler 占比。触发条件"未验证"不等于"已成立"，故不能按 P1 对待。
+  `docs/PROGRESS.md` 里查不到任何 decode 阶段的 sampler 占比（当时唯一的端到端数字是
+  `CVRunner` 的 benchmark `mean≈8.4 ms`，见 `docs/dev/REQ-007-resnet18/phase4_development_plan.md` 的 P4-3 行）。
+  触发条件"未验证"不等于"已成立"，故不能按 P1 对待。
 
 </details>
 

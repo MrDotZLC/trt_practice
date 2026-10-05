@@ -251,7 +251,7 @@ rg -n '^\s*#{2,3}\s+[0-9][0-9.]*[a-z]?\s+\[(DEC|TS|OI|MP|GAP|PH)' docs/*.md
 
 | 文档 | 现值（总 / 可见） | 上限（可见） | 超限动作 |
 |---|---|---|---|
-| `PROGRESS.md` | **479 / 479** ✅（2026-10-05 全文重写） | **500**（总行） | 结论 + 指针；历史交付叙述归各条目 `summary.md`、排查归 `TROUBLESHOOTING.md`，**不再折叠** |
+| `PROGRESS.md` | **492 / 492** ✅（2026-10-05 全文重写） | **500**（总行） | 结论 + 指针；历史交付叙述归各条目 `summary.md`、排查归 `TROUBLESHOOTING.md`，**不再折叠** |
 | `TROUBLESHOOTING.md` | 3489 / 3489（append-only） | 无上限 | 必须维护顶部索引（✅ **56 条**已建）；单条 ≤ 80 行，超出折进 `<details>` |
 | `future_iterations.md` | 823 / **383** ✅ | **400** | 已交付条目移出正文（只留索引行） |
 | `future_iterations_development_plan.md` | 2139 / **593** ✅ | **800** | 已交付条目的计划段折进文末"附录：已完成" |

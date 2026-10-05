@@ -10,7 +10,7 @@
 
 - **项目一句话**：面向 Turing / `sm_75` 的极简多模态 TensorRT 推理框架，用 `mini_trt_llm` 统一承载 CV（ResNet18）与 LLM（GPT-2），替换两个历史 ONNX 示例工程。
 - **现在在哪**：Phase 0 / 1 / 1.5 / 2 / 3 / 4 / 5 全部交付；**活着的条目 4 条** → §4。
-- **测试基线（2026-09-28）**：沙箱 **268 条 / 0 失败**；真机整轮 **267 条 / 1 红 / 0 跳过 / 301.72 s**。
+- **当前基线（唯一现状口径，2026-09-28）**：沙箱 **268 条 / 0 失败**；真机整轮 **267 条 / 1 红 / 0 跳过 / 301.72 s**。
   唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`（GPT-2 FP16 NaN，**按设计**，见 §5.11）。
   真机必须带 `MINI_TRT_REQUIRE_GPU=1`（否则 GPU 用例静默跳过 = 白跑）；证据 = `build/Testing/Temporary/LastTest.log`。
 - **精度口径**：GPT-2 用 **FP32**；ResNet18 的 FP32 / FP16 都健康；INT8 走 **Q/DQ 显式量化**，判据 = "FP32 余量子集一致率"（实测 12/12），权重默认 per_tensor。见 §5.11 / §2.15 / §3.0j。
@@ -86,7 +86,7 @@ Phase 0 只做 `cudaMalloc` / `cudaFree` 的 RAII 封装；内存池延后（触
 
 ### 2.13 [DEC-TEST-CONVENTIONS] 测试与验证约定（Phase 1 / 1.5 沉淀，后续沿用）
 
-- 参考实现**唯一**、自带断言、且有 host 侧 meta-test（标尺错了会给出错误裁决，见 #9）。
+- **参考必须自带断言 + host meta-test**，且参考实现全局唯一（标尺错了会给出错误裁决，见 #9）。
 - **带 batch 维的算子必须覆盖 `batch > 1`**：Phase 1.5 的两个缺陷在 `batch = 1` 时都表现为通过。
 - 验证分层：host（含参考 meta-test）进沙箱 / CI；GPU 用例在真机跑。**沙箱 host 全绿 ≠ 真机没问题**。
 - 每个 Phase 结束**必须走一遍真机验证**，不留给下个阶段。
@@ -105,9 +105,12 @@ Phase 0 只做 `cudaMalloc` / `cudaFree` 的 RAII 封装；内存池延后（触
 
 ### 2.14 [DEC-EVIDENCE-DISCIPLINE] 证据纪律与操作纪律（Phase 2 沉淀，后续沿用）
 
-1. **实测与期望不符时只允许三种动作**：继续查（写明"原因未知"）／证明期望值本身错（必须给独立依据并写进文档）／标成"已知失败 + 原因未知"保持红。禁止调阈值、删断言、把断言降级成打印、跳过用例（#15 就是放宽阈值掩盖问题的实例）。
-2. **阈值旁边必须写出处**，且阈值不跨精度复用（FP16 的 `1e-3` 套到 FP32 上等于把尺子放宽千倍）；放宽前先量"与正确性无关的差异"，观测值高出几个数量级就只能去查。
-3. **未经作者点名不得改产品代码 / 文档结论**；"批准目标 ≠ 批准手段"（细则见 `AGENTS.md` §0）。
+**A. 禁止用"放宽期望值"换取通过** —— 实测与期望不符时只允许三种动作：继续查（写明"原因未知"）／证明**期望值本身**错（必须给独立依据并写进文档）／标成"已知失败 + 原因未知"保持红。禁止调阈值、删断言、把断言降级成打印、跳过用例（#15 就是放宽阈值掩盖问题的实例）。
+配套：**阈值旁边必须写出处**，且阈值不跨精度复用（FP16 的 `1e-3` 套到 FP32 上等于把尺子放宽千倍）；放宽前先量"与正确性无关的差异"，观测值高出几个数量级就只能去查。
+
+**B. 操作纪律**：未经作者点名不得改产品代码 / 文档结论；"批准目标 ≠ 批准手段"（细则见 `AGENTS.md` §0）。
+
+**C. 诊断代码也必须自证**：D2H 读回的范围必须落在同一段分配内，且写清比较对象（比了哪两个张量、各自的布局与形状）——否则会输出"看起来像真故障"的数字（#15 / `AGENTS.md` §7）。
 
 ### 2.15 [DEC-IFACE-PHASE23] Phase 2 / 3 确立的接口约定（实现时确立，勿回改）
 
@@ -289,6 +292,16 @@ RMSNorm / RoPE / PagedAttention 三个 IPluginV3 插件 + 采样器（greedy / t
 **能在这里做完的都已做完**：Python 自检（6 道护栏）+ 三项机械核对；其余一律"未验证"，不得当成通过（`AGENTS.md` §7）。
 阶段值与逐条裁决 → `docs/dev/REQ-017-llm-int8-quant/STATE.md`。
 
+**未完成项表（行数 = 5；`docs/dev/REQ-017-llm-int8-quant/test_plan.md` §5 的"覆盖对照"以本表为唯一来源）**：
+
+| # | 未完成项 | 原因 | 解除条件 |
+|---|---|---|---|
+| 1 | "编译通过 / 无新增 warning"（P5 Exit Gate） | 本机没有编译器（无 nvcc / cmake / TensorRT） | 真机窗口第一步 |
+| 2 | `addDequantize` 的签名与 scale / zeroPoint 广播约束核对 | 本机没有 `NvInfer.h`，代码按作者"假设有头文件"的指令写 | 真机（读头文件 + 建最小图） |
+| 3 | **D7 判据**：DQ 是否被吸收（**引擎体积必须下降**） | 需要真机建引擎 | 真机最小图实验 |
+| 4 | `wte` 新路径在 FP32 / FP16 下的确认 | 同上 | 真机 |
+| 5 | P6 的用例与 `test_plan.md` | **已落档**（2026-10-05 作者点名 P6；四类 17 条 + 追溯 9 行） | 真机按清单逐条打勾后回填 |
+
 ### 4.8 [DEC-REQ018-STATUS] REQ-018（GPT-2 FP16 端到端 NaN，bugfix）
 
 **现状**：停在"动手修之前"的人工关口（以它的 `STATE.md` 为准）。**在等作者裁决三件事**：① 是否撤销"按政策不修"；② 是否批准下一轮真机诊断；③ B2 若超预算，立为 Feature 还是停在诊断结论。
@@ -310,19 +323,19 @@ RMSNorm / RoPE / PagedAttention 三个 IPluginV3 插件 + 采样器（greedy / t
 
 ### 5.1 自研 JSON 解析器能力有限
 
-问题：`utils/json.hpp` 只支持基础类型与简单嵌套。影响：复杂配置可能解析失败。workaround：配置控制在支持范围内；要更复杂的解析就换库（需批准）。
+问题：`utils/json.hpp` 只支持基础类型与简单嵌套。影响：复杂配置可能解析失败。workaround：配置控制在支持范围内；要更复杂的解析就换库（需批准）。→ `TROUBLESHOOTING.md` #33.1（`vocab.json` 读不进来就是这类）。
 
 ### 5.2 `SafetensorsLoader::GetTensorNames()` 返回空
 
-问题：上游 `safetensors-cpp` 的 `ordered_dict` 不暴露 key 遍历接口。影响：无法枚举张量名。workaround：按已知名单逐个 `GetTensor`。
+问题：上游 `safetensors-cpp` 的 `ordered_dict` 不暴露 key 遍历接口。影响：无法枚举张量名。workaround：按已知名单逐个 `GetTensor`。→ #5。
 
 ### 5.3 SentencePiece 与 GPT-2 BPE 可能不对齐
 
-问题：GPT-2 原生是 byte-level BPE，SentencePiece 行为可能不同。影响：tokenizer 结果可能与 `transformers` 不完全一致。workaround：GPT-2 用 `BpeTokenizer`；SentencePiece 至今未验证（SP-1，见 §6.6）。
+问题：GPT-2 原生是 byte-level BPE，SentencePiece 行为可能不同。影响：tokenizer 结果可能与 `transformers` 不完全一致。workaround：GPT-2 用 `BpeTokenizer`；SentencePiece 至今未验证（SP-1，见 §6.6）。→ #33（BPE 实现的三个坑）。
 
 ### 5.4 BF16 转换（已修复）
 
-原问题：BF16→FP16 直接截断尾数（忽略了 BF16 与 FP16 指数位宽 8 vs 5 的差异），位截断在数值上不成立。现状：已按 round-nearest 修复。
+原问题：BF16→FP16 直接截断尾数（忽略了 BF16 与 FP16 指数位宽 8 vs 5 的差异），位截断在数值上不成立。现状：已按 round-nearest 修复。→ #5。
 
 ### 5.5 沙箱环境无法访问 GPU
 
@@ -334,11 +347,11 @@ RMSNorm / RoPE / PagedAttention 三个 IPluginV3 插件 + 采样器（greedy / t
 
 ### 5.7 [DEC-GPU-GATING] Phase 0 utils 测试缺少 GPU 门控（已修复）
 
-原问题：`CudaCheckTest` / `DeviceBufferTest` / `PinnedBufferTest` / `CudaTimerTest` 共 6 个用例直接调 CUDA 且没做环境判断。影响：无 GPU 的 CI / 沙箱永远不绿，真实回归信号被固定噪声淹没。现状：已统一门控。
+原问题：`CudaCheckTest` / `DeviceBufferTest` / `PinnedBufferTest` / `CudaTimerTest` 共 6 个用例直接调 CUDA 且没做环境判断。影响：无 GPU 的 CI / 沙箱永远不绿，真实回归信号被固定噪声淹没。现状：已统一门控。→ #1。
 
 ### 5.8 `supportsFormatCombination` 越界读取导致 engine 构建失败（已修复）
 
-原问题：扫描了 TensorRT 未初始化的 `inOut[pos+1..]` → 所有格式组合都被判不支持。影响：Plugin 建不成 engine，host 单测完全无感。现状：只读 `inOut[0..pos]`。
+原问题：扫描了 TensorRT 未初始化的 `inOut[pos+1..]` → 所有格式组合都被判不支持。影响：Plugin 建不成 engine，host 单测完全无感。现状：只读 `inOut[0..pos]`。→ #2。
 
 ### 5.9 [DEC-SAMPLER-OLD-API] 采样器曾存在两套 API（已清理）
 
@@ -367,7 +380,7 @@ workaround：**GPT-2 用 FP32**（8/8 贪心 token 命中、logits 相对偏差 
 
 问题：本平台的噪声与固定开销和信号同量级（一个平凡的 `greedy` kernel 单发就要 34~156 µs）。
 影响：小于 **±400~600 µs** 的差异判不出来，只能写"无显著差异"，**不得**按百分比自动接受。
-workaround：同 session、同二进制、逐轮交替（ABBA）、报中位数与四分位；**先声明判别下限再下结论**。
+workaround：同 session、同二进制、逐轮交替（ABBA）、报中位数与四分位；**先声明判别下限再下结论**。→ #42（量法本身翻过车）。
 
 ### 5.14 §2.2 过程中沉淀的三条操作类坑（2026-09-27，**结论在此，过程见 TROUBLESHOOTING**）
 
@@ -415,7 +428,7 @@ dynamic shape 的 optimization profile 已打通（Phase 2 的双引擎直接依
 
 **重建 ≠ 逐字节相同**：`builder.cpp` 未设 `kDETERMINISTIC`、无 timing cache → 同一网络重建后引擎体积会变（实测 `54,196,084 → 52,357,812`）。**性能对照必须用同一次构建的引擎**。
 
-**已知会失败 / 跳过的**：真机唯一红 = §5.11 的 FP16 复现器（按设计）；`int8_crosscheck` 只在缺报告时跳过（77）；`Fp16PrefillOutputsDiagnostic` 与性能类是"只打印"用例——它们通过 ≠ 验过数值。
+**已知会失败/跳过的测试**：真机唯一红 = §5.11 的 FP16 复现器（按设计）；`int8_crosscheck` 只在缺报告时跳过（77）；`Fp16PrefillOutputsDiagnostic` 与性能类是"只打印"用例——它们通过 ≠ 验过数值。
 
 ## 6.6 [DEC-OPEN-ITEMS-INDEX] 当前未解决项（开放项索引，2026-10-05 刷新）
 
