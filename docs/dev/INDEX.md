@@ -51,7 +51,7 @@
 | `REQ-016` | `REQ-016-continuous-batching` | 进行中 | P5-Implementation | in-progress | 批量 > 1 + 每序列 K/V + 最小连续批（S1–S5 已全部落码、**未编译验证**；P4 / P7 因缺 GPU 搁置，性能未验证见 `PROGRESS.md` §5.16） |
 | `REQ-017` | `REQ-017-llm-int8-quant` | 进行中 | P6-Test | in-progress | 语言模型权重量化（路线 C 端到端 + 用例与 `test_plan` 均已落、**未编译未运行**）；KV 缓存量化另立里程碑；Gate-A 的 7 条 P1 已逐条裁决；剩余项全部卡设备 |
 | `REQ-018` | `REQ-018-gpt2-fp16-nan` | 进行中（bugfix） | B2-MinimalFix | waiting-human-gate | 唯一的按设计红：FP16 端到端 NaN；策略已裁决（2026-10-06 撤销"不修"）、`review.md` 已产出（**BLOCK**：P0-3 待真机）、**离线部分已全部落码（未编译验证）**、真机部分搁置 |
-| `REQ-019` | `REQ-019-onnx-subgraph` | 进行中 | P3-Review | waiting-human-gate | 外部图子图替换；前置 = 先跑跨构建对照 |
+| `REQ-019` | `REQ-019-onnx-subgraph` | 进行中 | P2-Design | waiting-human-gate | 外部图子图替换（乙框架）：设计文档已备齐，P3 复评 **BLOCK**——P0 剩 1 条（`createParser` 注册表重载未核实，受"暂时不真机"约束）；creator namespace 与基线归属已裁决；S3 待定（PF-7 待真机） |
 
 ## 2. 不参与编号的内容
 

@@ -314,8 +314,11 @@ RMSNorm / RoPE / PagedAttention 三个 IPluginV3 插件 + 采样器（greedy / t
 
 ### 4.9 [DEC-REQ019-STATUS] REQ-019（外部图子图替换）
 
-**现状**：停在"设计评审之后的人工关口"（以它的 `STATE.md` 为准）。**这道关还没过**：路线（Python 侧重写 vs C++ 侧图变换）与"是否真的做替换"要拍板。
-**前置 PF-7 未跑**：ONNX vs 原生 prefill 的跨构建对照两次测量方向相反 → 替换收益目前无法论证；确认后**第一步不是写代码，而是跑 PF-7**（口径见 §6.6 与 `future_iterations_development_plan.md` §11.9）。
+**现状（2026-10-06 重设计后）**：按**乙框架**重做 P2——**性能门只挡"子图替换"，不挡契约统一 / 拓扑识别 / 自定义算子进图**。`design.md` 已重写、`analysis.md` 补了 `## Terminology`，状态回到 P3-Review（`status = in-progress`，以它的 `STATE.md` 为准）。
+**为什么改**：`requirement.md` 的 Goal / Excluded 只约束"替换"，上一版把 PF-7 提升成整条 feature 的开门条件属放大；当前设备非目标真机（GTX 960），后果是三项与替换收益无因果关系的工作无限期停摆。
+**S3 待定**：作者 2026-10-06 接受"S3 长期标待定（PF-7 待真机）"；PF-7 口径见 §6.6 与 `future_iterations_development_plan.md` §11.9。**PF-7 需要一段新代码**——`OnnxVsNative.PerfPerBuildMedian` 在代码里不存在，现有测量是 5 次取平均、不出极差（测试计划里"无新代码"的表述已于 2026-10-06 更正）；该薄用例尚未获授权。
+**P3 复评结论（2026-10-06）= BLOCK**：`review.md` 逐条回答四份 checklists 的 35 条 P0 + 17 条 P1，问题集中在 S2——① `createParser` 带 `IPluginRegistry` 的重载**未核实**（本机无 TRT 头）；② 四个 creator 的 `getPluginNamespace()` 返回**空串**，而 ONNX 自定义域必须非空（已核实的代码事实，修法有连带重建的影响面待裁决）。**S0 / S1 的设计不需返工**，只欠两处落码前置探针（真实图的形态）。
+**同日作者裁决**：① **暂时不真机** → ① 那条保持未闭环（`review.md` 的 P0-1），S2 不落码；② **接受**把 creator namespace 设为 `mini_trt_llm` 及可能的既有引擎连带重建（P0-2 闭合）；③ S0 的识别基线归属取 **B**（`--check` 只对源图生效）。当前唯一放行障碍 = P0-1。
 
 ## 5. 已知问题与坑
 
@@ -446,12 +449,12 @@ dynamic shape 的 optimization profile 已打通（Phase 2 的双引擎直接依
 | **REQ-016** | 连续批 / packed 混合批 / 分块 prefill：代码已落（S1–S5）、**未编译验证**；性能未验证（§5.16） | `docs/dev/REQ-016-continuous-batching/STATE.md` |
 | **REQ-017** | LLM 权重 INT8（路线 C）：P6 用例与判据已落、**未编译未运行**；D7 与收益待真机（§5.17） | `docs/dev/REQ-017-llm-int8-quant/STATE.md` |
 | **REQ-018** | GPT-2 FP16 端到端 NaN（bugfix）：**离线部分已全部落码（未编译验证）**；方案已评审（BLOCK：P0-3 待真机）、**真机搁置**（§4.8） | `docs/dev/REQ-018-gpt2-fp16-nan/STATE.md` |
-| **REQ-019** | 外部图子图替换：等 Gate-A，前置 PF-7 未跑（§4.9） | `docs/dev/REQ-019-onnx-subgraph/STATE.md` |
+| **REQ-019** | 外部图子图替换（乙框架）：S0 / S1 设计就绪，S2 **阻塞**（P0-1 待真机核实），S3 待定（PF-7 待真机）（§4.9） | `docs/dev/REQ-019-onnx-subgraph/STATE.md` |
 | **SP-1** | `SentencePieceTokenizer` 无用例、无资产、无调用方：正确性从未被任何参考裁决过 | `future_iterations.md` §0.1 / §11 |
 | **P4-INT8-b** | INT8 的绝对数值界未定（当前只用"FP32 余量子集一致率"判，阈值 ≥90%，实测 12/12；验收集无真值标签） | `future_iterations.md` §1.6 |
 | **P4-FP16-a** | FP16 路径仍用已废弃的 `BuilderFlag::kFP16`（TRT 10.12 起指向 strong typing）；实测可用 | `future_iterations.md` §11 |
 | **G5** | ONNX 子图识别只做计数（未做拓扑级）——只有真做子图替换时才需要 | `future_iterations.md` §11 |
-| **PF-7** | ONNX vs 原生 prefill 的跨构建对照未跑（两次测量方向相反）→ 它决定 REQ-019 的走向 | `future_iterations.md` §10.2 |
+| **PF-7** | ONNX vs 原生 prefill 的跨构建对照未跑（两次测量方向相反）→ 它只决定 REQ-019 的 **S3（子图替换）**走向，不再决定整条（2026-10-06 乙框架） | `future_iterations.md` §10.2 |
 | **G2-3 / G2-4** | `LLMRunner` 曾有意只支持 `batch = 1`（batch 已由 REQ-016 扩）／EOS 无法循环内早停（§5.0） | `future_iterations.md` §11 |
 | **P1.5-b ~ P1.5-d** | E2 完整链路留后；E3 未验多 profile 切换；采样器分布数据未固化 | `future_iterations.md` §11 |
 | ~~P4-INT8-a~~ | **已结案（2026-09-27）**：根因在产图脚本的 scale 来源，见 §3.0j | `TROUBLESHOOTING.md` #46 / #47 |
