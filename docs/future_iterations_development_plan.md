@@ -1275,7 +1275,7 @@ TRT 内部 kernel 名（`genericNode_*` / tactic 名）**不携带语义**，硬
 | P6_3-3 decode 计时入口 | ✅（详见 §11.5.2） | `tests/test_decode_perf.cpp` 的 `Gpt2DecodePerf.StepLatencyByPhase`（P 层：只打印；用斜率 `(T32−T1)/31` 分离 prefill 与 decode） |
 | P6_3-4 kernel 分解 | ⬜ 本机不可达（详见 §11.5.2） | `tools/profile/summarize_nsys.py`：三层分桶（我们的 kernel / CUB / TRT）+ sampler / attention / KV 占比；`--self-test` 已注册 ctest 项 `profile_summary_selftest`。**本机两条 CLI 路径都拿不到 kernel 时间线** → `TROUBLESHOOTING.md` #41 |
 | P6_3-5 分配开销 | ✅（详见 §11.5.2） | 同一脚本的 `--api` 模式：`cudaMalloc` / `cudaFree` 的次数与总耗时（为 §2.1 供数） |
-| P6_3-6 G6 跨构建对照 | ➡️ **已移交 §10.2**（详见 §11.5.2） | 协议见 11.3 B；无新代码。这项服务的是"要不要做 ONNX 子图替换"，**不属于 §11 的收口范围** |
+| P6_3-6 G6 跨构建对照 | ➡️ **已移交 §10.2**（详见 §11.5.2） | 协议见 11.3 B。这项服务的是"要不要做 ONNX 子图替换"，**不属于 §11 的收口范围**。**2026-10-06 更正**：原文写"无新代码"与代码现状不符——`OnnxVsNative.PerfPerBuildMedian` 在代码里不存在，现有测量是"各跑 5 次取平均、单次构建"；P4 需补一个薄用例（口径见 `docs/future_iterations_test_plan.md` 的 PF-7 行） |
 | P6_3-7 回填 | ✅（详见 §11.5.2） | —— |
 | P6_3-0 仪器自证 | ✅（详见 §11.5.2） | 结论：**本机采不到 GPU kernel 时间线**（#41）；脚本 / target 本身可用。Agent 沙箱里 `nsys` 一跑即报 `open: Operation not permitted` |
 
