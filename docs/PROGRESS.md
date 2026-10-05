@@ -11,13 +11,13 @@
 - **项目一句话**：面向 Turing / `sm_75` 的极简多模态 TensorRT 推理框架，用 `mini_trt_llm` 统一承载 CV（ResNet18）与 LLM（GPT-2），替换两个历史 ONNX 示例工程。
 - **现在在哪**：Phase 0 / 1 / 1.5 / 2 / 3 / 4 / 5 全部交付；**活着的条目 4 条** → §4。
 - **当前基线（唯一现状口径，2026-09-28）**：沙箱 **268 条 / 0 失败**；真机整轮 **267 条 / 1 红 / 0 跳过 / 301.72 s**。
-  **待复跑**：2026-10-05 新注册 1 条 host 自检 `docs_index_check`（见 `mini_trt_llm/tests/CMakeLists.txt`）→
-  沙箱**应为 269**；在复跑确认前，268 仍是唯一的**实测**值。
-  唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`（GPT-2 FP16 NaN，**按设计**，见 §5.11）。
-  真机必须带 `MINI_TRT_REQUIRE_GPU=1`（否则 GPU 用例静默跳过 = 白跑）；证据 = `build/Testing/Temporary/LastTest.log`。
+  **待复跑**：2026-10-05 起新增 3 条用例（`docs_index_check` ×1 + REQ-018 的图 A / 图 C ×2，见
+  `mini_trt_llm/tests/CMakeLists.txt` 与 `test_gpt2_generate.cpp`）→ 按 `gtest_discover_tests`
+  "一条 case = 一条 ctest 条目"的口径，沙箱**应为 271**；在复跑确认前，268 仍是唯一的**实测**值。
+  唯一红 = `RealGpt2Fp16GreedyMatchesReferenceTokens`（GPT-2 FP16 NaN，**按设计**，见 §5.11）；真机必须带 `MINI_TRT_REQUIRE_GPU=1`（否则 GPU 用例静默跳过 = 白跑），证据 = `build/Testing/Temporary/LastTest.log`。
 - **精度口径**：GPT-2 用 **FP32**；ResNet18 的 FP32 / FP16 都健康；INT8 走 **Q/DQ 显式量化**，判据 = "FP32 余量子集一致率"（实测 12/12），权重默认 per_tensor。见 §5.11 / §2.15 / §3.0j。
 - **环境**：TensorRT 10.15.1 ｜ CUDA 12.6.85 ｜ C++17 ｜ sm_75（无 Tensor Core）→ §7。
-- **最近交付（2026-10-05）**：REQ-017 路线 C 落码、REQ-016 的 S1–S5 落码，**都未编译验证**（无编译器 / 无 GPU）。
+- **最近交付（2026-10-06）**：REQ-018 的**离线部分全部落码**（设计 v2 + 评审 BLOCK + 策略撤销与口径同步 + 探针全层 7 切点与指纹开关项 + 诊断用例自证 + 图 A / 图 C 两臂 + 逐层精度护栏 + P2 共享头），**全部未编译验证**，真机部分搁置；**前一交付（2026-10-05）**：REQ-017 路线 C、REQ-016 S1–S5 落码，同前未编译验证。
 - **引擎缓存**：升级后首次使用会重建，属预期 → §6.5。
 - **开放项**：REQ-016 / REQ-017 / REQ-018 / REQ-019 + SP-1 等 → §6.6；事实与触发条件在 `future_iterations.md`。
 - **接手顺序**：本文 §0 → §4 → §6.6 → 命中条目读它的 `STATE.md`。
@@ -113,6 +113,8 @@ Phase 0 只做 `cudaMalloc` / `cudaFree` 的 RAII 封装；内存池延后（触
 **B. 操作纪律**：未经作者点名不得改产品代码 / 文档结论；"批准目标 ≠ 批准手段"（细则见 `AGENTS.md` §0）。
 
 **C. 诊断代码也必须自证**：D2H 读回的范围必须落在同一段分配内，且写清比较对象（比了哪两个张量、各自的布局与形状）——否则会输出"看起来像真故障"的数字（#15 / `AGENTS.md` §7）。
+
+**C-补（2026-10-06，来自 REQ-018 的复评）**：同族两条仪器教训（详情 `TROUBLESHOOTING.md` + 18.2，此处只留指针）：① **仪器换一次，读数就不可比**——探针输出会改变 TRT 的融合与 tactic（ResNet18 探针上实测过）；② **"位置不变"不等于否证**。推论：每轮改图的排查等于每轮换仪器，要的是"同一次构建内读数可比"。
 
 ### 2.15 [DEC-IFACE-PHASE23] Phase 2 / 3 确立的接口约定（实现时确立，勿回改）
 
@@ -306,10 +308,8 @@ RMSNorm / RoPE / PagedAttention 三个 IPluginV3 插件 + 采样器（greedy / t
 
 ### 4.8 [DEC-REQ018-STATUS] REQ-018（GPT-2 FP16 端到端 NaN，bugfix）
 
-**现状**：策略已裁决、方案已重设计并评审过，**卡在设备**（以它的 `STATE.md` 为准）。作者 2026-10-06 裁决两件事：
-① **撤销"按政策不修"**——依据是**正确性**（默认精度不可用即产品缺陷），不是 §5.11 / `future_iterations.md` §1.4 的"低精度**性能**"触发（旧的收益结论本身仍成立）；② **当前设备无真机条件 → 真机部分整体搁置**，本轮不产出任何实测读数。
-候选修复方案与预算判定已按 Bugfix 规则并入它的 `analysis.md` 的 `## Candidate Fixes（B2）`（原 `design.md` 已删），2026-10-06 换成"重设计方案"（一次真机三图对照 + 定点一处显式精度）。
-评审结论在它的 `review.md`：**Decision = BLOCK**——4 条 P0，3 条同轮关闭，P0-3（Softmax 是否有精度接口）需真机读 `NvInfer.h`。
+**现状**：**离线部分已全部落码、未编译验证；真机部分搁置**（以它的 `STATE.md` 为准）。作者 2026-10-06 裁决两件事：① **撤销"按政策不修"**——依据是**正确性**（默认精度不可用即产品缺陷），不是 §5.11 / `future_iterations.md` §1.4 的"低精度**性能**"触发（旧的收益结论仍成立）；② **当前设备无真机条件 → 真机部分整体搁置**，本轮不产出任何实测读数。
+方案与评审：`analysis.md` 的 `## Candidate Fixes（B2）` = 重设计方案 v2（一次真机三图对照 + 定点一处显式精度；原 `design.md` 已删）；`review.md` 的 **Decision = BLOCK**——4 条 P0、3 条同轮关闭，P0-3（Softmax 是否有精度接口）需真机读 `NvInfer.h`（离线四条路 + 联网取 wheel 已全部试过并排除，留痕在 `STATE.md`）。已落码均**未编译验证**：探针全层 7 切点 + 指纹开关项、诊断用例自证（按声明 dtype 填、未识别名字即失败、RMS / 首个非有限下标、逐层落盘）、图 A / 图 C 两臂、逐层精度启动护栏、P2 共享头。
 它是真机上**唯一按设计的红**，别当成新回归（见 §5.11）。
 
 ### 4.9 [DEC-REQ019-STATUS] REQ-019（外部图子图替换）
@@ -445,7 +445,7 @@ dynamic shape 的 optimization profile 已打通（Phase 2 的双引擎直接依
 |---|---|---|
 | **REQ-016** | 连续批 / packed 混合批 / 分块 prefill：代码已落（S1–S5）、**未编译验证**；性能未验证（§5.16） | `docs/dev/REQ-016-continuous-batching/STATE.md` |
 | **REQ-017** | LLM 权重 INT8（路线 C）：P6 用例与判据已落、**未编译未运行**；D7 与收益待真机（§5.17） | `docs/dev/REQ-017-llm-int8-quant/STATE.md` |
-| **REQ-018** | GPT-2 FP16 端到端 NaN（bugfix）：策略已裁决（撤销不修）、方案已评审（BLOCK：P0-3 待真机）、**真机搁置**（§4.8） | `docs/dev/REQ-018-gpt2-fp16-nan/STATE.md` |
+| **REQ-018** | GPT-2 FP16 端到端 NaN（bugfix）：**离线部分已全部落码（未编译验证）**；方案已评审（BLOCK：P0-3 待真机）、**真机搁置**（§4.8） | `docs/dev/REQ-018-gpt2-fp16-nan/STATE.md` |
 | **REQ-019** | 外部图子图替换：等 Gate-A，前置 PF-7 未跑（§4.9） | `docs/dev/REQ-019-onnx-subgraph/STATE.md` |
 | **SP-1** | `SentencePieceTokenizer` 无用例、无资产、无调用方：正确性从未被任何参考裁决过 | `future_iterations.md` §0.1 / §11 |
 | **P4-INT8-b** | INT8 的绝对数值界未定（当前只用"FP32 余量子集一致率"判，阈值 ≥90%，实测 12/12；验收集无真值标签） | `future_iterations.md` §1.6 |
