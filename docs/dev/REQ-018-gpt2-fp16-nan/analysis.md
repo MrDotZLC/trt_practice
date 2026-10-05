@@ -298,6 +298,9 @@ runner 都先查询再分配，且 decode cache 与 prefill/decode K/V 的不一
 那一层的缓冲就会按错误宽度读写——正是 #18 的形态且**不报错**。
 判据：真机逐层打印 `getTensorDataType("k_layer{i}")`（prefill 与 decode 各 12 层）+
 `key_cache{i}`，要求**全层一致**；不一致即本假设成立、按出口 B 处置。
+**2026-10-06 追加**：这个"假定"在**产品路径**上已经变成启动检查（`llm_runner.cpp` 的
+`check_kv_layers_uniform` + 逐层 cache 检查）——全层一致时是 no-op，不一致就**拒绝启动**并打印
+是哪一层、两边各是什么精度。真机那次逐层打印仍然要做，但角色从"唯一发现手段"降为"确认与留痕"。
 
 **结论 3（仪器侧，非产品）**：唯一确实写错的是**诊断用例**——`padding_bias` 被写进 position id 的
 位型、形状按 rank-2 设、张量体积按名字猜（`tests/test_gpt2_generate.cpp` 的

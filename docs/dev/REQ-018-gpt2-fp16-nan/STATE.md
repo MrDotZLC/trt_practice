@@ -32,6 +32,15 @@
 - **评审 P0-3 未关闭**：`addSoftMax`（`gpt2_model_builder.cpp:948`）今天没有精度设置，
   `ISoftMaxLayer` 在 TRT 10 是否有等价接口**本机查不到**（无 `NvInfer.h`）→ 判据来源缺失，
   Gate-A 不通过。它随真机一并搁置，不得用"推测 TRT 会做 FP32"来代替核实。
+  **离线取头文件的四条路都试过（2026-10-06，逐条留痕）**：① 沙箱 `/usr/include/**` 无 `NvInfer*.h`；
+  ② Windows 侧没有 CUDA/TensorRT 安装（`C:\Program Files\NVIDIA GPU Computing Toolkit` 不存在、
+  `System32` 无 `nvinfer*.dll`，只有驱动 `nvidia-smi.exe`）；③ 本环境**没有可用的 WSL 发行版**
+  （`wsl.exe true` 退出码 1、只回帮助文本）→ 真机那套 TRT 头文件在这里够不着；
+  ④ pip 侧无 tensorrt 包、无本地 wheel 缓存。**联网取 wheel 这条 2026-10-06 也试过了**：
+  PyPI 的 10.15.1.29 只有元包 sdist（16 KB，`tensorrt` 依赖 `tensorrt_cu13`），
+  `tensorrt_cu13` 全线同样只有元包 sdist，`tensorrt_cu13_bindings` 的 wheel 共 20 个文件、
+  全是 `.py`/`.pyd`，**没有任何发行包带 `NvInfer.h`**。→ 只剩真机读头文件这一条路
+  （若接受更低可信度，另一条是 GitHub 镜像源，需另行批准）。
 - **未定位到具体算子**：5 轮真机往返只到"性质"（构建相关的不稳定、幅值远未溢出），
   没到"哪一层、哪个算子"；定位手段（三图对照）已写进设计，等真机窗口执行。
 - 真机窗口内要跑的用例与引擎构建，按 `AGENTS.md` §0.3 仍需先获批准（本次已整体搁置）。
@@ -73,8 +82,15 @@ Bugfix 没有 P5，这里按 `AGENTS.md` §5 的"改代码前置"落 B1' 的仪�
   3. `mini_trt_llm/tests/test_gpt2_generate.cpp`：诊断用例的输入按**声明 dtype** 填（`padding_bias` 全 0、
      形状 `[1,1,1,S]`）、输出遇**未识别名字即失败**（不再落 `hidden` 兜底 = 越界写）、
      逐张量打印 `max|v|` / RMS / 首个非有限下标、逐层 ONELINE 落盘、逐层 K/V 声明精度打印。
+  4. `mini_trt_llm/src/core/llm_runner.cpp`（2026-10-06 加，属**护栏**不属修复）：启动期检查
+     **逐层 K/V 与逐层 cache 的声明精度必须一致**——把 D1a 的"假定全层相同"变成"不一致就拒绝启动"。
+     全层一致时是 no-op；命名写错（`getTensorDataType` 对不存在的名字按 TRT 约定返回 kFLOAT）
+     也会在这里响亮失败。
 - **测试方式**：本机**无编译器 / 无 GPU**，只能做静态自检（符号与参数逐个核对 + 名字/尺寸分类表逐条走查），
   编译与运行**全部记"未编译验证"**，等真机窗口一次性执行。
+  **归类口径（作者 2026-10-06 裁决）**：护栏与仪器按"非修复"归类，**不计入 B2 的修复预算**
+  → 真修复面仍是 0 文件（等真机）；因此本条目累计 4 个代码文件不触发 Bugfix → Feature Decision。
+  放行范围 = 本条的仪器与护栏改动，不含其它。
 
 ---
 
@@ -88,6 +104,8 @@ Bugfix 没有 P5，这里按 `AGENTS.md` §5 的"改代码前置"落 B1' 的仪�
 - 2026-10-06: 作者裁决当前设备无真机条件 → 真机相关部分整体搁置；`status` 维持 `waiting-human-gate`
 - 2026-10-06: H4 的静态对账完成（产物路径排除，留一条窄假设）→ `analysis.md` 的 `#### D1a`
 - 2026-10-06: B1' 的仪器改动落码（建图器探针 / 指纹开关项 / 诊断用例自证，共 3 文件），**未编译验证**
+- 2026-10-06: P0-3 的离线取头文件路径**全部试过并排除**（含联网取 wheel：cu13 线只有元包 sdist、无任何包带 `NvInfer.h`）→ 只剩真机
+- 2026-10-06: D1a 的窄假设落成**启动检查**（`llm_runner.cpp`，属护栏；未编译验证）
 
 ---
 
@@ -126,7 +144,7 @@ Bugfix 没有 P5，这里按 `AGENTS.md` §5 的"改代码前置"落 B1' 的仪�
 | P3 Entry：先复核上一阶段的「判据对照」 | 满足 | 本节（此前缺失，2026-10-06 补出）；补出前该 Entry 未正式满足，由作者 2026-10-06 点名直接评审 |
 | P3 Entry：`requirement.md` 的模糊名词须在 `analysis.md` 的 Terminology 有可验证定义 | 满足 | `analysis.md` + `## Terminology`（本次补出，6 条） |
 | p3_review 规则：条目要求的输入 / 接口在系统里查不到即 P0 | **未满足（阻塞）** | `review.md` 的 P0-3（Softmax 精度接口，本机无 `NvInfer.h`）；解除条件 = 真机窗口读头文件或建最小图 |
-| 技能 B2：改动预算（文件 ≤3 / 行数 ≤100），超限触发 Bugfix → Feature Decision | 满足 | 重设计方案 v2 的出口 A/B 为定点一处（≤1 文件 / ≤30 行）；旧的"逐算子二分"降为兜底、激活缩放移出本轮 |
+| 技能 B2：改动预算（文件 ≤3 / 行数 ≤100），超限触发 Bugfix → Feature Decision | 满足（**作者 2026-10-06 放行**） | 冲突双方与建议见本行的历史记录（① 设计 v2：B1' 不占修复预算；② 累计 4 个代码文件，按"全部改动"计会超 ≤3）。**作者裁决 = 采纳建议**：护栏/仪器按"非修复"归类，真修复面 = 0 文件 → 不触发 Feature Decision。**放行范围** = 本条的仪器（B1' 3 文件）与护栏（`llm_runner.cpp`），不含其它改动 |
 | `AGENTS.md` §0.7 / §0.3：真机任务需作者点名批准 | **未满足（阻塞）** | 作者 2026-10-06 裁决**当前设备无真机条件 → 真机部分搁置**；放行范围 = 无（不批准任何真机动作） |
 | 技能 Bugfix Required Artifacts：`requirement` / `analysis` / `summary`(B4) | 满足 | 前两件在；`summary.md` 属 B4，**未到阶段**，不计缺 |
 | 规则冲突：`workflows/bugfix.md`（候选方案写在 analysis.md）与 `phases/p1_analysis.md`（analysis.md 禁止修改计划） | 满足 | 作者 2026-10-06 裁决：以 bugfix.md 为准 + 在 analysis.md 顶部加例外注记（§5.5 的"冲突双方 + 建议"已上报） |

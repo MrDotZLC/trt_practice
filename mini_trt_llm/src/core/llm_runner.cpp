@@ -141,6 +141,72 @@ LLMRunner::LLMRunner(const Config& config, std::shared_ptr<Engine> prefill_engin
         return;
     }
 
+    // **逐层 K/V 与逐层 cache 的声明精度必须一致**（2026-10-06，REQ-018 的 D1a 留下的窄假设）。
+    //
+    // 为什么必须有这一道：上面只查了 `k_layer0` / `key_cache_0`，其余层的精度此前是**假定**相同的。
+    // 若某一层不同，那一层的缓冲就会按错误宽度读写，与 TS-018 前半段（按假定精度分配 → 越界写）
+    // 完全同型，而且**不报错**。这里把"假定"变成"检查"：全层一致时是 no-op，不一致就拒绝启动。
+    // 另一个副作用是有益的：`getTensorDataType` 对不存在的名字按 TRT 约定返回 kFLOAT，所以把张量名
+    // 写错也会在这里响亮失败，而不是变成"悄悄按 FP32 处理"。
+    const auto dtype_text = [](nvinfer1::DataType t) {
+        return t == nvinfer1::DataType::kHALF ? "FP16" : "FP32";
+    };
+    const auto check_kv_layers_uniform = [&](Engine* engine,
+                                             const char* description) -> bool {
+        nvinfer1::ICudaEngine* cuda = engine->GetCudaEngine();
+        if (cuda == nullptr) {
+            return false;
+        }
+        const nvinfer1::DataType first_k = cuda->getTensorDataType("k_layer0");
+        const nvinfer1::DataType first_v = cuda->getTensorDataType("v_layer0");
+        if (first_k != first_v) {
+            MINI_TRT_LOG_ERROR("LLMRunner: " << description << " 第 0 层的 k/v 声明精度就不一致（k="
+                                             << dtype_text(first_k) << ", v="
+                                             << dtype_text(first_v) << "）");
+            return false;
+        }
+        for (int32_t layer = 0; layer < config_.num_layers; ++layer) {
+            const std::string k_name = "k_layer" + std::to_string(layer);
+            const std::string v_name = "v_layer" + std::to_string(layer);
+            const nvinfer1::DataType k = cuda->getTensorDataType(k_name.c_str());
+            const nvinfer1::DataType v = cuda->getTensorDataType(v_name.c_str());
+            if (k != first_k || v != first_v) {
+                MINI_TRT_LOG_ERROR("LLMRunner: " << description << " 第 " << layer
+                                                 << " 层的 K/V 声明精度与第 0 层不同（k="
+                                                 << dtype_text(k) << ", v=" << dtype_text(v)
+                                                 << "；第 0 层是 " << dtype_text(first_k)
+                                                 << "）——缓冲会按错误宽度读写，拒绝启动");
+                return false;
+            }
+        }
+        return true;
+    };
+    if (!check_kv_layers_uniform(prefill_engine_.get(), "prefill engine") ||
+        !check_kv_layers_uniform(decode_engine_.get(), "decode engine")) {
+        return;
+    }
+    // decode 的 cache **输入**同理：每层都绑同一个 PagedKVCache 缓冲，某一层的声明精度若与
+    // `Config::is_half` 不同，PagedAttention 会按错误宽度读那一层的行。
+    {
+        nvinfer1::ICudaEngine* cuda = decode_engine_->GetCudaEngine();
+        const nvinfer1::DataType expected_cache =
+            config_.is_half ? nvinfer1::DataType::kHALF : nvinfer1::DataType::kFLOAT;
+        for (int32_t layer = 0; cuda != nullptr && layer < config_.num_layers; ++layer) {
+            const std::string k_name = "key_cache_" + std::to_string(layer);
+            const std::string v_name = "value_cache_" + std::to_string(layer);
+            const nvinfer1::DataType k = cuda->getTensorDataType(k_name.c_str());
+            const nvinfer1::DataType v = cuda->getTensorDataType(v_name.c_str());
+            if (k != expected_cache || v != expected_cache) {
+                MINI_TRT_LOG_ERROR("LLMRunner: decode cache 输入 "
+                                   << k_name << "/" << v_name << " 第 " << layer
+                                   << " 层的声明精度与 Config 不一致（k=" << dtype_text(k)
+                                   << ", v=" << dtype_text(v) << "，期望 "
+                                   << dtype_text(expected_cache) << "）——拒绝启动");
+                return;
+            }
+        }
+    }
+
     // D8 / design.md §不变量 2：prefill 与 decode 各用一个**独立构建**的引擎，且各自恰好只有
     // 一个 optimization profile。单引擎构建（kSingle）会把 Prefill / Decode 两组 profile 挂在
     // 同一个引擎上，此时"decode 用 profile 0"就是错的组——而**用错组不会报错**，只会表现为
